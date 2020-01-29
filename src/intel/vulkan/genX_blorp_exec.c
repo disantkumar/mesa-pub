@@ -66,7 +66,7 @@ blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
       anv_batch_set_error(&cmd_buffer->batch, result);
 
    void *dest = anv_block_pool_map(
-      &cmd_buffer->device->surface_state_pool.block_pool, ss_offset);
+      &cmd_buffer->device->surface_state_pool.block_pool, ss_offset, 8);
    write_reloc(cmd_buffer->device, dest, address_u64, false);
 }
 
@@ -259,10 +259,6 @@ genX(blorp_exec)(struct blorp_batch *batch,
 
    genX(flush_pipeline_select_3d)(cmd_buffer);
 
-#if GEN_GEN >= 12
-   genX(cmd_buffer_aux_map_state)(cmd_buffer);
-#endif
-
    genX(cmd_buffer_emit_gen7_depth_flush)(cmd_buffer);
 
    /* BLORP doesn't do anything fancy with depth such as discards, so we want
@@ -271,6 +267,20 @@ genX(blorp_exec)(struct blorp_batch *batch,
    genX(cmd_buffer_enable_pma_fix)(cmd_buffer, false);
 
    blorp_exec(batch, params);
+
+#if GEN_GEN >= 11
+   /* The PIPE_CONTROL command description says:
+    *
+    *    "Whenever a Binding Table Index (BTI) used by a Render Taget Message
+    *     points to a different RENDER_SURFACE_STATE, SW must issue a Render
+    *     Target Cache Flush by enabling this bit. When render target flush
+    *     is set due to new association of BTI, PS Scoreboard Stall bit must
+    *     be set in this packet."
+    */
+   cmd_buffer->state.pending_pipe_bits |=
+      ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
+      ANV_PIPE_STALL_AT_SCOREBOARD_BIT;
+#endif
 
    cmd_buffer->state.gfx.vb_dirty = ~0;
    cmd_buffer->state.gfx.dirty = ~0;

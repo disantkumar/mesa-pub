@@ -116,6 +116,7 @@ typedef enum {
    ppir_op_branch,
 
    ppir_op_undef,
+   ppir_op_dummy,
 
    ppir_op_num,
 } ppir_op;
@@ -411,6 +412,7 @@ ppir_dep *ppir_dep_for_pred(ppir_node *node, ppir_node *pred);
 ppir_node *ppir_node_clone(ppir_block *block, ppir_node *node);
 /* Assumes that node successors are in the same block */
 ppir_node *ppir_node_insert_mov(ppir_node *node);
+ppir_node *ppir_node_insert_mov_all_blocks(ppir_node *node);
 
 static inline bool ppir_node_is_root(ppir_node *node)
 {
@@ -475,15 +477,6 @@ static inline ppir_dest *ppir_node_get_dest(ppir_node *node)
    default:
       return NULL;
    }
-}
-
-static inline int ppir_src_get_mask(ppir_node *node)
-{
-   ppir_dest *dest = ppir_node_get_dest(node);
-   if (dest)
-      return dest->write_mask;
-
-   return 0x01;
 }
 
 static inline int ppir_node_get_src_num(ppir_node *node)
@@ -632,6 +625,17 @@ static inline int ppir_target_get_dest_reg_index(ppir_dest *dest)
    }
 
    return -1;
+}
+
+static inline int ppir_src_get_mask(ppir_src *src)
+{
+   ppir_reg *reg = ppir_src_get_reg(src);
+   int mask = 0;
+
+   for (int i = 0; i < reg->num_components; i++)
+      mask |= (1 << src->swizzle[i]);
+
+   return mask;
 }
 
 static inline bool ppir_target_is_scaler(ppir_dest *dest)

@@ -462,6 +462,11 @@ enum opcode {
     */
    SHADER_OPCODE_MEMORY_FENCE,
 
+   /**
+    * Scheduling-only fence.
+    */
+   FS_OPCODE_SCHEDULING_FENCE,
+
    SHADER_OPCODE_GEN4_SCRATCH_READ,
    SHADER_OPCODE_GEN4_SCRATCH_WRITE,
    SHADER_OPCODE_GEN7_SCRATCH_READ,
@@ -736,6 +741,12 @@ enum opcode {
     * Calculate the high 32-bits of a 32x32 multiply.
     */
    SHADER_OPCODE_MULH,
+
+   /** Signed subtraction with saturation. */
+   SHADER_OPCODE_ISUB_SAT,
+
+   /** Unsigned subtraction with saturation. */
+   SHADER_OPCODE_USUB_SAT,
 
    /**
     * A MOV that uses VxH indirect addressing.

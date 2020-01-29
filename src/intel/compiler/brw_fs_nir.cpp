@@ -1263,10 +1263,44 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       inst->saturate = instr->dest.saturate;
       break;
 
+   case nir_op_iadd_sat:
    case nir_op_uadd_sat:
       inst = bld.ADD(result, op[0], op[1]);
       inst->saturate = true;
       break;
+
+   case nir_op_isub_sat:
+      bld.emit(SHADER_OPCODE_ISUB_SAT, result, op[0], op[1]);
+      break;
+
+   case nir_op_usub_sat:
+      bld.emit(SHADER_OPCODE_USUB_SAT, result, op[0], op[1]);
+      break;
+
+   case nir_op_irhadd:
+   case nir_op_urhadd:
+      assert(nir_dest_bit_size(instr->dest.dest) < 64);
+      inst = bld.AVG(result, op[0], op[1]);
+      break;
+
+   case nir_op_ihadd:
+   case nir_op_uhadd: {
+      assert(nir_dest_bit_size(instr->dest.dest) < 64);
+      fs_reg tmp = bld.vgrf(result.type);
+
+      if (devinfo->gen >= 8) {
+         op[0] = resolve_source_modifiers(op[0]);
+         op[1] = resolve_source_modifiers(op[1]);
+      }
+
+      /* AVG(x, y) - ((x ^ y) & 1) */
+      bld.XOR(tmp, op[0], op[1]);
+      bld.AND(tmp, tmp, retype(brw_imm_ud(1), result.type));
+      bld.AVG(result, op[0], op[1]);
+      inst = bld.ADD(result, result, tmp);
+      inst->src[1].negate = true;
+      break;
+   }
 
    case nir_op_fmul:
       for (unsigned i = 0; i < 2; i++) {
@@ -1295,6 +1329,34 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
    case nir_op_umul_2x32_64:
       bld.MUL(result, op[0], op[1]);
       break;
+
+   case nir_op_imul_32x16:
+   case nir_op_umul_32x16: {
+      const bool ud = instr->op == nir_op_umul_32x16;
+
+      assert(nir_dest_bit_size(instr->dest.dest) == 32);
+
+      /* Before Gen7, the order of the 32-bit source and the 16-bit source was
+       * swapped.  The extension isn't enabled on those platforms, so don't
+       * pretend to support the differences.
+       */
+      assert(devinfo->gen >= 7);
+
+      if (op[1].file == IMM)
+         op[1] = ud ? brw_imm_uw(op[1].ud) : brw_imm_w(op[1].d);
+      else {
+         const enum brw_reg_type word_type =
+            ud ? BRW_REGISTER_TYPE_UW : BRW_REGISTER_TYPE_W;
+
+         op[1] = subscript(op[1], word_type, 0);
+      }
+
+      const enum brw_reg_type dword_type =
+         ud ? BRW_REGISTER_TYPE_UD : BRW_REGISTER_TYPE_D;
+
+      bld.MUL(result, retype(op[0], dword_type), op[1]);
+      break;
+   }
 
    case nir_op_imul:
       assert(nir_dest_bit_size(instr->dest.dest) < 64);
@@ -1593,6 +1655,12 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
 
    case nir_op_ftrunc:
       inst = bld.RNDZ(result, op[0]);
+      if (devinfo->gen < 6) {
+         set_condmod(BRW_CONDITIONAL_R, inst);
+         set_predicate(BRW_PREDICATE_NORMAL,
+                       bld.ADD(result, result, brw_imm_f(1.0f)));
+         inst = bld.MOV(result, result); /* for potential saturation */
+      }
       inst->saturate = instr->dest.saturate;
       break;
 
@@ -1615,6 +1683,12 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       break;
    case nir_op_fround_even:
       inst = bld.RNDE(result, op[0]);
+      if (devinfo->gen < 6) {
+         set_condmod(BRW_CONDITIONAL_R, inst);
+         set_predicate(BRW_PREDICATE_NORMAL,
+                       bld.ADD(result, result, brw_imm_f(1.0f)));
+         inst = bld.MOV(result, result); /* for potential saturation */
+      }
       inst->saturate = instr->dest.saturate;
       break;
 
@@ -1733,6 +1807,11 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       emit_find_msb_using_lzd(bld, result, op[0], false);
       break;
    }
+
+   case nir_op_uclz:
+      assert(nir_dest_bit_size(instr->dest.dest) == 32);
+      bld.LZD(retype(result, BRW_REGISTER_TYPE_UD), op[0]);
+      break;
 
    case nir_op_ifind_msb: {
       assert(nir_dest_bit_size(instr->dest.dest) < 64);
@@ -3720,6 +3799,15 @@ fs_visitor::nir_emit_cs_intrinsic(const fs_builder &bld,
 
    switch (instr->intrinsic) {
    case nir_intrinsic_control_barrier:
+      /* The whole workgroup fits in a single HW thread, so all the
+       * invocations are already executed lock-step.  Instead of an actual
+       * barrier just emit a scheduling fence, that will generate no code.
+       */
+      if (workgroup_size() <= dispatch_width) {
+         bld.exec_all().group(1, 0).emit(FS_OPCODE_SCHEDULING_FENCE);
+         break;
+      }
+
       emit_barrier();
       cs_prog_data->uses_barrier = true;
       break;
@@ -4239,24 +4327,31 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
          l3_fence = modes & (nir_var_shader_out |
                              nir_var_mem_ssbo |
                              nir_var_mem_global);
-         /* Prior to gen11, we only have one kind of fence. */
-         slm_fence = devinfo->gen >= 11 && (modes & nir_var_mem_shared);
-         l3_fence |= devinfo->gen < 11 && (modes & nir_var_mem_shared);
+         slm_fence = modes & nir_var_mem_shared;
       } else {
-         if (devinfo->gen >= 11) {
-            l3_fence = instr->intrinsic != nir_intrinsic_memory_barrier_shared;
-            slm_fence = instr->intrinsic == nir_intrinsic_group_memory_barrier ||
-                        instr->intrinsic == nir_intrinsic_memory_barrier ||
-                        instr->intrinsic == nir_intrinsic_memory_barrier_shared;
-         } else {
-            /* Prior to gen11, we only have one kind of fence. */
-            l3_fence = true;
-            slm_fence = false;
-         }
+         l3_fence = instr->intrinsic != nir_intrinsic_memory_barrier_shared;
+         slm_fence = instr->intrinsic == nir_intrinsic_group_memory_barrier ||
+                     instr->intrinsic == nir_intrinsic_memory_barrier ||
+                     instr->intrinsic == nir_intrinsic_memory_barrier_shared;
       }
 
       if (stage != MESA_SHADER_COMPUTE)
          slm_fence = false;
+
+      /* If the workgroup fits in a single HW thread, the messages for SLM are
+       * processed in-order and the shader itself is already synchronized so
+       * the memory fence is not necessary.
+       *
+       * TODO: Check if applies for many HW threads sharing same Data Port.
+       */
+      if (slm_fence && workgroup_size() <= dispatch_width)
+         slm_fence = false;
+
+      /* Prior to Gen11, there's only L3 fence, so emit that instead. */
+      if (slm_fence && devinfo->gen < 11) {
+         slm_fence = false;
+         l3_fence = true;
+      }
 
       /* Be conservative in Gen11+ and always stall in a fence.  Since there
        * are two different fences, and shader might want to synchronize
@@ -4286,6 +4381,9 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
                    brw_imm_ud(GEN7_BTI_SLM))
             ->size_written = 2 * REG_SIZE;
       }
+
+      if (!l3_fence && !slm_fence)
+         ubld.emit(FS_OPCODE_SCHEDULING_FENCE);
 
       break;
    }

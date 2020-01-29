@@ -52,6 +52,7 @@
 #include "pan_blending.h"
 #include "pan_blend_shaders.h"
 #include "pan_util.h"
+#include "pandecode/decode.h"
 
 struct midgard_tiler_descriptor
 panfrost_emit_midg_tiler(struct panfrost_batch *batch, unsigned vertex_count)
@@ -200,18 +201,6 @@ panfrost_emit_vertex_payload(struct panfrost_context *ctx)
 
         memcpy(&ctx->payloads[PIPE_SHADER_VERTEX], &payload, sizeof(payload));
         memcpy(&ctx->payloads[PIPE_SHADER_COMPUTE], &payload, sizeof(payload));
-}
-
-static void
-panfrost_emit_tiler_payload(struct panfrost_context *ctx)
-{
-        struct midgard_payload_vertex_tiler payload = {
-                .prefix = {
-                        .zero1 = 0xffff, /* Why is this only seen on test-quad-textured? */
-                },
-        };
-
-        memcpy(&ctx->payloads[PIPE_SHADER_FRAGMENT], &payload, sizeof(payload));
 }
 
 static unsigned
@@ -1104,7 +1093,7 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data)
                 panfrost_upload_sysvals(ctx, transfer.cpu, ss, i);
 
                 /* Upload uniforms */
-                if (has_uniforms) {
+                if (has_uniforms && uniform_size) {
                         const void *cpu = panfrost_map_constant_buffer_cpu(buf, 0);
                         memcpy(transfer.cpu + sys_size, cpu, uniform_size);
                 }
@@ -1339,6 +1328,9 @@ panfrost_flush(
 
                 util_dynarray_fini(&fences);
         }
+
+        if (pan_debug & PAN_DBG_TRACE)
+                pandecode_next_frame();
 }
 
 #define DEFINE_CASE(c) case PIPE_PRIM_##c: return MALI_##c;
@@ -1556,7 +1548,7 @@ panfrost_draw_vbo(
                 ctx->payloads[PIPE_SHADER_FRAGMENT].prefix.index_count = MALI_POSITIVE(ctx->vertex_count);
 
                 /* Reverse index state */
-                ctx->payloads[PIPE_SHADER_FRAGMENT].prefix.indices = (u64) NULL;
+                ctx->payloads[PIPE_SHADER_FRAGMENT].prefix.indices = (mali_ptr) 0;
         }
 
         /* Dispatch "compute jobs" for the vertex/tiler pair as (1,
@@ -2734,7 +2726,6 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 
         panfrost_batch_init(ctx);
         panfrost_emit_vertex_payload(ctx);
-        panfrost_emit_tiler_payload(ctx);
         panfrost_invalidate_frame(ctx);
         panfrost_default_shader_backend(ctx);
 

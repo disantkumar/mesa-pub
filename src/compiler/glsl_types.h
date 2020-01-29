@@ -196,6 +196,27 @@ glsl_base_type_get_bit_size(const enum glsl_base_type base_type)
    return 0;
 }
 
+static inline enum glsl_base_type
+glsl_unsigned_base_type_of(enum glsl_base_type type)
+{
+   switch (type) {
+   case GLSL_TYPE_INT:
+      return GLSL_TYPE_UINT;
+   case GLSL_TYPE_INT8:
+      return GLSL_TYPE_UINT8;
+   case GLSL_TYPE_INT16:
+      return GLSL_TYPE_UINT16;
+   case GLSL_TYPE_INT64:
+      return GLSL_TYPE_UINT64;
+   default:
+      assert(type == GLSL_TYPE_UINT ||
+             type == GLSL_TYPE_UINT8 ||
+             type == GLSL_TYPE_UINT16 ||
+             type == GLSL_TYPE_UINT64);
+      return type;
+   }
+}
+
 enum glsl_sampler_dim {
    GLSL_SAMPLER_DIM_1D = 0,
    GLSL_SAMPLER_DIM_2D,
@@ -1233,7 +1254,7 @@ struct glsl_struct_field {
     * For interface blocks, the interpolation mode (as in
     * ir_variable::interpolation).  0 otherwise.
     */
-   unsigned interpolation:2;
+   unsigned interpolation:3;
 
    /**
     * For interface blocks, 1 if this variable uses centroid interpolation (as

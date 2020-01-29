@@ -111,6 +111,12 @@ void process_live_temps_per_block(Program *program, live& lives, Block* block,
       if (insn->opcode == aco_opcode::p_logical_end) {
          new_demand.sgpr += phi_sgpr_ops[block->index];
       } else {
+         /* we need to do this in a separate loop because the next one can
+          * setKill() for several operands at once and we don't want to
+          * overwrite that in a later iteration */
+         for (Operand& op : insn->operands)
+            op.setKill(false);
+
          for (unsigned i = 0; i < insn->operands.size(); ++i)
          {
             Operand& operand = insn->operands[i];
@@ -130,8 +136,6 @@ void process_live_temps_per_block(Program *program, live& lives, Block* block,
                   }
                }
                new_demand += temp;
-            } else {
-               operand.setKill(false);
             }
 
             if (operand.isFixed() && operand.physReg() == exec)
@@ -216,7 +220,8 @@ void process_live_temps_per_block(Program *program, live& lives, Block* block,
       phi_idx--;
    }
 
-   if (!(block->index != 0 || (live_vgprs.empty() && live_sgprs.empty()))) {
+   if ((block->logical_preds.empty() && !live_vgprs.empty()) ||
+       (block->linear_preds.empty() && !live_sgprs.empty())) {
       aco_print_program(program, stderr);
       fprintf(stderr, "These temporaries are never defined or are defined after use:\n");
       for (Temp vgpr : live_vgprs)

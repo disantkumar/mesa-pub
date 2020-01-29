@@ -45,8 +45,7 @@ stages:
         *paths
       when: on_success
     # Allow triggering jobs manually on branches of forked projects
-    - if: '$CI_PROJECT_PATH != "mesa/mesa"'
-      if: '$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+    - if: '$CI_PROJECT_PATH != "mesa/mesa" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
       when: manual
     # Otherwise, most jobs won't run
     - when: never
@@ -65,6 +64,8 @@ success:
   except:
     changes:
       *paths
+  variables:
+    GIT_STRATEGY: none
   script:
     - echo "Dummy job to make sure every merge request pipeline runs at least one job"
 
@@ -465,6 +466,7 @@ meson-i386:
       -D vulkan-overlay-layer=true
       -D llvm=false
       -D osmesa=classic
+      -D werror=true
 
 meson-mingw32-x86_64:
   extends: .meson-build
@@ -555,6 +557,7 @@ piglit-quick_gl:
       -x arb_gpu_shader5
       -x egl_ext_device_
       -x egl_ext_platform_device
+      -x ext_timer_query@time-elapsed
       -x glx-multithread-clearbuffer
       -x glx-multithread-shader-compile
       -x max-texture-size

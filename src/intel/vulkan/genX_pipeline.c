@@ -1408,11 +1408,23 @@ emit_3dstate_streamout(struct anv_pipeline *pipeline,
          next_offset[buffer] = output->offset +
                                __builtin_popcount(component_mask) * 4;
 
-         so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
-            .OutputBufferSlot = buffer,
-            .RegisterIndex = vue_map->varying_to_slot[varying],
-            .ComponentMask = component_mask,
-         };
+         const int slot = vue_map->varying_to_slot[varying];
+         if (slot < 0) {
+            /* This can happen if the shader never writes to the varying.
+             * Insert a hole instead of actual varying data.
+             */
+            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
+               .HoleFlag = true,
+               .OutputBufferSlot = buffer,
+               .ComponentMask = component_mask,
+            };
+         } else {
+            so_decl[stream][decls[stream]++] = (struct GENX(SO_DECL)) {
+               .OutputBufferSlot = buffer,
+               .RegisterIndex = slot,
+               .ComponentMask = component_mask,
+            };
+         }
       }
 
       int max_decls = 0;
@@ -1589,6 +1601,17 @@ emit_3dstate_hs_te_ds(struct anv_pipeline *pipeline,
       /* WA_1606682166 */
       hs.SamplerCount = GEN_GEN == 11 ? 0 : get_sampler_count(tcs_bin);
       hs.BindingTableEntryCount = get_binding_table_entry_count(tcs_bin);
+
+#if GEN_GEN >= 12
+      /* GEN:BUG:1604578095:
+       *
+       *    Hang occurs when the number of max threads is less than 2 times
+       *    the number of instance count. The number of max threads must be
+       *    more than 2 times the number of instance count.
+       */
+      assert((devinfo->max_tcs_threads / 2) > tcs_prog_data->instances);
+#endif
+
       hs.MaximumNumberofThreads = devinfo->max_tcs_threads - 1;
       hs.IncludeVertexHandles = true;
       hs.InstanceCount = tcs_prog_data->instances - 1;

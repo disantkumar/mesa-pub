@@ -55,6 +55,7 @@ struct lima_fs_shader_state {
    void *shader;
    int shader_size;
    int stack_size;
+   bool uses_discard;
    struct lima_bo *bo;
 };
 
@@ -186,6 +187,8 @@ struct lima_context {
       LIMA_CONTEXT_DIRTY_CONST_BUFF   = (1 << 13),
       LIMA_CONTEXT_DIRTY_TEXTURES     = (1 << 14),
    } dirty;
+
+   unsigned resolve;
 
    struct u_upload_mgr *uploader;
    struct blitter_context *blitter;

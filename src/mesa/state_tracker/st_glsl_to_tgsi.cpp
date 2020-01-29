@@ -2237,11 +2237,9 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
 
    case ir_unop_get_buffer_size: {
       ir_constant *const_offset = ir->operands[0]->as_constant();
-      int buf_base = ctx->st->has_hw_atomics
-         ? 0 : ctx->Const.Program[shader->Stage].MaxAtomicBuffers;
       st_src_reg buffer(
             PROGRAM_BUFFER,
-            buf_base + (const_offset ? const_offset->value.u[0] : 0),
+            const_offset ? const_offset->value.u[0] : 0,
             GLSL_TYPE_UINT);
       if (!const_offset) {
          buffer.reladdr = ralloc(mem_ctx, st_src_reg);
@@ -2390,6 +2388,13 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
    case ir_unop_ssbo_unsized_array_length:
    case ir_unop_atan:
    case ir_binop_atan2:
+   case ir_unop_clz:
+   case ir_binop_add_sat:
+   case ir_binop_sub_sat:
+   case ir_binop_abs_sub:
+   case ir_binop_avg:
+   case ir_binop_avg_round:
+   case ir_binop_mul_32x16:
       /* This operation is not supported, or should have already been handled.
        */
       assert(!"Invalid ir opcode in glsl_to_tgsi_visitor::visit()");
@@ -3449,7 +3454,9 @@ glsl_to_tgsi_visitor::visit_atomic_counter_intrinsic(ir_call *ir)
 
       resource = buffer;
    } else {
-      st_src_reg buffer(PROGRAM_BUFFER, location->data.binding,
+      st_src_reg buffer(PROGRAM_BUFFER,
+                        prog->info.num_ssbos +
+                        location->data.binding,
                         GLSL_TYPE_ATOMIC_UINT);
 
       if (offset.file != PROGRAM_UNDEFINED) {
@@ -3537,11 +3544,9 @@ glsl_to_tgsi_visitor::visit_ssbo_intrinsic(ir_call *ir)
    ir_rvalue *offset = ((ir_instruction *)param)->as_rvalue();
 
    ir_constant *const_block = block->as_constant();
-   int buf_base = st_context(ctx)->has_hw_atomics
-      ? 0 : ctx->Const.Program[shader->Stage].MaxAtomicBuffers;
    st_src_reg buffer(
          PROGRAM_BUFFER,
-         buf_base + (const_block ? const_block->value.u[0] : 0),
+         const_block ? const_block->value.u[0] : 0,
          GLSL_TYPE_UINT);
 
    if (!const_block) {
@@ -5874,10 +5879,10 @@ _mesa_sysval_to_semantic(unsigned sysval)
    case SYSTEM_VALUE_LOCAL_INVOCATION_INDEX:
    case SYSTEM_VALUE_GLOBAL_INVOCATION_ID:
    case SYSTEM_VALUE_VERTEX_CNT:
-   case SYSTEM_VALUE_BARYCENTRIC_PIXEL:
-   case SYSTEM_VALUE_BARYCENTRIC_SAMPLE:
-   case SYSTEM_VALUE_BARYCENTRIC_CENTROID:
-   case SYSTEM_VALUE_BARYCENTRIC_SIZE:
+   case SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL:
+   case SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE:
+   case SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID:
+   case SYSTEM_VALUE_BARYCENTRIC_PERSP_SIZE:
    default:
       assert(!"Unexpected SYSTEM_VALUE_ enum");
       return TGSI_SEMANTIC_COUNT;
@@ -7053,8 +7058,10 @@ st_translate_program(
 
       if (!st_context(ctx)->has_hw_atomics) {
          for (i = 0; i < prog->info.num_abos; i++) {
-            unsigned index = prog->sh.AtomicBuffers[i]->Binding;
-            assert(index < frag_const->MaxAtomicBuffers);
+            unsigned index = (prog->info.num_ssbos +
+                              prog->sh.AtomicBuffers[i]->Binding);
+            assert(prog->sh.AtomicBuffers[i]->Binding <
+                   frag_const->MaxAtomicBuffers);
             t->buffers[index] = ureg_DECL_buffer(ureg, index, true);
          }
       } else {
@@ -7069,11 +7076,7 @@ st_translate_program(
 
       assert(prog->info.num_ssbos <= frag_const->MaxShaderStorageBlocks);
       for (i = 0; i < prog->info.num_ssbos; i++) {
-         unsigned index = i;
-         if (!st_context(ctx)->has_hw_atomics)
-            index += frag_const->MaxAtomicBuffers;
-
-         t->buffers[index] = ureg_DECL_buffer(ureg, index, false);
+         t->buffers[i] = ureg_DECL_buffer(ureg, i, false);
       }
    }
 

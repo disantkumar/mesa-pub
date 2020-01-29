@@ -779,7 +779,7 @@ iris_emit_default_l3_config(struct iris_batch *batch,
    iris_emit_l3_config(batch, cfg, has_slm, wants_dc_cache);
 }
 
-#if GEN_GEN == 9 || GEN_GEN == 10
+#if GEN_GEN == 9
 static void
 iris_enable_obj_preemption(struct iris_batch *batch, bool enable)
 {
@@ -1015,11 +1015,6 @@ iris_init_render_context(struct iris_batch *batch)
    iris_emit_cmd(batch, GENX(3DSTATE_POLY_STIPPLE_OFFSET), foo);
 
    iris_alloc_push_constants(batch);
-
-#if GEN_GEN == 10
-   /* Gen11+ is enabled for us by the kernel. */
-   iris_enable_obj_preemption(batch, true);
-#endif
 }
 
 static void
@@ -4192,6 +4187,16 @@ iris_store_tcs_state(struct iris_context *ice,
    iris_pack_command(GENX(3DSTATE_HS), shader->derived_data, hs) {
       INIT_THREAD_DISPATCH_FIELDS(hs, Vertex, MESA_SHADER_TESS_CTRL);
 
+#if GEN_GEN >= 12
+      /* GEN:BUG:1604578095:
+       *
+       *    Hang occurs when the number of max threads is less than 2 times
+       *    the number of instance count. The number of max threads must be
+       *    more than 2 times the number of instance count.
+       */
+      assert((devinfo->max_tcs_threads / 2) > tcs_prog_data->instances);
+#endif
+
       hs.InstanceCount = tcs_prog_data->instances - 1;
       hs.MaximumNumberofThreads = devinfo->max_tcs_threads - 1;
       hs.IncludeVertexHandles = true;
@@ -5133,7 +5138,7 @@ genX(emit_aux_map_state)(struct iris_batch *batch)
        * cached translations.
        */
       uint64_t base_addr = gen_aux_map_get_base(aux_map_ctx);
-      assert(base_addr != 0 && ALIGN(base_addr, 32 * 1024) == base_addr);
+      assert(base_addr != 0 && align64(base_addr, 32 * 1024) == base_addr);
       iris_load_register_imm64(batch, GENX(GFX_AUX_TABLE_BASE_ADDR_num),
                                base_addr);
       batch->last_aux_map_state = aux_map_state_num;
@@ -6843,6 +6848,18 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
                                  0, NULL, 0, 0);
    }
 
+   /* GEN:BUG:1409226450, Wait for EU to be idle before pipe control which
+    * invalidates the instruction cache
+    */
+   if (GEN_GEN == 12 && (flags & PIPE_CONTROL_INSTRUCTION_INVALIDATE)) {
+      iris_emit_raw_pipe_control(batch,
+                                 "workaround: CS stall before instruction "
+                                 "cache invalidate",
+                                 PIPE_CONTROL_CS_STALL |
+                                 PIPE_CONTROL_STALL_AT_SCOREBOARD, bo, offset,
+                                 imm);
+   }
+
    if (GEN_GEN == 9 && IS_COMPUTE_PIPELINE(batch) && post_sync_flags) {
       /* Project: SKL / Argument: LRI Post Sync Operation [23]
        *
@@ -6856,17 +6873,6 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
       iris_emit_raw_pipe_control(batch,
                                  "workaround: CS stall before gpgpu post-sync",
                                  PIPE_CONTROL_CS_STALL, bo, offset, imm);
-   }
-
-   if (GEN_GEN == 10 && (flags & PIPE_CONTROL_RENDER_TARGET_FLUSH)) {
-      /* Cannonlake:
-       * "Before sending a PIPE_CONTROL command with bit 12 set, SW must issue
-       *  another PIPE_CONTROL with Render Target Cache Flush Enable (bit 12)
-       *  = 0 and Pipe Control Flush Enable (bit 7) = 1"
-       */
-      iris_emit_raw_pipe_control(batch,
-                                 "workaround: PC flush before RT flush",
-                                 PIPE_CONTROL_FLUSH_ENABLE, bo, offset, imm);
    }
 
    /* "Flush Types" workarounds ---------------------------------------------
@@ -6884,25 +6890,6 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
          post_sync_flags |= PIPE_CONTROL_WRITE_IMMEDIATE;
          non_lri_post_sync_flags |= PIPE_CONTROL_WRITE_IMMEDIATE;
          bo = batch->screen->workaround_bo;
-      }
-   }
-
-   /* #1130 from Gen10 workarounds page:
-    *
-    *    "Enable Depth Stall on every Post Sync Op if Render target Cache
-    *     Flush is not enabled in same PIPE CONTROL and Enable Pixel score
-    *     board stall if Render target cache flush is enabled."
-    *
-    * Applicable to CNL B0 and C0 steppings only.
-    *
-    * The wording here is unclear, and this workaround doesn't look anything
-    * like the internal bug report recommendations, but leave it be for now...
-    */
-   if (GEN_GEN == 10) {
-      if (flags & PIPE_CONTROL_RENDER_TARGET_FLUSH) {
-         flags |= PIPE_CONTROL_STALL_AT_SCOREBOARD;
-      } else if (flags & non_lri_post_sync_flags) {
-         flags |= PIPE_CONTROL_DEPTH_STALL;
       }
    }
 

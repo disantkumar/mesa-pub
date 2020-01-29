@@ -169,6 +169,7 @@ public:
    bool lower_simd_width();
    bool lower_barycentrics();
    bool lower_scoreboard();
+   bool lower_sub_sat();
    bool opt_combine_constants();
 
    void emit_dummy_fs();
@@ -411,6 +412,8 @@ private:
    void lower_mul_dword_inst(fs_inst *inst, bblock_t *block);
    void lower_mul_qword_inst(fs_inst *inst, bblock_t *block);
    void lower_mulh_inst(fs_inst *inst, bblock_t *block);
+
+   unsigned workgroup_size() const;
 };
 
 /**

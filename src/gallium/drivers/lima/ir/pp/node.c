@@ -348,6 +348,12 @@ const ppir_op_info ppir_op_infos[] = {
       .slots = (int []) {
       },
    },
+   [ppir_op_dummy] = {
+      .name = "dummy",
+      .type = ppir_node_type_alu,
+      .slots = (int []) {
+      },
+   },
 };
 
 void *ppir_node_create(ppir_block *block, ppir_op op, int index, unsigned mask)
@@ -726,6 +732,27 @@ ppir_node *ppir_node_insert_mov(ppir_node *node)
    return move;
 }
 
+ppir_node *ppir_node_insert_mov_all_blocks(ppir_node *old)
+{
+   ppir_node *move = ppir_node_insert_mov(old);
+   ppir_compiler *comp = old->block->comp;
+
+   list_for_each_entry(ppir_block, block, &comp->block_list, list) {
+      if (old->block == block)
+         continue;
+      list_for_each_entry_safe(ppir_node, node, &block->node_list, list) {
+         for (int i = 0; i < ppir_node_get_src_num(node); i++){
+            ppir_src *src = ppir_node_get_src(node, i);
+            if (!src)
+               continue;
+            if (src->node == old)
+               ppir_node_target_assign(src, move);
+         }
+      }
+   }
+
+   return move;
+}
 bool ppir_node_has_single_src_succ(ppir_node *node)
 {
    if (list_is_singular(&node->succ_list) &&
