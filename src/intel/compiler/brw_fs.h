@@ -107,6 +107,7 @@ public:
    void setup_cs_payload();
    bool fixup_sends_duplicate_payload();
    void fixup_3src_null_dest();
+   bool fixup_nomask_control_flow();
    void assign_curb_setup();
    void assign_urb_setup();
    void convert_attr_sources_to_hw_regs(fs_inst *inst);
@@ -415,6 +416,19 @@ private:
 
    unsigned workgroup_size() const;
 };
+
+/**
+ * Return the flag register used in fragment shaders to keep track of live
+ * samples.  On Gen7+ we use f1.0-f1.1 to allow discard jumps in SIMD32
+ * dispatch mode, while earlier generations are constrained to f0.1, which
+ * limits the dispatch width to SIMD16 for fragment shaders that use discard.
+ */
+static inline unsigned
+sample_mask_flag_subreg(const fs_visitor *shader)
+{
+   assert(shader->stage == MESA_SHADER_FRAGMENT);
+   return shader->devinfo->gen >= 7 ? 2 : 1;
+}
 
 /**
  * The fragment shader code generator.

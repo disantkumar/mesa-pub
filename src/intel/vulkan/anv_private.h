@@ -46,6 +46,7 @@
 #include "common/gen_clflush.h"
 #include "common/gen_decoder.h"
 #include "common/gen_gem.h"
+#include "common/gen_l3_config.h"
 #include "dev/gen_device_info.h"
 #include "blorp/blorp.h"
 #include "compiler/brw_compiler.h"
@@ -76,7 +77,6 @@ struct anv_image_view;
 struct anv_instance;
 
 struct gen_aux_map_context;
-struct gen_l3_config;
 struct gen_perf_config;
 
 #include <vulkan/vulkan.h>
@@ -2272,6 +2272,12 @@ enum anv_pipe_bits {
     * done by writing the AUX-TT register.
     */
    ANV_PIPE_AUX_TABLE_INVALIDATE_BIT         = (1 << 23),
+
+   /* This bit does not exist directly in PIPE_CONTROL. It means that a
+    * PIPE_CONTROL with a post-sync operation will follow. This is used to
+    * implement a workaround for Gen9.
+    */
+   ANV_PIPE_POST_SYNC_BIT                    = (1 << 24),
 };
 
 #define ANV_PIPE_FLUSH_BITS ( \
@@ -3287,6 +3293,12 @@ struct anv_format {
    bool can_ycbcr;
 };
 
+/**
+ * Return the aspect's _format_ plane, not its _memory_ plane (using the
+ * vocabulary of VK_EXT_image_drm_format_modifier). As a consequence, \a
+ * aspect_mask may contain VK_IMAGE_ASPECT_PLANE_*, but must not contain
+ * VK_IMAGE_ASPECT_MEMORY_PLANE_* .
+ */
 static inline uint32_t
 anv_image_aspect_to_plane(VkImageAspectFlags image_aspects,
                           VkImageAspectFlags aspect_mask)
@@ -3428,11 +3440,6 @@ struct anv_image {
     * single one with different offsets.
     */
    bool disjoint;
-
-   /* All the formats that can be used when creating views of this image
-    * are CCS_E compatible.
-    */
-   bool ccs_e_compatible;
 
    /* Image was created with external format. */
    bool external_format;
@@ -3869,10 +3876,6 @@ VkResult anv_image_create(VkDevice _device,
                           const struct anv_image_create_info *info,
                           const VkAllocationCallbacks* alloc,
                           VkImage *pImage);
-
-const struct anv_surface *
-anv_image_get_surface_for_aspect_mask(const struct anv_image *image,
-                                      VkImageAspectFlags aspect_mask);
 
 enum isl_format
 anv_isl_format_for_descriptor_type(VkDescriptorType type);

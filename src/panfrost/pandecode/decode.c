@@ -263,10 +263,16 @@ static const struct pandecode_flag_info mfbd_extra_flag_lo_info[] = {
 #undef FLAG_INFO
 
 #define FLAG_INFO(flag) { MALI_##flag, "MALI_" #flag }
-static const struct pandecode_flag_info shader_midgard1_flag_info [] = {
+static const struct pandecode_flag_info shader_midgard1_flag_lo_info [] = {
+        FLAG_INFO(WRITES_Z),
         FLAG_INFO(EARLY_Z),
         FLAG_INFO(READS_TILEBUFFER),
         FLAG_INFO(READS_ZS),
+        {}
+};
+
+static const struct pandecode_flag_info shader_midgard1_flag_hi_info [] = {
+        FLAG_INFO(WRITES_S),
         {}
 };
 #undef FLAG_INFO
@@ -660,6 +666,41 @@ pandecode_sfbd_format(struct mali_sfbd_format format)
         pandecode_log("},\n");
 }
 
+static void
+pandecode_shared_memory(const struct mali_shared_memory *desc, bool is_compute)
+{
+        pandecode_prop("stack_shift = 0x%x", desc->stack_shift);
+
+        if (desc->unk0)
+                pandecode_prop("unk0 = 0x%x", desc->unk0);
+
+        if (desc->shared_workgroup_count != 0x1F) {
+                pandecode_prop("shared_workgroup_count = %d", desc->shared_workgroup_count);
+                if (!is_compute)
+                        pandecode_msg("XXX: wrong workgroup count for noncompute\n");
+        }
+
+        if (desc->shared_unk1 || desc->shared_shift) {
+                pandecode_prop("shared_unk1 = %X", desc->shared_unk1);
+                pandecode_prop("shared_shift = %X", desc->shared_shift);
+
+                if (!is_compute)
+                        pandecode_msg("XXX: shared memory configured in noncompute shader");
+        }
+
+        if (desc->shared_zero) {
+                pandecode_msg("XXX: shared memory zero tripped\n");
+                pandecode_prop("shared_zero = 0x%" PRIx32, desc->shared_zero);
+        }
+
+        if (desc->shared_memory && !is_compute)
+                pandecode_msg("XXX: shared memory used in noncompute shader\n");
+
+        MEMORY_PROP(desc, scratchpad);
+        MEMORY_PROP(desc, shared_memory);
+        MEMORY_PROP(desc, unknown1);
+}
+
 static struct pandecode_fbd
 pandecode_sfbd(uint64_t gpu_va, int job_no, bool is_fragment, unsigned gpu_id)
 {
@@ -674,8 +715,11 @@ pandecode_sfbd(uint64_t gpu_va, int job_no, bool is_fragment, unsigned gpu_id)
         pandecode_log("struct mali_single_framebuffer framebuffer_%"PRIx64"_%d = {\n", gpu_va, job_no);
         pandecode_indent++;
 
-        pandecode_prop("unknown1 = 0x%" PRIx32, s->unknown1);
-        pandecode_prop("unknown2 = 0x%" PRIx32, s->unknown2);
+        pandecode_log(".shared_memory = {\n");
+        pandecode_indent++;
+        pandecode_shared_memory(&s->shared_memory, false);
+        pandecode_indent--;
+        pandecode_log("},\n");
 
         pandecode_sfbd_format(s->format);
 
@@ -742,7 +786,6 @@ pandecode_sfbd(uint64_t gpu_va, int job_no, bool is_fragment, unsigned gpu_id)
                 pandecode_prop("clear_stencil = 0x%x", s->clear_stencil);
         }
 
-        MEMORY_PROP(s, scratchpad);
         const struct midgard_tiler_descriptor t = s->tiler;
 
         bool has_hierarchy = !(gpu_id == 0x0720 || gpu_id == 0x0820 || gpu_id == 0x0830);
@@ -751,8 +794,6 @@ pandecode_sfbd(uint64_t gpu_va, int job_no, bool is_fragment, unsigned gpu_id)
         pandecode_indent--;
         pandecode_log("};\n");
 
-        pandecode_prop("zero0 = 0x%" PRIx64, s->zero0);
-        pandecode_prop("zero1 = 0x%" PRIx64, s->zero1);
         pandecode_prop("zero2 = 0x%" PRIx32, s->zero2);
         pandecode_prop("zero4 = 0x%" PRIx32, s->zero4);
         pandecode_prop("zero5 = 0x%" PRIx32, s->zero5);
@@ -778,20 +819,13 @@ static void
 pandecode_compute_fbd(uint64_t gpu_va, int job_no)
 {
         struct pandecode_mapped_memory *mem = pandecode_find_mapped_gpu_mem_containing(gpu_va);
-        const struct mali_compute_fbd *PANDECODE_PTR_VAR(s, mem, (mali_ptr) gpu_va);
+        const struct mali_shared_memory *PANDECODE_PTR_VAR(s, mem, (mali_ptr) gpu_va);
 
-        pandecode_log("struct mali_compute_fbd framebuffer_%"PRIx64"_%d = {\n", gpu_va, job_no);
+        pandecode_log("struct mali_shared_memory shared_%"PRIx64"_%d = {\n", gpu_va, job_no);
         pandecode_indent++;
-
-        pandecode_log(".unknown1 = {");
-
-        for (int i = 0; i < ARRAY_SIZE(s->unknown1); ++i)
-                pandecode_log_cont("%X, ", s->unknown1[i]);
-
-        pandecode_log("},\n");
-
+        pandecode_shared_memory(s, true);
         pandecode_indent--;
-        pandecode_log_cont("},\n");
+        pandecode_log("},\n");
 }
 
 /* Extracts the number of components associated with a Mali format */
@@ -959,16 +993,16 @@ pandecode_rt_format(struct mali_rt_format format)
 }
 
 static void
-pandecode_render_target(uint64_t gpu_va, unsigned job_no, const struct bifrost_framebuffer *fb)
+pandecode_render_target(uint64_t gpu_va, unsigned job_no, const struct mali_framebuffer *fb)
 {
-        pandecode_log("struct bifrost_render_target rts_list_%"PRIx64"_%d[] = {\n", gpu_va, job_no);
+        pandecode_log("struct mali_render_target rts_list_%"PRIx64"_%d[] = {\n", gpu_va, job_no);
         pandecode_indent++;
 
         for (int i = 0; i < (fb->rt_count_1 + 1); i++) {
-                mali_ptr rt_va = gpu_va + i * sizeof(struct bifrost_render_target);
+                mali_ptr rt_va = gpu_va + i * sizeof(struct mali_render_target);
                 struct pandecode_mapped_memory *mem =
                         pandecode_find_mapped_gpu_mem_containing(rt_va);
-                const struct bifrost_render_target *PANDECODE_PTR_VAR(rt, mem, (mali_ptr) rt_va);
+                const struct mali_render_target *PANDECODE_PTR_VAR(rt, mem, (mali_ptr) rt_va);
 
                 pandecode_log("{\n");
                 pandecode_indent++;
@@ -1024,49 +1058,18 @@ static struct pandecode_fbd
 pandecode_mfbd_bfr(uint64_t gpu_va, int job_no, bool is_fragment, bool is_compute)
 {
         struct pandecode_mapped_memory *mem = pandecode_find_mapped_gpu_mem_containing(gpu_va);
-        const struct bifrost_framebuffer *PANDECODE_PTR_VAR(fb, mem, (mali_ptr) gpu_va);
+        const struct mali_framebuffer *PANDECODE_PTR_VAR(fb, mem, (mali_ptr) gpu_va);
 
         struct pandecode_fbd info;
  
-        if (fb->sample_locations) {
-                /* The blob stores all possible sample locations in a single buffer
-                 * allocated on startup, and just switches the pointer when switching
-                 * MSAA state. For now, we just put the data into the cmdstream, but we
-                 * should do something like what the blob does with a real driver.
-                 *
-                 * There seem to be 32 slots for sample locations, followed by another
-                 * 16. The second 16 is just the center location followed by 15 zeros
-                 * in all the cases I've identified (maybe shader vs. depth/color
-                 * samples?).
-                 */
-
-                struct pandecode_mapped_memory *smem = pandecode_find_mapped_gpu_mem_containing(fb->sample_locations);
-
-                const u16 *PANDECODE_PTR_VAR(samples, smem, fb->sample_locations);
-
-                pandecode_log("uint16_t sample_locations_%d[] = {\n", job_no);
-                pandecode_indent++;
-
-                for (int i = 0; i < 32 + 16; i++) {
-                        pandecode_log("%d, %d,\n", samples[2 * i], samples[2 * i + 1]);
-                }
-
-                pandecode_indent--;
-                pandecode_log("};\n");
-        }
-
-        pandecode_log("struct bifrost_framebuffer framebuffer_%"PRIx64"_%d = {\n", gpu_va, job_no);
+        pandecode_log("struct mali_framebuffer framebuffer_%"PRIx64"_%d = {\n", gpu_va, job_no);
         pandecode_indent++;
 
-        pandecode_prop("stack_shift = 0x%x", fb->stack_shift);
-        pandecode_prop("unk0 = 0x%x", fb->unk0);
-
-        if (fb->sample_locations)
-                pandecode_prop("sample_locations = sample_locations_%d", job_no);
-
-        /* Assume that unknown1 was emitted in the last job for
-         * now */
-        MEMORY_PROP(fb, unknown1);
+        pandecode_log(".shared_memory = {\n");
+        pandecode_indent++;
+        pandecode_shared_memory(&fb->shared_memory, is_compute);
+        pandecode_indent--;
+        pandecode_log("},\n");
 
         info.width = fb->width1 + 1;
         info.height = fb->height1 + 1;
@@ -1092,12 +1095,6 @@ pandecode_mfbd_bfr(uint64_t gpu_va, int job_no, bool is_fragment, bool is_comput
         if (fb->clear_depth)
                 pandecode_prop("clear_depth = %f", fb->clear_depth);
 
-        /* TODO: What is this? Let's not blow up.. */
-        if (fb->unknown2 != 0x1F)
-                pandecode_prop("unknown2 = 0x%x", fb->unknown2);
-
-        pandecode_prop("unknown2 = 0x%x", fb->unknown2);
-        MEMORY_PROP(fb, scratchpad);
         const struct midgard_tiler_descriptor t = fb->tiler;
         if (!is_compute)
                 pandecode_midgard_tiler_descriptor(&t, fb->width1 + 1, fb->height1 + 1, is_fragment, true);
@@ -1113,15 +1110,15 @@ pandecode_mfbd_bfr(uint64_t gpu_va, int job_no, bool is_fragment, bool is_comput
         pandecode_indent--;
         pandecode_log("};\n");
 
-        gpu_va += sizeof(struct bifrost_framebuffer);
+        gpu_va += sizeof(struct mali_framebuffer);
 
         info.has_extra = (fb->mfbd_flags & MALI_MFBD_EXTRA) && is_fragment;
 
         if (info.has_extra) {
                 mem = pandecode_find_mapped_gpu_mem_containing(gpu_va);
-                const struct bifrost_fb_extra *PANDECODE_PTR_VAR(fbx, mem, (mali_ptr) gpu_va);
+                const struct mali_framebuffer_extra *PANDECODE_PTR_VAR(fbx, mem, (mali_ptr) gpu_va);
 
-                pandecode_log("struct bifrost_fb_extra fb_extra_%"PRIx64"_%d = {\n", gpu_va, job_no);
+                pandecode_log("struct mali_framebuffer_extra fb_extra_%"PRIx64"_%d = {\n", gpu_va, job_no);
                 pandecode_indent++;
 
                 MEMORY_PROP(fbx, checksum);
@@ -1137,7 +1134,7 @@ pandecode_mfbd_bfr(uint64_t gpu_va, int job_no, bool is_fragment, bool is_comput
                 pandecode_log_decoded_flags(mfbd_extra_flag_lo_info, fbx->flags_lo);
                 pandecode_log_cont(",\n");
 
-                pandecode_prop("zs_block = %s\n", pandecode_block_format(fbx->zs_block));
+                pandecode_prop("zs_block = %s", pandecode_block_format(fbx->zs_block));
 
                 if (fbx->zs_block == MALI_BLOCK_AFBC) {
                         pandecode_log(".ds_afbc = {\n");
@@ -1205,7 +1202,7 @@ pandecode_mfbd_bfr(uint64_t gpu_va, int job_no, bool is_fragment, bool is_comput
                 pandecode_indent--;
                 pandecode_log("};\n");
 
-                gpu_va += sizeof(struct bifrost_fb_extra);
+                gpu_va += sizeof(struct mali_framebuffer_extra);
         }
 
         if (is_fragment)
@@ -1786,15 +1783,15 @@ static void
 pandecode_uniform_buffers(mali_ptr pubufs, int ubufs_count, int job_no)
 {
         struct pandecode_mapped_memory *umem = pandecode_find_mapped_gpu_mem_containing(pubufs);
-        struct mali_uniform_buffer_meta *PANDECODE_PTR_VAR(ubufs, umem, pubufs);
+        uint64_t *PANDECODE_PTR_VAR(ubufs, umem, pubufs);
 
         for (int i = 0; i < ubufs_count; i++) {
-                unsigned size = (ubufs[i].size + 1) * 16;
-                mali_ptr addr = ubufs[i].ptr << 2;
+                unsigned size = (ubufs[i] & ((1 << 10) - 1)) * 16;
+                mali_ptr addr = (ubufs[i] >> 10) << 2;
 
                 pandecode_validate_buffer(addr, size);
 
-                char *ptr = pointer_as_memory_reference(ubufs[i].ptr << 2);
+                char *ptr = pointer_as_memory_reference(addr);
                 pandecode_log("ubuf_%d[%u] = %s;\n", i, size, ptr);
                 free(ptr);
         }
@@ -1810,29 +1807,6 @@ pandecode_uniforms(mali_ptr uniforms, unsigned uniform_count)
         char *ptr = pointer_as_memory_reference(uniforms);
         pandecode_log("vec4 uniforms[%u] = %s;\n", uniform_count, ptr);
         free(ptr);
-}
-
-static void
-pandecode_scratchpad(uintptr_t pscratchpad, int job_no, char *suffix)
-{
-
-        struct pandecode_mapped_memory *mem = pandecode_find_mapped_gpu_mem_containing(pscratchpad);
-
-        struct bifrost_scratchpad *PANDECODE_PTR_VAR(scratchpad, mem, pscratchpad);
-
-        if (scratchpad->zero) {
-                pandecode_msg("XXX: scratchpad zero tripped");
-                pandecode_prop("zero = 0x%x\n", scratchpad->zero);
-        }
-
-        pandecode_log("struct bifrost_scratchpad scratchpad_%"PRIx64"_%d%s = {\n", pscratchpad, job_no, suffix);
-        pandecode_indent++;
-
-        pandecode_prop("flags = 0x%x", scratchpad->flags);
-        MEMORY_PROP(scratchpad, gpu_scratchpad);
-
-        pandecode_indent--;
-        pandecode_log("};\n");
 }
 
 static const char *
@@ -1999,7 +1973,7 @@ pandecode_texture(mali_ptr u,
 
         if (!f.unknown2) {
                 pandecode_msg("XXX: expected unknown texture bit set\n");
-                pandecode_prop("unknown2 = %" PRId32, f.unknown1);
+                pandecode_prop("unknown2 = %" PRId32, f.unknown2);
         }
 
         if (t->swizzle_zero) {
@@ -2030,8 +2004,8 @@ pandecode_texture(mali_ptr u,
         /* Miptree for each face */
         if (f.type == MALI_TEX_CUBE)
                 bitmap_count *= 6;
-        else if (f.type == MALI_TEX_3D)
-                bitmap_count *= t->depth;
+        else if (f.type == MALI_TEX_3D && f.layout == MALI_TEXTURE_LINEAR)
+                bitmap_count *= (t->depth + 1);
 
         /* Array of textures */
         bitmap_count *= (t->array_size + 1);
@@ -2140,14 +2114,15 @@ pandecode_vertex_tiler_postfix_pre(
                 .rt_count = 1
         };
 
-        if (is_bifrost)
-                pandecode_scratchpad(p->framebuffer & ~1, job_no, suffix);
-        else if (p->framebuffer & MALI_MFBD)
-                fbd_info = pandecode_mfbd_bfr((u64) ((uintptr_t) p->framebuffer) & FBD_MASK, job_no, false, job_type == JOB_TYPE_COMPUTE);
+        if (is_bifrost) {
+                pandecode_log_cont("\t/* %X %/\n", p->shared_memory & 1);
+                pandecode_compute_fbd(p->shared_memory & ~1, job_no);
+        } else if (p->shared_memory & MALI_MFBD)
+                fbd_info = pandecode_mfbd_bfr((u64) ((uintptr_t) p->shared_memory) & FBD_MASK, job_no, false, job_type == JOB_TYPE_COMPUTE);
         else if (job_type == JOB_TYPE_COMPUTE)
-                pandecode_compute_fbd((u64) (uintptr_t) p->framebuffer, job_no);
+                pandecode_compute_fbd((u64) (uintptr_t) p->shared_memory, job_no);
         else
-                fbd_info = pandecode_sfbd((u64) (uintptr_t) p->framebuffer, job_no, false, gpu_id);
+                fbd_info = pandecode_sfbd((u64) (uintptr_t) p->shared_memory, job_no, false, gpu_id);
 
         int varying_count = 0, attribute_count = 0, uniform_count = 0, uniform_buffer_count = 0;
         int texture_count = 0, sampler_count = 0;
@@ -2213,19 +2188,21 @@ pandecode_vertex_tiler_postfix_pre(
                 if (is_bifrost) {
                         pandecode_prop("bifrost1.unk1 = 0x%" PRIx32, s->bifrost1.unk1);
                 } else {
-                        bool helpers = s->midgard1.flags & MALI_HELPER_INVOCATIONS;
-                        s->midgard1.flags &= ~MALI_HELPER_INVOCATIONS;
+                        bool helpers = s->midgard1.flags_lo & MALI_HELPER_INVOCATIONS;
+                        s->midgard1.flags_lo &= ~MALI_HELPER_INVOCATIONS;
 
                         if (helpers != info.helper_invocations) {
                                 pandecode_msg("XXX: expected helpers %u but got %u\n",
                                                 info.helper_invocations, helpers);
                         }
 
-                        pandecode_log(".midgard1.flags = ");
-                        pandecode_log_decoded_flags(shader_midgard1_flag_info, s->midgard1.flags);
+                        pandecode_log(".midgard1.flags_lo = ");
+                        pandecode_log_decoded_flags(shader_midgard1_flag_lo_info, s->midgard1.flags_lo);
                         pandecode_log_cont(",\n");
 
-                        pandecode_prop("midgard1.unknown2 = 0x%" PRIx32, s->midgard1.unknown2);
+                        pandecode_log(".midgard1.flags_hi = ");
+                        pandecode_log_decoded_flags(shader_midgard1_flag_hi_info, s->midgard1.flags_hi);
+                        pandecode_log_cont(",\n");
                 }
 
                 if (s->depth_units || s->depth_factor) {
@@ -2293,8 +2270,10 @@ pandecode_vertex_tiler_postfix_pre(
                         pandecode_log("},\n");
                 }
 
-                if (s->unknown2_8)
-                        pandecode_prop("unknown2_8 = 0x%" PRIx32, s->unknown2_8);
+                if (s->padding) {
+                        pandecode_msg("XXX: shader padding tripped\n");
+                        pandecode_prop("padding = 0x%" PRIx32, s->padding);
+                }
 
                 if (!is_bifrost) {
                         /* TODO: Blend shaders routing/disasm */
@@ -2310,7 +2289,7 @@ pandecode_vertex_tiler_postfix_pre(
                 /* MRT blend fields are used whenever MFBD is used, with
                  * per-RT descriptors */
 
-                if (job_type == JOB_TYPE_TILER && p->framebuffer & MALI_MFBD) {
+                if (job_type == JOB_TYPE_TILER && p->shared_memory & MALI_MFBD) {
                         void* blend_base = (void *) (s + 1);
 
                         for (unsigned i = 0; i < fbd_info.rt_count; i++) {
@@ -2760,9 +2739,6 @@ pandecode_fragment_job(const struct pandecode_mapped_memory *mem,
 
         bool is_mfbd = s->framebuffer & MALI_MFBD;
 
-        /* Bifrost theoretically may retain support for SFBD on compute jobs,
-         * but for graphics workloads with a FRAGMENT payload, use MFBD */
-
         if (!is_mfbd && is_bifrost)
                 pandecode_msg("XXX: Bifrost fragment must use MFBD\n");
 
@@ -2843,16 +2819,20 @@ pandecode_fragment_job(const struct pandecode_mapped_memory *mem,
         return sizeof(*s);
 }
 
-static int job_descriptor_number = 0;
+/* Entrypoint to start tracing. jc_gpu_va is the GPU address for the first job
+ * in the chain; later jobs are found by walking the chain. Bifrost is, well,
+ * if it's bifrost or not. GPU ID is the more finegrained ID (at some point, we
+ * might wish to combine this with the bifrost parameter) because some details
+ * are model-specific even within a particular architecture. Minimal traces
+ * *only* examine the job descriptors, skipping printing entirely if there is
+ * no faults, and only descends into the payload if there are faults. This is
+ * useful for looking for faults without the overhead of invasive traces. */
 
-int
-pandecode_jc(mali_ptr jc_gpu_va, bool bifrost, unsigned gpu_id)
+void
+pandecode_jc(mali_ptr jc_gpu_va, bool bifrost, unsigned gpu_id, bool minimal)
 {
         struct mali_job_descriptor_header *h;
-
-        int start_number = 0;
-
-        bool first = true;
+        unsigned job_descriptor_number = 0;
 
         do {
                 struct pandecode_mapped_memory *mem =
@@ -2874,8 +2854,9 @@ pandecode_jc(mali_ptr jc_gpu_va, bool bifrost, unsigned gpu_id)
 
                 int job_no = job_descriptor_number++;
 
-                if (first)
-                        start_number = job_no;
+                /* If the job is good to go, skip it in minimal mode */
+                if (minimal && (h->exception_status == 0x0 || h->exception_status == 0x1))
+                        continue;
 
                 pandecode_log("struct mali_job_descriptor_header job_%"PRIx64"_%d = {\n", jc_gpu_va, job_no);
                 pandecode_indent++;
@@ -2914,12 +2895,6 @@ pandecode_jc(mali_ptr jc_gpu_va, bool bifrost, unsigned gpu_id)
 
                 pandecode_indent--;
                 pandecode_log("};\n");
-
-                /* Do not touch the field yet -- decode the payload first, and
-                 * don't touch that either. This is essential for the uploads
-                 * to occur in sequence and therefore be dynamically allocated
-                 * correctly. Do note the size, however, for that related
-                 * reason. */
 
                 switch (h->job_type) {
                 case JOB_TYPE_WRITE_VALUE: {
@@ -2965,17 +2940,5 @@ pandecode_jc(mali_ptr jc_gpu_va, bool bifrost, unsigned gpu_id)
                 default:
                         break;
                 }
-
-                /* Handle linkage */
-
-                if (!first) {
-                        pandecode_log("((struct mali_job_descriptor_header *) (uintptr_t) job_%d_p)->", job_no - 1);
-                        pandecode_log_cont("next_job = job_%d_p;\n\n", job_no);
-                }
-
-                first = false;
-
         } while ((jc_gpu_va = h->next_job));
-
-        return start_number;
 }

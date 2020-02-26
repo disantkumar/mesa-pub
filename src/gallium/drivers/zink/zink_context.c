@@ -203,7 +203,7 @@ image_view_type(enum pipe_texture_target target)
    case PIPE_TEXTURE_CUBE: return VK_IMAGE_VIEW_TYPE_CUBE;
    case PIPE_TEXTURE_CUBE_ARRAY: return VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
    case PIPE_TEXTURE_3D: return VK_IMAGE_VIEW_TYPE_3D;
-   case PIPE_TEXTURE_RECT: return VK_IMAGE_VIEW_TYPE_2D; /* not sure */
+   case PIPE_TEXTURE_RECT: return VK_IMAGE_VIEW_TYPE_2D;
    default:
       unreachable("unexpected target");
    }
@@ -1170,6 +1170,12 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    if (!ctx->program_cache || !ctx->render_pass_cache ||
        !ctx->framebuffer_cache)
+      goto fail;
+
+   const uint8_t data[] = { 0 };
+   ctx->dummy_buffer = pipe_buffer_create_with_data(&ctx->base,
+      PIPE_BIND_VERTEX_BUFFER, PIPE_USAGE_IMMUTABLE, sizeof(data), data);
+   if (!ctx->dummy_buffer)
       goto fail;
 
    ctx->dirty_program = true;

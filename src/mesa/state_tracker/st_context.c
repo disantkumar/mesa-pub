@@ -105,6 +105,9 @@ st_Enable(struct gl_context *ctx, GLenum cap, GLboolean state)
    case GL_DEBUG_OUTPUT_SYNCHRONOUS:
       st_update_debug_callback(st);
       break;
+   case GL_BLACKHOLE_RENDER_INTEL:
+      st->pipe->set_frontend_noop(st->pipe, ctx->IntelBlackholeRender);
+      break;
    default:
       break;
    }
@@ -571,10 +574,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
 
    st->ctx = ctx;
    st->pipe = pipe;
-
-   /* state tracker needs the VBO module */
-   _vbo_CreateContext(ctx);
-
    st->dirty = ST_ALL_STATES_MASK;
 
    st->can_bind_const_buffer_as_vertex =
@@ -617,17 +616,9 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       st->util_velems[2].src_format = PIPE_FORMAT_R32G32_FLOAT;
    }
 
-   /* we want all vertex data to be placed in buffer objects */
-   vbo_use_buffer_objects(ctx);
-
-
-   /* make sure that no VBOs are left mapped when we're drawing. */
-   vbo_always_unmap_buffers(ctx);
-
    /* Need these flags:
     */
    ctx->FragmentProgram._MaintainTexEnvProgram = GL_TRUE;
-
    ctx->VertexProgram._MaintainTnlProgram = GL_TRUE;
 
    if (no_error)
@@ -680,8 +671,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       screen->get_param(screen, PIPE_CAP_INDEP_BLEND_FUNC);
    st->needs_rgb_dst_alpha_override =
       screen->get_param(screen, PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND);
-   st->has_signed_vertex_buffer_offset =
-      screen->get_param(screen, PIPE_CAP_SIGNED_VERTEX_BUFFER_OFFSET);
    st->lower_flatshade =
       !screen->get_param(screen, PIPE_CAP_FLATSHADE);
    st->lower_alpha_test =
@@ -815,6 +804,11 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       st_destroy_context_priv(st, false);
       return NULL;
    }
+
+   /* This must be done after extensions are initialized to enable persistent
+    * mappings immediately.
+    */
+   _vbo_CreateContext(ctx, true);
 
    _mesa_initialize_dispatch_tables(ctx);
    _mesa_initialize_vbo_vtxfmt(ctx);

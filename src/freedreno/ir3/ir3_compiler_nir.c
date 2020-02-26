@@ -1306,12 +1306,12 @@ static struct ir3_instruction *
 get_frag_coord(struct ir3_context *ctx)
 {
 	if (!ctx->frag_coord) {
-		struct ir3_block *b = ctx->block;
+		struct ir3_block *b = ctx->in_block;
 		struct ir3_instruction *xyzw[4];
 		struct ir3_instruction *hw_frag_coord;
 
 		hw_frag_coord = create_sysval_input(ctx, SYSTEM_VALUE_FRAG_COORD, 0xf);
-		ir3_split_dest(ctx->block, xyzw, hw_frag_coord, 0, 4);
+		ir3_split_dest(b, xyzw, hw_frag_coord, 0, 4);
 
 		/* for frag_coord.xy, we get unsigned values.. we need
 		 * to subtract (integer) 8 and divide by 16 (right-
@@ -1780,6 +1780,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		cond->regs[0]->flags &= ~IR3_REG_SSA;
 
 		kill = ir3_KILL(b, cond, 0);
+		kill->regs[1]->num = regid(REG_P0, 0);
 		array_insert(ctx->ir, ctx->ir->predicates, kill);
 
 		array_insert(b, b->keeps, kill);
@@ -3406,10 +3407,6 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		goto out;
 	}
 
-	if (compiler->gpu_id >= 600) {
-		ir3_a6xx_fixup_atomic_dests(ir, so);
-	}
-
 	ir3_debug_print(ir, "AFTER SCHED");
 
 	/* Pre-assign VS inputs on a6xx+ binning pass shader, to align
@@ -3482,7 +3479,14 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		goto out;
 	}
 
-	ir3_debug_print(ir, "AFTER RA");
+	ir3_postsched(ctx);
+	ir3_debug_print(ir, "AFTER POSTSCHED");
+
+	if (compiler->gpu_id >= 600) {
+		if (ir3_a6xx_fixup_atomic_dests(ir, so)) {
+			ir3_debug_print(ir, "AFTER ATOMIC FIXUP");
+		}
+	}
 
 	if (so->type == MESA_SHADER_FRAGMENT)
 		pack_inlocs(ctx);

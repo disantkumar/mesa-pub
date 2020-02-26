@@ -37,6 +37,7 @@
 #include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/macros.h"
+#include "util/format/u_format.h"
 #include "compiler/nir_types.h"
 #include "compiler/shader_enums.h"
 #include "compiler/shader_info.h"
@@ -525,8 +526,8 @@ typedef struct nir_variable {
 
       union {
          struct {
-            /** Image internal format if specified explicitly, otherwise GL_NONE. */
-            uint16_t format; /* GLenum */
+            /** Image internal format if specified explicitly, otherwise PIPE_FORMAT_NONE. */
+            enum pipe_format format;
          } image;
 
          struct {
@@ -576,6 +577,14 @@ typedef struct nir_variable {
     * Most of the rest of NIR ignores this field or asserts that it's NULL.
     */
    nir_constant *constant_initializer;
+
+   /**
+    * Global variable assigned in the initializer of the variable
+    * This field should only be used temporarily by creators of NIR shaders
+    * and then lower_constant_initializers can be used to get rid of them.
+    * Most of the rest of NIR ignores this field or asserts that it's NULL.
+    */
+   struct nir_variable *pointer_initializer;
 
    /**
     * For variables that are in an interface block or are an instance of an
@@ -1719,7 +1728,7 @@ INTRINSIC_IDX_ACCESSORS(image_array, IMAGE_ARRAY, bool)
 INTRINSIC_IDX_ACCESSORS(access, ACCESS, enum gl_access_qualifier)
 INTRINSIC_IDX_ACCESSORS(src_access, SRC_ACCESS, enum gl_access_qualifier)
 INTRINSIC_IDX_ACCESSORS(dst_access, DST_ACCESS, enum gl_access_qualifier)
-INTRINSIC_IDX_ACCESSORS(format, FORMAT, unsigned)
+INTRINSIC_IDX_ACCESSORS(format, FORMAT, enum pipe_format)
 INTRINSIC_IDX_ACCESSORS(align_mul, ALIGN_MUL, unsigned)
 INTRINSIC_IDX_ACCESSORS(align_offset, ALIGN_OFFSET, unsigned)
 INTRINSIC_IDX_ACCESSORS(desc_type, DESC_TYPE, unsigned)
@@ -3839,7 +3848,7 @@ bool nir_lower_vars_to_ssa(nir_shader *shader);
 bool nir_remove_dead_derefs(nir_shader *shader);
 bool nir_remove_dead_derefs_impl(nir_function_impl *impl);
 bool nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes);
-bool nir_lower_constant_initializers(nir_shader *shader,
+bool nir_lower_variable_initializers(nir_shader *shader,
                                      nir_variable_mode modes);
 
 bool nir_move_vec_src_uses_to_dest(nir_shader *shader);

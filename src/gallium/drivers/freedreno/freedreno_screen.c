@@ -91,6 +91,7 @@ static const struct debug_named_value debug_options[] = {
 		{"noubwc",    FD_DBG_NOUBWC, "Disable UBWC for all internal buffers"},
 		{"nolrz",     FD_DBG_NOLRZ,  "Disable LRZ (a6xx)"},
 		{"notile",    FD_DBG_NOTILE, "Disable tiling for all internal buffers"},
+		{"layout",    FD_DBG_LAYOUT, "Dump resource layouts"},
 		DEBUG_NAMED_VALUE_END
 };
 
@@ -154,6 +155,7 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 		FREE(screen->ro);
 
 	fd_bc_fini(&screen->batch_cache);
+	fd_gmem_screen_fini(pscreen);
 
 	slab_destroy_parent(&screen->transfer_pool);
 
@@ -969,6 +971,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 
 	fd_resource_screen_init(pscreen);
 	fd_query_screen_init(pscreen);
+	fd_gmem_screen_init(pscreen);
 
 	pscreen->get_name = fd_screen_get_name;
 	pscreen->get_vendor = fd_screen_get_vendor;
@@ -981,15 +984,6 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	pscreen->fence_get_fd = fd_fence_get_fd;
 
 	pscreen->query_dmabuf_modifiers = fd_screen_query_dmabuf_modifiers;
-
-	if (!screen->supported_modifiers) {
-		static const uint64_t supported_modifiers[] = {
-			DRM_FORMAT_MOD_LINEAR,
-		};
-
-		screen->supported_modifiers = supported_modifiers;
-		screen->num_supported_modifiers = ARRAY_SIZE(supported_modifiers);
-	}
 
 	slab_create_parent(&screen->transfer_pool, sizeof(struct fd_transfer), 16);
 

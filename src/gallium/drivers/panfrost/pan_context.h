@@ -52,17 +52,6 @@ struct prim_convert_context;
 
 #define MAX_VARYINGS   4096
 
-//#define PAN_DIRTY_CLEAR	     (1 << 0)
-#define PAN_DIRTY_RASTERIZER (1 << 2)
-#define PAN_DIRTY_FS	     (1 << 3)
-#define PAN_DIRTY_FRAG_CORE  (PAN_DIRTY_FS) /* Dirty writes are tied */
-#define PAN_DIRTY_VS	     (1 << 4)
-#define PAN_DIRTY_VERTEX     (1 << 5)
-#define PAN_DIRTY_VERT_BUF   (1 << 6)
-//#define PAN_DIRTY_VIEWPORT   (1 << 7)
-#define PAN_DIRTY_SAMPLERS   (1 << 8)
-#define PAN_DIRTY_TEXTURES   (1 << 9)
-
 #define SET_BIT(lval, bit, cond) \
 	if (cond) \
 		lval |= (bit); \
@@ -134,9 +123,6 @@ struct panfrost_context {
          * stencil/depth tests, etc. Refer to the presentations. */
 
         struct mali_shader_meta fragment_shader_core;
-
-        /* Per-draw Dirty flags are setup like any other driver */
-        int dirty;
 
         unsigned vertex_count;
         unsigned instance_count;
@@ -210,10 +196,13 @@ struct panfrost_shader_state {
         int uniform_count;
         bool can_discard;
         bool writes_point_size;
+        bool writes_depth;
+        bool writes_stencil;
         bool reads_point_coord;
         bool reads_face;
         bool reads_frag_coord;
         unsigned stack_size;
+        unsigned shared_size;
 
         struct mali_attr_meta varyings[PIPE_MAX_ATTRIBS];
         gl_varying_slot varyings_loc[PIPE_MAX_ATTRIBS];
@@ -295,9 +284,6 @@ panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data);
 struct panfrost_transfer
 panfrost_vertex_tiler_job(struct panfrost_context *ctx, bool is_tiler);
 
-unsigned
-panfrost_get_default_swizzle(unsigned components);
-
 void
 panfrost_flush(
         struct pipe_context *pipe,
@@ -317,8 +303,7 @@ struct midgard_tiler_descriptor
 panfrost_emit_midg_tiler(struct panfrost_batch *batch, unsigned vertex_count);
 
 mali_ptr
-panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws,
-                      struct mali_job_descriptor_header **header_cpu);
+panfrost_fragment_job(struct panfrost_batch *batch, bool has_draws);
 
 void
 panfrost_shader_compile(

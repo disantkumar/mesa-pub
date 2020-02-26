@@ -497,8 +497,6 @@ optimizations.extend([
    (('umin', ('umin', a, b), b), ('umin', a, b)),
    (('imin', ('imin', a, b), b), ('imin', a, b)),
    (('iand@32', a, ('inot', ('ishr', a, 31))), ('imax', a, 0)),
-   (('fmax', a, ('fneg', a)), ('fabs', a)),
-   (('imax', a, ('ineg', a)), ('iabs', a)),
    (('fmin', a, ('fneg', a)), ('fneg', ('fabs', a))),
    (('imin', a, ('ineg', a)), ('ineg', ('iabs', a))),
    (('fmin', a, ('fneg', ('fabs', a))), ('fneg', ('fabs', a))),
@@ -1279,7 +1277,7 @@ for bit_size in [8, 16, 32, 64]:
                                 ('bcsel', ('ilt', a, ('isub', a, b)), intmin, ('isub', a, b))), 'options->lower_add_sat'),
    ]
 
-invert = OrderedDict([('feq', 'fne'), ('fne', 'feq'), ('fge', 'flt'), ('flt', 'fge')])
+invert = OrderedDict([('feq', 'fne'), ('fne', 'feq')])
 
 for left, right in itertools.combinations_with_replacement(invert.keys(), 2):
    optimizations.append((('inot', ('ior(is_used_once)', (left, a, b), (right, c, d))),

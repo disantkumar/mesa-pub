@@ -290,6 +290,31 @@ intel_glFlush(struct gl_context *ctx)
 }
 
 static void
+intel_glEnable(struct gl_context *ctx, GLenum cap, GLboolean state)
+{
+   struct brw_context *brw = brw_context(ctx);
+
+   switch (cap) {
+   case GL_BLACKHOLE_RENDER_INTEL:
+      brw->frontend_noop = state;
+      intel_batchbuffer_flush(brw);
+      intel_batchbuffer_maybe_noop(brw);
+      /* Because we started previous batches with a potential
+       * MI_BATCH_BUFFER_END if NOOP was enabled, that means that anything
+       * that was ever emitted after that never made it to the HW. So when the
+       * blackhole state changes from NOOP->!NOOP reupload the entire state.
+       */
+      if (!brw->frontend_noop) {
+         brw->NewGLState = ~0u;
+         brw->ctx.NewDriverState = ~0ull;
+      }
+      break;
+   default:
+      break;
+   }
+}
+
+static void
 intel_finish(struct gl_context * ctx)
 {
    struct brw_context *brw = brw_context(ctx);
@@ -318,6 +343,7 @@ brw_init_driver_functions(struct brw_context *brw,
    if (!brw->driContext->driScreenPriv->dri2.useInvalidate)
       functions->Viewport = intel_viewport;
 
+   functions->Enable = intel_glEnable;
    functions->Flush = intel_glFlush;
    functions->Finish = intel_finish;
    functions->GetString = intel_get_string;
@@ -1000,7 +1026,7 @@ brwCreateContext(gl_api api,
       _swrast_CreateContext(ctx);
    }
 
-   _vbo_CreateContext(ctx);
+   _vbo_CreateContext(ctx, true);
    if (ctx->swrast_context) {
       _tnl_CreateContext(ctx);
       TNL_CONTEXT(ctx)->Driver.RunPipeline = _tnl_run_pipeline;
@@ -1133,9 +1159,6 @@ brwCreateContext(gl_api api,
 
    if (ctx->Extensions.INTEL_performance_query)
       brw_init_performance_queries(brw);
-
-   vbo_use_buffer_objects(ctx);
-   vbo_always_unmap_buffers(ctx);
 
    brw->ctx.Cache = brw->screen->disk_cache;
 
@@ -1523,8 +1546,10 @@ intel_prepare_render(struct brw_context *brw)
     * that will happen next will probably dirty the front buffer.  So
     * mark it as dirty here.
     */
-   if (_mesa_is_front_buffer_drawing(ctx->DrawBuffer))
+   if (_mesa_is_front_buffer_drawing(ctx->DrawBuffer) &&
+       ctx->DrawBuffer != _mesa_get_incomplete_framebuffer()) {
       brw->front_buffer_dirty = true;
+   }
 
    if (brw->is_shared_buffer_bound) {
       /* Subsequent rendering will probably dirty the shared buffer. */

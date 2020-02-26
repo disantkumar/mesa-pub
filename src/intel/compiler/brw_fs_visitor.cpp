@@ -455,7 +455,7 @@ fs_visitor::emit_single_fb_write(const fs_builder &bld,
 
    if (prog_data->uses_kill) {
       write->predicate = BRW_PREDICATE_NORMAL;
-      write->flag_subreg = 1;
+      write->flag_subreg = sample_mask_flag_subreg(this);
    }
 
    return write;
@@ -493,7 +493,7 @@ fs_visitor::emit_fb_writes()
     * so we compute if we need replicate alpha and emit alpha to coverage
     * workaround here.
     */
-   prog_data->replicate_alpha = key->alpha_test_replicate_alpha ||
+   const bool replicate_alpha = key->alpha_test_replicate_alpha ||
       (key->nr_color_regions > 1 && key->alpha_to_coverage &&
        (sample_mask.file == BAD_FILE || devinfo->gen == 6));
 
@@ -506,7 +506,7 @@ fs_visitor::emit_fb_writes()
          ralloc_asprintf(this->mem_ctx, "FB write target %d", target));
 
       fs_reg src0_alpha;
-      if (devinfo->gen >= 6 && prog_data->replicate_alpha && target != 0)
+      if (devinfo->gen >= 6 && replicate_alpha && target != 0)
          src0_alpha = offset(outputs[0], bld, 3);
 
       inst = emit_single_fb_write(abld, this->outputs[target],
@@ -537,6 +537,18 @@ fs_visitor::emit_fb_writes()
 
    inst->last_rt = true;
    inst->eot = true;
+
+   if (devinfo->gen == 11 && prog_data->dual_src_blend) {
+      /* The dual-source RT write messages fail to release the thread
+       * dependency on ICL with SIMD32 dispatch, leading to hangs.
+       *
+       * XXX - Emit an extra single-source NULL RT-write marked LastRT in
+       *       order to release the thread dependency without disabling
+       *       SIMD32.
+       */
+      limit_dispatch_width(16, "Dual source blending unsupported "
+                           "in SIMD32 mode.\n");
+   }
 }
 
 void

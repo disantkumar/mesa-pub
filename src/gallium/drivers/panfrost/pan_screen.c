@@ -245,6 +245,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return (int)(system_memory >> 20);
         }
 
+        case PIPE_CAP_SHADER_STENCIL_EXPORT:
+                return 1;
+
         case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
                 return 4;
 
@@ -357,7 +360,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 0;
 
         default:
-                fprintf(stderr, "unknown shader param %d\n", param);
+                DBG("unknown shader param %d\n", param);
                 return 0;
         }
 
@@ -734,7 +737,7 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         if (ro) {
                 screen->ro = renderonly_dup(ro);
                 if (!screen->ro) {
-                        fprintf(stderr, "Failed to dup renderonly object\n");
+                        DBG("Failed to dup renderonly object\n");
                         free(screen);
                         return NULL;
                 }
@@ -771,8 +774,8 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         for (unsigned i = 0; i < ARRAY_SIZE(screen->bo_cache.buckets); ++i)
                 list_inithead(&screen->bo_cache.buckets[i]);
 
-        if (pan_debug & PAN_DBG_TRACE)
-                pandecode_initialize();
+        if (pan_debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
+                pandecode_initialize(!(pan_debug & PAN_DBG_TRACE));
 
         screen->base.destroy = panfrost_destroy_screen;
 

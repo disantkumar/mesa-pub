@@ -31,6 +31,7 @@
 #include "util/u_transfer.h"
 #include "util/u_surface.h"
 #include "util/hash_table.h"
+#include "util/ralloc.h"
 #include "util/u_drm.h"
 #include "renderonly/renderonly.h"
 
@@ -594,8 +595,7 @@ lima_transfer_map(struct pipe_context *pctx,
     * range, so no need to sync */
    if (pres->usage != PIPE_USAGE_STREAM) {
       if (usage & PIPE_TRANSFER_READ_WRITE) {
-         if (lima_need_flush(ctx, bo, usage & PIPE_TRANSFER_WRITE))
-            lima_flush(ctx);
+         lima_flush_job_accessing_bo(ctx, bo, usage & PIPE_TRANSFER_WRITE);
 
          unsigned op = usage & PIPE_TRANSFER_WRITE ?
             LIMA_GEM_WAIT_WRITE : LIMA_GEM_WAIT_READ;

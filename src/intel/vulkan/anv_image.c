@@ -306,8 +306,9 @@ add_aux_state_tracking_buffer(struct anv_image *image,
  * image's memory requirements (that is, the image's size and alignment).
  */
 static VkResult
-make_surface(struct anv_device *dev,
+make_surface(struct anv_device *device,
              struct anv_image *image,
+             const VkImageFormatListCreateInfoKHR *fmt_list,
              uint32_t stride,
              isl_tiling_flags_t tiling_flags,
              isl_surf_usage_flags_t isl_extra_usage_flags,
@@ -325,7 +326,7 @@ make_surface(struct anv_device *dev,
 
    const unsigned plane = anv_image_aspect_to_plane(image->aspects, aspect);
    const  struct anv_format_plane plane_format =
-      anv_get_format_plane(&dev->info, image->vk_format, aspect, image->tiling);
+      anv_get_format_plane(&device->info, image->vk_format, aspect, image->tiling);
    struct anv_surface *anv_surf = &image->planes[plane].surface;
 
    const isl_surf_usage_flags_t usage =
@@ -340,7 +341,7 @@ make_surface(struct anv_device *dev,
     */
    bool needs_shadow = false;
    isl_surf_usage_flags_t shadow_usage = 0;
-   if (dev->info.gen <= 8 &&
+   if (device->info.gen <= 8 &&
        (image->create_flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) &&
        image->tiling == VK_IMAGE_TILING_OPTIMAL) {
       assert(isl_format_is_compressed(plane_format.isl_format));
@@ -350,7 +351,7 @@ make_surface(struct anv_device *dev,
                      (usage & ISL_SURF_USAGE_CUBE_BIT);
    }
 
-   if (dev->info.gen <= 7 &&
+   if (device->info.gen <= 7 &&
        aspect == VK_IMAGE_ASPECT_STENCIL_BIT &&
        (image->stencil_usage & VK_IMAGE_USAGE_SAMPLED_BIT)) {
       needs_shadow = true;
@@ -358,7 +359,7 @@ make_surface(struct anv_device *dev,
                      (usage & ISL_SURF_USAGE_CUBE_BIT);
    }
 
-   ok = isl_surf_init(&dev->isl_dev, &anv_surf->isl,
+   ok = isl_surf_init(&device->isl_dev, &anv_surf->isl,
       .dim = vk_to_isl_surf_dim[image->type],
       .format = plane_format.isl_format,
       .width = image->extent.width / plane_format.denominator_scales[0],
@@ -386,7 +387,7 @@ make_surface(struct anv_device *dev,
     * W-tiled images.
     */
    if (needs_shadow) {
-      ok = isl_surf_init(&dev->isl_dev, &image->planes[plane].shadow_surface.isl,
+      ok = isl_surf_init(&device->isl_dev, &image->planes[plane].shadow_surface.isl,
          .dim = vk_to_isl_surf_dim[image->type],
          .format = plane_format.isl_format,
          .width = image->extent.width,
@@ -408,9 +409,10 @@ make_surface(struct anv_device *dev,
       add_surface(image, &image->planes[plane].shadow_surface, plane);
    }
 
-   /* Add a HiZ surface to a depth buffer that will be used for rendering.
-    */
-   if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
+   /* Add aux surface. */
+   if ((isl_extra_usage_flags & ISL_SURF_USAGE_DISABLE_AUX_BIT)) {
+      /* Nevermind. No aux surface. */
+   } else if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
       /* We don't advertise that depth buffers could be used as storage
        * images.
        */
@@ -421,18 +423,18 @@ make_surface(struct anv_device *dev,
        */
       if (!(image->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
          /* It will never be used as an attachment, HiZ is pointless. */
-      } else if (dev->info.gen == 7) {
-         anv_perf_warn(dev, image, "Implement gen7 HiZ");
+      } else if (device->info.gen == 7) {
+         anv_perf_warn(device, image, "Implement gen7 HiZ");
       } else if (image->levels > 1) {
-         anv_perf_warn(dev, image, "Enable multi-LOD HiZ");
+         anv_perf_warn(device, image, "Enable multi-LOD HiZ");
       } else if (image->array_size > 1) {
-         anv_perf_warn(dev, image,
+         anv_perf_warn(device, image,
                        "Implement multi-arrayLayer HiZ clears and resolves");
-      } else if (dev->info.gen == 8 && image->samples > 1) {
-         anv_perf_warn(dev, image, "Enable gen8 multisampled HiZ");
+      } else if (device->info.gen == 8 && image->samples > 1) {
+         anv_perf_warn(device, image, "Enable gen8 multisampled HiZ");
       } else if (!unlikely(INTEL_DEBUG & DEBUG_NO_HIZ)) {
          assert(image->planes[plane].aux_surface.isl.size_B == 0);
-         ok = isl_surf_get_hiz_surf(&dev->isl_dev,
+         ok = isl_surf_get_hiz_surf(&device->isl_dev,
                                     &image->planes[plane].surface.isl,
                                     &image->planes[plane].aux_surface.isl);
          assert(ok);
@@ -458,7 +460,7 @@ make_surface(struct anv_device *dev,
 
       if (allow_compression) {
          assert(image->planes[plane].aux_surface.isl.size_B == 0);
-         ok = isl_surf_get_ccs_surf(&dev->isl_dev,
+         ok = isl_surf_get_ccs_surf(&device->isl_dev,
                                     &image->planes[plane].surface.isl,
                                     &image->planes[plane].aux_surface.isl,
                                     NULL, 0);
@@ -467,13 +469,13 @@ make_surface(struct anv_device *dev,
             /* Disable CCS when it is not useful (i.e., when you can't render
              * to the image with CCS enabled).
              */
-            if (!isl_format_supports_rendering(&dev->info,
+            if (!isl_format_supports_rendering(&device->info,
                                                plane_format.isl_format)) {
                /* While it may be technically possible to enable CCS for this
                 * image, we currently don't have things hooked up to get it
                 * working.
                 */
-               anv_perf_warn(dev, image,
+               anv_perf_warn(device, image,
                              "This image format doesn't support rendering. "
                              "Not allocating an CCS buffer.");
                image->planes[plane].aux_surface.isl.size_B = 0;
@@ -489,10 +491,14 @@ make_surface(struct anv_device *dev,
              * compression on at all times for these formats.
              */
             if (!(image->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
-                image->ccs_e_compatible) {
+                anv_formats_ccs_e_compatible(&device->info,
+                                             image->create_flags,
+                                             image->vk_format,
+                                             image->tiling,
+                                             fmt_list)) {
                image->planes[plane].aux_usage = ISL_AUX_USAGE_CCS_E;
-            } else if (dev->info.gen >= 12) {
-               anv_perf_warn(dev, image,
+            } else if (device->info.gen >= 12) {
+               anv_perf_warn(device, image,
                              "The CCS_D aux mode is not yet handled on "
                              "Gen12+. Not allocating a CCS buffer.");
                image->planes[plane].aux_surface.isl.size_B = 0;
@@ -501,22 +507,22 @@ make_surface(struct anv_device *dev,
                image->planes[plane].aux_usage = ISL_AUX_USAGE_CCS_D;
             }
 
-            if (!dev->physical->has_implicit_ccs)
+            if (!device->physical->has_implicit_ccs)
                add_surface(image, &image->planes[plane].aux_surface, plane);
 
-            add_aux_state_tracking_buffer(image, plane, dev);
+            add_aux_state_tracking_buffer(image, plane, device);
          }
       }
    } else if ((aspect & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) && image->samples > 1) {
       assert(!(image->usage & VK_IMAGE_USAGE_STORAGE_BIT));
       assert(image->planes[plane].aux_surface.isl.size_B == 0);
-      ok = isl_surf_get_mcs_surf(&dev->isl_dev,
+      ok = isl_surf_get_mcs_surf(&device->isl_dev,
                                  &image->planes[plane].surface.isl,
                                  &image->planes[plane].aux_surface.isl);
       if (ok) {
          image->planes[plane].aux_usage = ISL_AUX_USAGE_MCS;
          add_surface(image, &image->planes[plane].aux_surface, plane);
-         add_aux_state_tracking_buffer(image, plane, dev);
+         add_aux_state_tracking_buffer(image, plane, device);
       }
    }
 
@@ -661,14 +667,11 @@ anv_image_create(VkDevice _device,
       vk_find_struct_const(pCreateInfo->pNext,
                            IMAGE_FORMAT_LIST_CREATE_INFO_KHR);
 
-   image->ccs_e_compatible =
-      anv_formats_ccs_e_compatible(&device->info, image->create_flags,
-                                   image->vk_format, image->tiling, fmt_list);
-
    uint32_t b;
    for_each_bit(b, image->aspects) {
-      r = make_surface(device, image, create_info->stride, isl_tiling_flags,
-                       create_info->isl_extra_usage_flags, (1 << b));
+      r = make_surface(device, image, fmt_list, create_info->stride,
+                       isl_tiling_flags, create_info->isl_extra_usage_flags,
+                       (1 << b));
       if (r != VK_SUCCESS)
          goto fail;
    }
@@ -902,14 +905,13 @@ resolve_ahw_image(struct anv_device *device,
    image->format = anv_get_format(vk_format);
    image->aspects = vk_format_aspects(image->vk_format);
    image->n_planes = image->format->n_planes;
-   image->ccs_e_compatible = false;
 
    uint32_t stride = desc.stride *
                      (isl_format_get_layout(isl_fmt)->bpb / 8);
 
    uint32_t b;
    for_each_bit(b, image->aspects) {
-      VkResult r = make_surface(device, image, stride, isl_tiling_flags,
+      VkResult r = make_surface(device, image, NULL, stride, isl_tiling_flags,
                                 ISL_SURF_USAGE_DISABLE_AUX_BIT, (1 << b));
       assert(r == VK_SUCCESS);
    }
@@ -2018,63 +2020,4 @@ anv_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
                           view->writeonly_storage_surface_state);
 
    vk_free2(&device->alloc, pAllocator, view);
-}
-
-const struct anv_surface *
-anv_image_get_surface_for_aspect_mask(const struct anv_image *image,
-                                      VkImageAspectFlags aspect_mask)
-{
-   VkImageAspectFlags sanitized_mask;
-
-   switch (aspect_mask) {
-   case VK_IMAGE_ASPECT_COLOR_BIT:
-      assert(image->aspects == VK_IMAGE_ASPECT_COLOR_BIT);
-      sanitized_mask = VK_IMAGE_ASPECT_COLOR_BIT;
-      break;
-   case VK_IMAGE_ASPECT_DEPTH_BIT:
-      assert(image->aspects & VK_IMAGE_ASPECT_DEPTH_BIT);
-      sanitized_mask = VK_IMAGE_ASPECT_DEPTH_BIT;
-      break;
-   case VK_IMAGE_ASPECT_STENCIL_BIT:
-      assert(image->aspects & VK_IMAGE_ASPECT_STENCIL_BIT);
-      sanitized_mask = VK_IMAGE_ASPECT_STENCIL_BIT;
-      break;
-   case VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT:
-      /* FINISHME: The Vulkan spec (git a511ba2) requires support for
-       * combined depth stencil formats. Specifically, it states:
-       *
-       *    At least one of ename:VK_FORMAT_D24_UNORM_S8_UINT or
-       *    ename:VK_FORMAT_D32_SFLOAT_S8_UINT must be supported.
-       *
-       * Image views with both depth and stencil aspects are only valid for
-       * render target attachments, in which case
-       * cmd_buffer_emit_depth_stencil() will pick out both the depth and
-       * stencil surfaces from the underlying surface.
-       */
-      if (image->aspects & VK_IMAGE_ASPECT_DEPTH_BIT) {
-         sanitized_mask = VK_IMAGE_ASPECT_DEPTH_BIT;
-      } else {
-         assert(image->aspects == VK_IMAGE_ASPECT_STENCIL_BIT);
-         sanitized_mask = VK_IMAGE_ASPECT_STENCIL_BIT;
-      }
-      break;
-   case VK_IMAGE_ASPECT_PLANE_0_BIT:
-      assert((image->aspects & ~VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) == 0);
-      sanitized_mask = VK_IMAGE_ASPECT_PLANE_0_BIT;
-      break;
-   case VK_IMAGE_ASPECT_PLANE_1_BIT:
-      assert((image->aspects & ~VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) == 0);
-      sanitized_mask = VK_IMAGE_ASPECT_PLANE_1_BIT;
-      break;
-   case VK_IMAGE_ASPECT_PLANE_2_BIT:
-      assert((image->aspects & ~VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) == 0);
-      sanitized_mask = VK_IMAGE_ASPECT_PLANE_2_BIT;
-      break;
-   default:
-       unreachable("image does not have aspect");
-       return NULL;
-   }
-
-   uint32_t plane = anv_image_aspect_to_plane(image->aspects, sanitized_mask);
-   return &image->planes[plane].surface;
 }

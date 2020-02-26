@@ -92,6 +92,10 @@ const struct radv_dynamic_state default_dynamic_state = {
 		.front = 0u,
 		.back = 0u,
 	},
+	.line_stipple = {
+		.factor = 0u,
+		.pattern = 0u,
+	},
 };
 
 static void
@@ -209,6 +213,14 @@ radv_bind_dynamic_state(struct radv_cmd_buffer *cmd_buffer,
 				     src->sample_location.locations,
 				     src->sample_location.count);
 			dest_mask |= RADV_DYNAMIC_SAMPLE_LOCATIONS;
+		}
+	}
+
+	if (copy_mask & RADV_DYNAMIC_LINE_STIPPLE) {
+		if (memcmp(&dest->line_stipple, &src->line_stipple,
+			   sizeof(src->line_stipple))) {
+			dest->line_stipple = src->line_stipple;
+			dest_mask |= RADV_DYNAMIC_LINE_STIPPLE;
 		}
 	}
 
@@ -996,8 +1008,9 @@ radv_emit_rbplus_state(struct radv_cmd_buffer *cmd_buffer)
 
 	for (unsigned i = 0; i < subpass->color_count; ++i) {
 		if (subpass->color_attachments[i].attachment == VK_ATTACHMENT_UNUSED) {
-			sx_blend_opt_control |= S_02875C_MRT0_COLOR_OPT_DISABLE(1) << (i * 4);
-			sx_blend_opt_control |= S_02875C_MRT0_ALPHA_OPT_DISABLE(1) << (i * 4);
+			/* We don't set the DISABLE bits, because the HW can't have holes,
+			 * so the SPI color format is set to 32-bit 1-component. */
+			sx_ps_downconvert |= V_028754_SX_RT_EXPORT_32_R << (i * 4);
 			continue;
 		}
 
@@ -1113,17 +1126,25 @@ radv_emit_rbplus_state(struct radv_cmd_buffer *cmd_buffer)
 		}
 	}
 
-	for (unsigned i = subpass->color_count; i < 8; ++i) {
-		sx_blend_opt_control |= S_02875C_MRT0_COLOR_OPT_DISABLE(1) << (i * 4);
-		sx_blend_opt_control |= S_02875C_MRT0_ALPHA_OPT_DISABLE(1) << (i * 4);
-	}
-	/* TODO: avoid redundantly setting context registers */
+	/* Do not set the DISABLE bits for the unused attachments, as that
+	 * breaks dual source blending in SkQP and does not seem to improve
+	 * performance. */
+
+	if (sx_ps_downconvert == cmd_buffer->state.last_sx_ps_downconvert &&
+	    sx_blend_opt_epsilon == cmd_buffer->state.last_sx_blend_opt_epsilon &&
+	    sx_blend_opt_control == cmd_buffer->state.last_sx_blend_opt_control)
+		return;
+
 	radeon_set_context_reg_seq(cmd_buffer->cs, R_028754_SX_PS_DOWNCONVERT, 3);
 	radeon_emit(cmd_buffer->cs, sx_ps_downconvert);
 	radeon_emit(cmd_buffer->cs, sx_blend_opt_epsilon);
 	radeon_emit(cmd_buffer->cs, sx_blend_opt_control);
 
 	cmd_buffer->state.context_roll_without_scissor_emitted = true;
+
+	cmd_buffer->state.last_sx_ps_downconvert = sx_ps_downconvert;
+	cmd_buffer->state.last_sx_blend_opt_epsilon = sx_blend_opt_epsilon;
+	cmd_buffer->state.last_sx_blend_opt_control = sx_blend_opt_control;
 }
 
 static void
@@ -1306,6 +1327,22 @@ radv_emit_depth_bias(struct radv_cmd_buffer *cmd_buffer)
 	radeon_emit(cmd_buffer->cs, bias); /* FRONT OFFSET */
 	radeon_emit(cmd_buffer->cs, slope); /* BACK SCALE */
 	radeon_emit(cmd_buffer->cs, bias); /* BACK OFFSET */
+}
+
+static void
+radv_emit_line_stipple(struct radv_cmd_buffer *cmd_buffer)
+{
+	struct radv_dynamic_state *d = &cmd_buffer->state.dynamic;
+	struct radv_pipeline *pipeline = cmd_buffer->state.pipeline;
+	uint32_t auto_reset_cntl = 1;
+
+	if (pipeline->graphics.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP)
+		auto_reset_cntl = 2;
+
+	radeon_set_context_reg(cmd_buffer->cs, R_028A0C_PA_SC_LINE_STIPPLE,
+			       S_028A0C_LINE_PATTERN(d->line_stipple.pattern) |
+			       S_028A0C_REPEAT_COUNT(d->line_stipple.factor - 1) |
+			       S_028A0C_AUTO_RESET_CNTL(auto_reset_cntl));
 }
 
 static void
@@ -2062,7 +2099,7 @@ radv_emit_framebuffer_state(struct radv_cmd_buffer *cmd_buffer)
 }
 
 static void
-radv_emit_index_buffer(struct radv_cmd_buffer *cmd_buffer)
+radv_emit_index_buffer(struct radv_cmd_buffer *cmd_buffer, bool indirect)
 {
 	struct radeon_cmdbuf *cs = cmd_buffer->cs;
 	struct radv_cmd_state *state = &cmd_buffer->state;
@@ -2079,6 +2116,11 @@ radv_emit_index_buffer(struct radv_cmd_buffer *cmd_buffer)
 
 		state->last_index_type = state->index_type;
 	}
+
+	/* For the direct indexed draws we use DRAW_INDEX_2, which includes
+	 * the index_va and max_index_count already. */
+	if (!indirect)
+		return;
 
 	radeon_emit(cs, PKT3(PKT3_INDEX_BASE, 1, 0));
 	radeon_emit(cs, state->index_va);
@@ -2187,6 +2229,9 @@ radv_cmd_buffer_flush_dynamic_state(struct radv_cmd_buffer *cmd_buffer)
 
 	if (states & RADV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)
 		radv_emit_sample_locations(cmd_buffer);
+
+	if (states & RADV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE)
+		radv_emit_line_stipple(cmd_buffer);
 
 	cmd_buffer->state.dirty &= ~states;
 }
@@ -3362,6 +3407,9 @@ VkResult radv_BeginCommandBuffer(
 	cmd_buffer->state.last_vertex_offset = -1;
 	cmd_buffer->state.last_first_instance = -1;
 	cmd_buffer->state.predication_type = -1;
+	cmd_buffer->state.last_sx_ps_downconvert = -1;
+	cmd_buffer->state.last_sx_blend_opt_epsilon = -1;
+	cmd_buffer->state.last_sx_blend_opt_control = -1;
 	cmd_buffer->usage_flags = pBeginInfo->flags;
 
 	if (cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY &&
@@ -4090,6 +4138,20 @@ void radv_CmdSetSampleLocationsEXT(
 	state->dirty |= RADV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
 }
 
+void radv_CmdSetLineStippleEXT(
+	VkCommandBuffer                             commandBuffer,
+	uint32_t                                    lineStippleFactor,
+	uint16_t                                    lineStipplePattern)
+{
+	RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+	struct radv_cmd_state *state = &cmd_buffer->state;
+
+	state->dynamic.line_stipple.factor = lineStippleFactor;
+	state->dynamic.line_stipple.pattern = lineStipplePattern;
+
+	state->dirty |= RADV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE;
+}
+
 void radv_CmdExecuteCommands(
 	VkCommandBuffer                             commandBuffer,
 	uint32_t                                    commandBufferCount,
@@ -4172,6 +4234,9 @@ void radv_CmdExecuteCommands(
 		primary->state.last_first_instance = secondary->state.last_first_instance;
 		primary->state.last_num_instances = secondary->state.last_num_instances;
 		primary->state.last_vertex_offset = secondary->state.last_vertex_offset;
+		primary->state.last_sx_ps_downconvert = secondary->state.last_sx_ps_downconvert;
+		primary->state.last_sx_blend_opt_epsilon = secondary->state.last_sx_blend_opt_epsilon;
+		primary->state.last_sx_blend_opt_control = secondary->state.last_sx_blend_opt_control;
 
 		if (secondary->state.last_index_type != -1) {
 			primary->state.last_index_type =
@@ -4664,7 +4729,7 @@ radv_emit_all_graphics_states(struct radv_cmd_buffer *cmd_buffer,
 
 	if (info->indexed) {
 		if (cmd_buffer->state.dirty & RADV_CMD_DIRTY_INDEX_BUFFER)
-			radv_emit_index_buffer(cmd_buffer);
+			radv_emit_index_buffer(cmd_buffer, info->indirect);
 	} else {
 		/* On GFX7 and later, non-indexed draws overwrite VGT_INDEX_TYPE,
 		 * so the state must be re-emitted before the next indexed

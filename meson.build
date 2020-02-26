@@ -22,7 +22,7 @@ project(
   'mesa',
   ['c', 'cpp'],
   version : run_command(
-    [find_program('python', 'python2', 'python3'), 'bin/meson_get_version.py']
+    [find_program('python', 'python3'), 'bin/meson_get_version.py']
   ).stdout(),
   license : 'MIT',
   meson_version : '>= 0.46',
@@ -33,6 +33,10 @@ cc = meson.get_compiler('c')
 cpp = meson.get_compiler('cpp')
 
 null_dep = dependency('', required : false)
+
+if get_option('layout') != 'mirror'
+  error('`mirror` is the only build directory layout supported')
+endif
 
 # Arguments for the preprocessor, put these in a separate array from the C and
 # C++ (cpp in meson terminology) arguments since they need to be added to the
@@ -243,10 +247,6 @@ with_intel_vk = _vulkan_drivers.contains('intel')
 with_amd_vk = _vulkan_drivers.contains('amd')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_any_vk = _vulkan_drivers.length() != 0 and _vulkan_drivers != ['']
-
-if with_freedreno_vk and get_option('I-love-half-baked-turnips') != true
-  error('Cannot enable freedreno vulkan driver')
-endif
 
 if with_dri_swrast and (with_gallium_softpipe or with_gallium_swr)
   error('Only one swrast provider can be built')

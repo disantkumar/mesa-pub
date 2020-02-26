@@ -27,37 +27,10 @@
 /* From panwrap/panwrap-decoder, but we don't want to bring in all those headers */
 char *panwrap_format_name(enum mali_format format);
 
-/* Construct a default swizzle based on the number of components */
-
-static unsigned
-panfrost_translate_swizzle(enum pipe_swizzle s)
-{
-        switch (s) {
-        case PIPE_SWIZZLE_X:
-                return MALI_CHANNEL_RED;
-
-        case PIPE_SWIZZLE_Y:
-                return MALI_CHANNEL_GREEN;
-
-        case PIPE_SWIZZLE_Z:
-                return MALI_CHANNEL_BLUE;
-
-        case PIPE_SWIZZLE_W:
-                return MALI_CHANNEL_ALPHA;
-
-        case PIPE_SWIZZLE_0:
-        case PIPE_SWIZZLE_NONE:
-                return MALI_CHANNEL_ZERO;
-
-        case PIPE_SWIZZLE_1:
-                return MALI_CHANNEL_ONE;
-
-        default:
-                unreachable("INvalid swizzle");
-        }
-}
-
-/* Translate a Gallium swizzle quad to a 12-bit Mali swizzle code */
+/* Translate a Gallium swizzle quad to a 12-bit Mali swizzle code. Gallium
+ * swizzles line up with Mali swizzles for the XYZW01, but Gallium has an
+ * additional "NONE" field that we have to mask out to zero. Additionally,
+ * Gallium swizzles are sparse but Mali swizzles are packed */
 
 unsigned
 panfrost_translate_swizzle_4(const unsigned char swizzle[4])
@@ -65,25 +38,11 @@ panfrost_translate_swizzle_4(const unsigned char swizzle[4])
         unsigned out = 0;
 
         for (unsigned i = 0; i < 4; ++i) {
-                unsigned translated = panfrost_translate_swizzle(swizzle[i]);
+                unsigned translated = (swizzle[i] > PIPE_SWIZZLE_1) ? PIPE_SWIZZLE_0 : swizzle[i];
                 out |= (translated << (3*i));
         }
 
         return out;
-}
-
-unsigned
-panfrost_get_default_swizzle(unsigned components)
-{
-        unsigned char default_swizzles[4][4] = {
-                {PIPE_SWIZZLE_X, PIPE_SWIZZLE_0, PIPE_SWIZZLE_0, PIPE_SWIZZLE_1},
-                {PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_0, PIPE_SWIZZLE_1},
-                {PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_1},
-                {PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W},
-        };
-
-        assert(components >= 1 && components <= 4);
-        return panfrost_translate_swizzle_4(default_swizzles[components - 1]);
 }
 
 static unsigned
@@ -98,8 +57,11 @@ panfrost_translate_channel_width(unsigned size)
                 return MALI_CHANNEL_16;
         case 32:
                 return MALI_CHANNEL_32;
-        default:
-                unreachable("Invalid width");
+        default: {
+                fprintf(stderr, "Invalid width: %d\n", size);
+                assert(0);
+                return 0;
+        }
         }
 }
 
@@ -183,9 +145,17 @@ panfrost_find_format(const struct util_format_description *desc) {
                 return MALI_RGB10_A2I;
 
         case PIPE_FORMAT_Z32_UNORM:
+                return MALI_Z32_UNORM;
+
         case PIPE_FORMAT_Z24X8_UNORM:
         case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-                return MALI_Z32_UNORM;
+                /* Midgard has no dedicated samplers for Z24S8 and Z24X8
+                 * formats, and the GPU expects the depth to be encoded in an
+                 * IEEE 32-bit float. Turn all Z24_UNORM variants into R32UI
+                 * and let the shader do the conversion using bfe+fmul
+                 * instructions.
+                 */
+                return MALI_R32UI;
 
         case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
                 /* Z32F = R32F to the hardware */
