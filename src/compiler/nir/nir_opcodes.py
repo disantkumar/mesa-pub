@@ -100,6 +100,7 @@ tbool16 = "bool16"
 tbool32 = "bool32"
 tuint = "uint"
 tuint16 = "uint16"
+tfloat16 = "float16"
 tfloat32 = "float32"
 tint32 = "int32"
 tuint32 = "uint32"
@@ -265,6 +266,11 @@ for src_t in [tint, tuint, tfloat, tbool]:
                                                        dst_bit_size),
                                    dst_t + str(dst_bit_size), src_t, conv_expr)
 
+# Special opcode that is the same as f2f16 except that it is safe to remove it
+# if the result is immediately converted back to float32 again. This is
+# generated as part of the precision lowering pass. mp stands for medium
+# precision.
+unop_numeric_convert("f2fmp", tfloat16, tfloat, opcodes["f2f16"].const_expr)
 
 # Unary floating-point rounding operations.
 
@@ -461,9 +467,9 @@ for i in range(1, 5):
 # AMD_gcn_shader extended instructions
 unop_horiz("cube_face_coord", 2, tfloat32, 3, tfloat32, """
 dst.x = dst.y = 0.0;
-float absX = fabs(src0.x);
-float absY = fabs(src0.y);
-float absZ = fabs(src0.z);
+float absX = fabsf(src0.x);
+float absY = fabsf(src0.y);
+float absZ = fabsf(src0.z);
 
 float ma = 0.0;
 if (absX >= absY && absX >= absZ) { ma = 2 * src0.x; }
@@ -482,9 +488,9 @@ dst.y = dst.y / ma + 0.5;
 """)
 
 unop_horiz("cube_face_index", 1, tfloat32, 3, tfloat32, """
-float absX = fabs(src0.x);
-float absY = fabs(src0.y);
-float absZ = fabs(src0.z);
+float absX = fabsf(src0.x);
+float absY = fabsf(src0.y);
+float absZ = fabsf(src0.z);
 if (src0.x >= 0 && absX >= absY && absX >= absZ) dst.x = 0;
 if (src0.x < 0 && absX >= absY && absX >= absZ) dst.x = 1;
 if (src0.y >= 0 && absY >= absX && absY >= absZ) dst.x = 2;

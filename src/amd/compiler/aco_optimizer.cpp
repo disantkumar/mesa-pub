@@ -622,6 +622,7 @@ bool parse_base_offset(opt_ctx &ctx, Instruction* instr, unsigned op_index, Temp
    switch (add_instr->opcode) {
    case aco_opcode::v_add_u32:
    case aco_opcode::v_add_co_u32:
+   case aco_opcode::v_add_co_u32_e64:
    case aco_opcode::s_add_i32:
    case aco_opcode::s_add_u32:
       break;
@@ -815,12 +816,15 @@ void label_instruction(opt_ctx &ctx, Block& block, aco_ptr<Instruction>& instr)
              instr->opcode != aco_opcode::ds_swizzle_b32) {
             if (instr->opcode == aco_opcode::ds_write2_b32 || instr->opcode == aco_opcode::ds_read2_b32 ||
                 instr->opcode == aco_opcode::ds_write2_b64 || instr->opcode == aco_opcode::ds_read2_b64) {
-               if (offset % 4 == 0 &&
-                   ds->offset0 + (offset >> 2) <= 255 &&
-                   ds->offset1 + (offset >> 2) <= 255) {
+               unsigned mask = (instr->opcode == aco_opcode::ds_write2_b64 || instr->opcode == aco_opcode::ds_read2_b64) ? 0x7 : 0x3;
+               unsigned shifts = (instr->opcode == aco_opcode::ds_write2_b64 || instr->opcode == aco_opcode::ds_read2_b64) ? 3 : 2;
+
+               if ((offset & mask) == 0 &&
+                   ds->offset0 + (offset >> shifts) <= 255 &&
+                   ds->offset1 + (offset >> shifts) <= 255) {
                   instr->operands[i].setTemp(base);
-                  ds->offset0 += offset >> 2;
-                  ds->offset1 += offset >> 2;
+                  ds->offset0 += offset >> shifts;
+                  ds->offset1 += offset >> shifts;
                }
             } else {
                if (ds->offset0 + offset <= 65535) {
@@ -1143,6 +1147,7 @@ void label_instruction(opt_ctx &ctx, Block& block, aco_ptr<Instruction>& instr)
    }
    case aco_opcode::v_add_u32:
    case aco_opcode::v_add_co_u32:
+   case aco_opcode::v_add_co_u32_e64:
    case aco_opcode::s_add_i32:
    case aco_opcode::s_add_u32:
       ctx.info[instr->definitions[0].tempId()].set_add_sub(instr.get());

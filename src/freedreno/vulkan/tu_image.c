@@ -265,28 +265,30 @@ tu_image_view_init(struct tu_image_view *iview,
    iview->vk_format = pCreateInfo->format;
    iview->aspect_mask = pCreateInfo->subresourceRange.aspectMask;
 
-   // should we minify?
-   iview->extent = image->extent;
-
    iview->base_layer = range->baseArrayLayer;
    iview->layer_count = tu_get_layerCount(image, range);
    iview->base_mip = range->baseMipLevel;
    iview->level_count = tu_get_levelCount(image, range);
 
+   iview->extent.width = u_minify(image->extent.width, iview->base_mip);
+   iview->extent.height = u_minify(image->extent.height, iview->base_mip);
+   iview->extent.depth = u_minify(image->extent.depth, iview->base_mip);
+
    memset(iview->descriptor, 0, sizeof(iview->descriptor));
 
-   const struct tu_native_format *fmt = tu6_get_native_format(iview->vk_format);
+   struct tu_native_format fmt =
+      tu6_format_texture(iview->vk_format, image->layout.tile_mode);
    uint64_t base_addr = tu_image_base(image, iview->base_mip, iview->base_layer);
    uint64_t ubwc_addr = tu_image_ubwc_base(image, iview->base_mip, iview->base_layer);
 
    uint32_t pitch = tu_image_stride(image, iview->base_mip) / vk_format_get_blockwidth(iview->vk_format);
    enum a6xx_tile_mode tile_mode = tu6_get_image_tile_mode(image, iview->base_mip);
-   uint32_t width = u_minify(image->extent.width, iview->base_mip);
-   uint32_t height = u_minify(image->extent.height, iview->base_mip);
+   uint32_t width = iview->extent.width;
+   uint32_t height = iview->extent.height;
    uint32_t depth = pCreateInfo->viewType == VK_IMAGE_VIEW_TYPE_3D ?
-      u_minify(image->extent.depth, iview->base_mip) : iview->layer_count;
+      iview->extent.depth : iview->layer_count;
 
-   unsigned fmt_tex = fmt->tex;
+   unsigned fmt_tex = fmt.fmt;
    if (iview->aspect_mask == VK_IMAGE_ASPECT_STENCIL_BIT &&
        iview->vk_format == VK_FORMAT_D24_UNORM_S8_UINT)
       fmt_tex = FMT6_S8Z24_UINT;
@@ -296,7 +298,7 @@ tu_image_view_init(struct tu_image_view *iview,
       COND(vk_format_is_srgb(iview->vk_format), A6XX_TEX_CONST_0_SRGB) |
       A6XX_TEX_CONST_0_FMT(fmt_tex) |
       A6XX_TEX_CONST_0_SAMPLES(tu_msaa_samples(image->samples)) |
-      A6XX_TEX_CONST_0_SWAP(image->layout.tile_mode ? WZYX : fmt->swap) |
+      A6XX_TEX_CONST_0_SWAP(fmt.swap) |
       tu6_texswiz(&pCreateInfo->components, iview->vk_format, iview->aspect_mask) |
       A6XX_TEX_CONST_0_MIPLVLS(iview->level_count - 1);
    iview->descriptor[1] = A6XX_TEX_CONST_1_WIDTH(width) | A6XX_TEX_CONST_1_HEIGHT(height);
@@ -332,7 +334,7 @@ tu_image_view_init(struct tu_image_view *iview,
       memset(iview->storage_descriptor, 0, sizeof(iview->storage_descriptor));
 
       iview->storage_descriptor[0] =
-         A6XX_IBO_0_FMT(fmt->tex) |
+         A6XX_IBO_0_FMT(fmt.fmt) |
          A6XX_IBO_0_TILE_MODE(tile_mode);
       iview->storage_descriptor[1] =
          A6XX_IBO_1_WIDTH(width) |
@@ -518,7 +520,7 @@ tu_buffer_view_init(struct tu_buffer_view *view,
 
    enum VkFormat vfmt = pCreateInfo->format;
    enum pipe_format pfmt = vk_format_to_pipe_format(vfmt);
-   const struct tu_native_format *fmt = tu6_get_native_format(vfmt);
+   const struct tu_native_format fmt = tu6_format_texture(vfmt, false);
 
    uint32_t range;
    if (pCreateInfo->range == VK_WHOLE_SIZE)
@@ -540,8 +542,8 @@ tu_buffer_view_init(struct tu_buffer_view *view,
 
    view->descriptor[0] =
       A6XX_TEX_CONST_0_TILE_MODE(TILE6_LINEAR) |
-      A6XX_TEX_CONST_0_SWAP(fmt->swap) |
-      A6XX_TEX_CONST_0_FMT(fmt->tex) |
+      A6XX_TEX_CONST_0_SWAP(fmt.swap) |
+      A6XX_TEX_CONST_0_FMT(fmt.fmt) |
       A6XX_TEX_CONST_0_MIPLVLS(0) |
       tu6_texswiz(&components, vfmt, VK_IMAGE_ASPECT_COLOR_BIT);
       COND(vk_format_is_srgb(vfmt), A6XX_TEX_CONST_0_SRGB);

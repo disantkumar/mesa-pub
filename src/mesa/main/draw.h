@@ -43,7 +43,6 @@ struct gl_context;
 struct _mesa_prim
 {
    GLubyte mode;    /**< GL_POINTS, GL_LINES, GL_QUAD_STRIP, etc */
-   bool indexed;
 
    /**
     * tnl: If true, line stipple emulation will reset the pattern walker.
@@ -62,11 +61,7 @@ struct _mesa_prim
    GLuint start;
    GLuint count;
    GLint basevertex;
-   GLuint num_instances;
-   GLuint base_instance;
    GLuint draw_id;
-
-   GLsizeiptr indirect_offset;
 };
 
 /* Would like to call this a "vbo_index_buffer", but this would be
@@ -76,7 +71,7 @@ struct _mesa_prim
 struct _mesa_index_buffer
 {
    GLuint count;
-   unsigned index_size;
+   uint8_t index_size_shift; /* logbase2(index_size) */
    struct gl_buffer_object *obj;
    const void *ptr;
 };

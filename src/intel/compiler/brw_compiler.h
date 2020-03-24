@@ -679,6 +679,9 @@ struct brw_stage_prog_data {
     */
    uint32_t *param;
    uint32_t *pull_param;
+
+   /* Whether shader uses atomic operations. */
+   bool uses_atomic_load_store;
 };
 
 static inline uint32_t *
@@ -788,6 +791,14 @@ struct brw_wm_prog_data {
     * For varying slots that are not used by the FS, the value is -1.
     */
    int urb_setup[VARYING_SLOT_MAX];
+
+   /**
+    * Cache structure into the urb_setup array above that contains the
+    * attribute numbers of active varyings out of urb_setup.
+    * The actual count is stored in urb_setup_attribs_count.
+    */
+   uint8_t urb_setup_attribs[VARYING_SLOT_MAX];
+   uint8_t urb_setup_attribs_count;
 };
 
 /** Returns the SIMD width corresponding to a given KSP index
@@ -1125,6 +1136,9 @@ struct brw_tcs_prog_data
 
    /** Number vertices in output patch */
    int instances;
+
+   /** Track patch count threshold */
+   int patch_count_threshold;
 };
 
 

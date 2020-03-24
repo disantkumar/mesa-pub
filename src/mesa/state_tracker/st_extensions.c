@@ -331,6 +331,13 @@ void st_init_limits(struct pipe_screen *screen,
        * because it can actually optimize SSBO access.
        */
       options->LowerBufferInterfaceBlocks = !prefer_nir;
+
+      if (sh == MESA_SHADER_VERTEX) {
+         if (screen->get_param(screen, PIPE_CAP_VIEWPORT_TRANSFORM_LOWERED))
+            options->LowerBuiltinVariablesXfb |= VARYING_BIT_POS;
+         if (screen->get_param(screen, PIPE_CAP_PSIZ_CLAMPED))
+            options->LowerBuiltinVariablesXfb |= VARYING_BIT_PSIZ;
+      }
    }
 
    c->MaxUserAssignableUniformLocations =
@@ -562,6 +569,12 @@ void st_init_limits(struct pipe_screen *screen,
 
    c->VertexBufferOffsetIsInt32 =
       screen->get_param(screen, PIPE_CAP_SIGNED_VERTEX_BUFFER_OFFSET);
+
+   c->MultiDrawWithUserIndices =
+      screen->get_param(screen, PIPE_CAP_DRAW_INFO_START_WITH_USER_INDICES);
+
+   c->glBeginEndBufferSize =
+      screen->get_param(screen, PIPE_CAP_GL_BEGIN_END_BUFFER_SIZE);
 }
 
 
@@ -826,6 +839,11 @@ void st_init_extensions(struct pipe_screen *screen,
         { PIPE_FORMAT_R8_UNORM,
           PIPE_FORMAT_R8G8_UNORM } },
 
+      { { o(EXT_texture_norm16) },
+        { PIPE_FORMAT_R16_UNORM,
+          PIPE_FORMAT_R16G16_UNORM,
+          PIPE_FORMAT_R16G16B16A16_UNORM } },
+
       { { o(EXT_render_snorm) },
         { PIPE_FORMAT_R8_SNORM,
           PIPE_FORMAT_R8G8_SNORM,
@@ -1036,6 +1054,7 @@ void st_init_extensions(struct pipe_screen *screen,
    extensions->MESA_framebuffer_flip_y = GL_TRUE;
    extensions->MESA_pack_invert = GL_TRUE;
 
+   extensions->NV_copy_image = GL_TRUE;
    extensions->NV_fog_distance = GL_TRUE;
    extensions->NV_texture_env_combine4 = GL_TRUE;
    extensions->NV_texture_rectangle = GL_TRUE;
@@ -1413,6 +1432,9 @@ void st_init_extensions(struct pipe_screen *screen,
       if (!extensions->EXT_transform_feedback)
          consts->DisableVaryingPacking = GL_TRUE;
    }
+
+   if (!screen->get_param(screen, PIPE_CAP_PACKED_STREAM_OUTPUT))
+      consts->DisableTransformFeedbackPacking = GL_TRUE;
 
    unsigned max_fb_fetch_rts = screen->get_param(screen, PIPE_CAP_FBFETCH);
    bool coherent_fb_fetch =

@@ -484,7 +484,7 @@ get_render_pass(struct zink_context *ctx)
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
    const struct pipe_framebuffer_state *fb = &ctx->fb_state;
-   struct zink_render_pass_state state;
+   struct zink_render_pass_state state = { 0 };
 
    for (int i = 0; i < fb->nr_cbufs; i++) {
       struct pipe_resource *res = fb->cbufs[i]->texture;
@@ -1127,7 +1127,8 @@ zink_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    cbai.commandBufferCount = 1;
 
    VkDescriptorPoolSize sizes[] = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ZINK_BATCH_DESC_SIZE}
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         ZINK_BATCH_DESC_SIZE},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, ZINK_BATCH_DESC_SIZE}
    };
    VkDescriptorPoolCreateInfo dpci = {};
    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

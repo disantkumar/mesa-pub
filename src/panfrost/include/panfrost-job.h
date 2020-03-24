@@ -601,6 +601,11 @@ struct mali_shader_meta {
                          * - R61 : gl_SampleMaskIn and gl_SampleID, used by
                          *   varying interpolation.
                          * - R62 : unknown (bit always unset).
+                         *
+                         * Later GPUs (starting with Mali-G52?) support
+                         * preloading float varyings into r0-r7. This is
+                         * indicated by setting 0x40. There is no distinction
+                         * here between 1 varying and 2.
                          */
                         u32 preload_regs : 8;
                         /* In units of 8 bytes or 64 bits, since the
@@ -1491,7 +1496,14 @@ struct mali_shared_memory {
         mali_ptr unknown1;
 } __attribute__((packed));
 
+/* Configures multisampling on Bifrost fragment jobs */
 
+struct bifrost_multisampling {
+        u64 zero1;
+        u64 zero2;
+        mali_ptr sample_locations;
+        u64 zero4;
+} __attribute__((packed));
 
 struct mali_single_framebuffer {
         struct mali_shared_memory shared_memory;
@@ -1685,7 +1697,10 @@ struct mali_framebuffer_extra  {
 #define MALI_MFBD_EXTRA (1 << 13)
 
 struct mali_framebuffer {
-        struct mali_shared_memory shared_memory;
+        union {
+                struct mali_shared_memory shared_memory;
+                struct bifrost_multisampling msaa;
+        };
 
         /* 0x20 */
         u16 width1, height1;

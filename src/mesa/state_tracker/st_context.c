@@ -399,22 +399,22 @@ free_zombie_shaders(struct st_context *st)
 
       switch (entry->type) {
       case PIPE_SHADER_VERTEX:
-         cso_delete_vertex_shader(st->cso_context, entry->shader);
+         st->pipe->delete_vs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_FRAGMENT:
-         cso_delete_fragment_shader(st->cso_context, entry->shader);
+         st->pipe->delete_fs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_GEOMETRY:
-         cso_delete_geometry_shader(st->cso_context, entry->shader);
+         st->pipe->delete_gs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_TESS_CTRL:
-         cso_delete_tessctrl_shader(st->cso_context, entry->shader);
+         st->pipe->delete_tcs_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_TESS_EVAL:
-         cso_delete_tesseval_shader(st->cso_context, entry->shader);
+         st->pipe->delete_tes_state(st->pipe, entry->shader);
          break;
       case PIPE_SHADER_COMPUTE:
-         cso_delete_compute_shader(st->cso_context, entry->shader);
+         st->pipe->delete_compute_state(st->pipe, entry->shader);
          break;
       default:
          unreachable("invalid shader type in free_zombie_shaders()");
@@ -605,15 +605,15 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       STATIC_ASSERT(sizeof(struct st_util_vertex) == 9 * sizeof(float));
 
       memset(&st->util_velems, 0, sizeof(st->util_velems));
-      st->util_velems[0].src_offset = 0;
-      st->util_velems[0].vertex_buffer_index = 0;
-      st->util_velems[0].src_format = PIPE_FORMAT_R32G32B32_FLOAT;
-      st->util_velems[1].src_offset = 3 * sizeof(float);
-      st->util_velems[1].vertex_buffer_index = 0;
-      st->util_velems[1].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
-      st->util_velems[2].src_offset = 7 * sizeof(float);
-      st->util_velems[2].vertex_buffer_index = 0;
-      st->util_velems[2].src_format = PIPE_FORMAT_R32G32_FLOAT;
+      st->util_velems.velems[0].src_offset = 0;
+      st->util_velems.velems[0].vertex_buffer_index = 0;
+      st->util_velems.velems[0].src_format = PIPE_FORMAT_R32G32B32_FLOAT;
+      st->util_velems.velems[1].src_offset = 3 * sizeof(float);
+      st->util_velems.velems[1].vertex_buffer_index = 0;
+      st->util_velems.velems[1].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+      st->util_velems.velems[2].src_offset = 7 * sizeof(float);
+      st->util_velems.velems[2].vertex_buffer_index = 0;
+      st->util_velems.velems[2].src_format = PIPE_FORMAT_R32G32_FLOAT;
    }
 
    /* Need these flags:

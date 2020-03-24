@@ -462,7 +462,8 @@ static int emit_cat5(struct ir3_instruction *instr, void *ptr,
 	struct ir3_register *src2;
 	instr_cat5_t *cat5 = ptr;
 
-	iassert((instr->regs_count == 2) ||
+	iassert((instr->regs_count == 1) ||
+			(instr->regs_count == 2) ||
 			(instr->regs_count == 3) ||
 			(instr->regs_count == 4));
 
@@ -470,7 +471,7 @@ static int emit_cat5(struct ir3_instruction *instr, void *ptr,
 		src1 = instr->regs[2];
 		src2 = instr->regs_count > 3 ? instr->regs[3] : NULL;
 	} else {
-		src1 = instr->regs[1];
+		src1 = instr->regs_count > 1 ? instr->regs[1] : NULL;
 		src2 = instr->regs_count > 2 ? instr->regs[2] : NULL;
 	}
 
@@ -910,6 +911,8 @@ void * ir3_assemble(struct ir3 *shader, struct ir3_info *info,
 	ptr = dwords = calloc(4, info->sizedwords);
 
 	foreach_block (block, &shader->block_list) {
+		unsigned sfu_delay = 0;
+
 		foreach_instr (instr, &block->instr_list) {
 			int ret = emit[opc_cat(instr->opc)](instr, dwords, info);
 			if (ret)
@@ -924,11 +927,19 @@ void * ir3_assemble(struct ir3 *shader, struct ir3_info *info,
 				info->nops_count += 1 + instr->repeat;
 			dwords += 2;
 
-			if (instr->flags & IR3_INSTR_SS)
+			if (instr->flags & IR3_INSTR_SS) {
 				info->ss++;
+				info->sstall += sfu_delay;
+			}
 
 			if (instr->flags & IR3_INSTR_SY)
 				info->sy++;
+
+			if (is_sfu(instr)) {
+				sfu_delay = 10;
+			} else if (sfu_delay > 0) {
+				sfu_delay--;
+			}
 		}
 	}
 

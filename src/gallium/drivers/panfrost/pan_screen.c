@@ -61,6 +61,7 @@ static const struct debug_named_value debug_options[] = {
         {"afbc",      PAN_DBG_AFBC,     "Enable non-conformant AFBC impl"},
         {"sync",      PAN_DBG_SYNC,     "Wait for each job's completion and check for any GPU fault"},
         {"precompile", PAN_DBG_PRECOMPILE, "Precompile shaders for shader-db"},
+        {"gles3",     PAN_DBG_GLES3,    "Enable experimental GLES3 implementation"},
         DEBUG_NAMED_VALUE_END
 };
 
@@ -92,6 +93,10 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         /* We expose in-dev stuff for dEQP that we don't want apps to use yet */
         bool is_deqp = pan_debug & PAN_DBG_DEQP;
 
+        /* Our GLES3 implementation is WIP */
+        bool is_gles3 = pan_debug & PAN_DBG_GLES3;
+        is_gles3 |= is_deqp;
+
         switch (param) {
         case PIPE_CAP_NPOT_TEXTURES:
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
@@ -102,7 +107,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return 1;
 
         case PIPE_CAP_MAX_RENDER_TARGETS:
-                return is_deqp ? 4 : 1;
+                return is_gles3 ? 4 : 1;
 
         /* Throttling frames breaks pipelining */
         case PIPE_CAP_THROTTLE:
@@ -125,13 +130,14 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_TGSI_INSTANCEID:
         case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
+        case PIPE_CAP_PRIMITIVE_RESTART:
                 return 1;
 
         case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
-                return is_deqp ? 4 : 0;
+                return is_gles3 ? 4 : 0;
         case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
         case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
-                return is_deqp ? 64 : 0;
+                return is_gles3 ? 64 : 0;
         case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
                 return 1;
 
@@ -140,21 +146,23 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
         case PIPE_CAP_GLSL_FEATURE_LEVEL:
         case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-                return is_deqp ? 140 : 120;
+                return is_gles3 ? 140 : 120;
         case PIPE_CAP_ESSL_FEATURE_LEVEL:
-                return is_deqp ? 300 : 120;
+                return is_gles3 ? 300 : 120;
 
         case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
                 return 16;
 
-        case PIPE_CAP_CUBE_MAP_ARRAY:
                 return is_deqp;
 
-        /* For faking GLES 3.1 for dEQP-GLES31 */
         case PIPE_CAP_TEXTURE_MULTISAMPLE:
+                return is_gles3;
+
+        /* For faking GLES 3.1 for dEQP-GLES31 */
         case PIPE_CAP_MAX_COMBINED_HW_ATOMIC_COUNTERS:
         case PIPE_CAP_MAX_COMBINED_HW_ATOMIC_COUNTER_BUFFERS:
         case PIPE_CAP_IMAGE_LOAD_FORMATTED:
+        case PIPE_CAP_CUBE_MAP_ARRAY:
                 return is_deqp;
 
         /* For faking compute shaders */
@@ -260,6 +268,13 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_CLIP_PLANES:
                 return 0;
 
+        case PIPE_CAP_PACKED_STREAM_OUTPUT:
+                return 0;
+
+        case PIPE_CAP_VIEWPORT_TRANSFORM_LOWERED:
+        case PIPE_CAP_PSIZ_CLAMPED:
+                return 1;
+
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
         }
@@ -350,7 +365,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
 
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-                return is_deqp ? 4 : 0;
+                return is_deqp ? 8 : 0;
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
                 return 0;
@@ -579,16 +594,6 @@ panfrost_destroy_screen(struct pipe_screen *pscreen)
         ralloc_free(screen);
 }
 
-static void
-panfrost_flush_frontbuffer(struct pipe_screen *_screen,
-                           struct pipe_resource *resource,
-                           unsigned level, unsigned layer,
-                           void *context_private,
-                           struct pipe_box *sub_box)
-{
-        /* TODO: Display target integration */
-}
-
 static uint64_t
 panfrost_get_timestamp(struct pipe_screen *_screen)
 {
@@ -789,7 +794,6 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.get_timestamp = panfrost_get_timestamp;
         screen->base.is_format_supported = panfrost_is_format_supported;
         screen->base.context_create = panfrost_create_context;
-        screen->base.flush_frontbuffer = panfrost_flush_frontbuffer;
         screen->base.get_compiler_options = panfrost_screen_get_compiler_options;
         screen->base.fence_reference = panfrost_fence_reference;
         screen->base.fence_finish = panfrost_fence_finish;

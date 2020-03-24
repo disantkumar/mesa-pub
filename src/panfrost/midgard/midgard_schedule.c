@@ -245,7 +245,7 @@ bytes_for_instruction(midgard_instruction *ains)
 static midgard_instruction **
 flatten_mir(midgard_block *block, unsigned *len)
 {
-        *len = list_length(&block->instructions);
+        *len = list_length(&block->base.instructions);
 
         if (!(*len))
                 return NULL;
@@ -1054,6 +1054,14 @@ mir_schedule_alu(
                         bundle.control |= stages[i]->unit;
                         bytes_emitted += bytes_for_instruction(stages[i]);
                         bundle.instructions[bundle.instruction_count++] = stages[i];
+
+                        /* If we branch, we can't spill to TLS since the store
+                         * instruction will never get executed. We could try to
+                         * break the bundle but this is probably easier for
+                         * now. */
+
+                        if (branch)
+                                stages[i]->no_spill |= (1 << REG_CLASS_WORK);
                 }
         }
 
@@ -1148,7 +1156,7 @@ schedule_block(compiler_context *ctx, midgard_block *block)
         if (blend_offset)
                 ctx->blend_constant_offset = ((ctx->quadword_count + block->quadword_count) - blend_offset - 1) * 0x10;
 
-        block->is_scheduled = true;
+        block->scheduled = true;
         ctx->quadword_count += block->quadword_count;
 
         /* Reorder instructions to match bundled. First remove existing
@@ -1159,7 +1167,7 @@ schedule_block(compiler_context *ctx, midgard_block *block)
         }
 
         mir_foreach_instr_in_block_scheduled_rev(block, ins) {
-                list_add(&ins->link, &block->instructions);
+                list_add(&ins->link, &block->base.instructions);
         }
 
 	free(instructions); /* Allocated by flatten_mir() */
@@ -1178,7 +1186,8 @@ midgard_schedule_program(compiler_context *ctx)
 
         /* Lowering can introduce some dead moves */
 
-        mir_foreach_block(ctx, block) {
+        mir_foreach_block(ctx, _block) {
+                midgard_block *block = (midgard_block *) _block;
                 midgard_opt_dead_move_eliminate(ctx, block);
                 schedule_block(ctx, block);
         }

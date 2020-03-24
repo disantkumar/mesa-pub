@@ -764,6 +764,11 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
             preserve_scc = true;
          } else if (it->second.size == 2 && it->second.def.getTemp().type() == RegType::sgpr) {
             bld.sop1(aco_opcode::s_mov_b64, it->second.def, Operand(it->second.op.physReg(), s2));
+         } else if (it->second.size == 2 && it->second.op.isConstant()) {
+            uint64_t val = it->second.op.constantValue64();
+            bld.vop1(aco_opcode::v_mov_b32, it->second.def, Operand((uint32_t)val));
+            bld.vop1(aco_opcode::v_mov_b32, Definition(PhysReg{it->second.def.physReg() + 1}, v1),
+                     Operand((uint32_t)(val >> 32)));
          } else {
             bld.copy(it->second.def, it->second.op);
          }
@@ -790,16 +795,13 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
       return;
 
    /* all target regs are needed as operand somewhere which means, all entries are part of a cycle */
-   bool constants = false;
    for (it = copy_map.begin(); it != copy_map.end(); ++it) {
       assert(it->second.op.isFixed());
       if (it->first == it->second.op.physReg())
          continue;
-      /* do constants later */
-      if (it->second.op.isConstant()) {
-         constants = true;
-         continue;
-      }
+
+      /* should already be done */
+      assert(!it->second.op.isConstant());
 
       if (preserve_scc && it->second.def.getTemp().type() == RegType::sgpr)
          assert(!(it->second.def.physReg() == pi->scratch_sgpr));
@@ -843,19 +845,6 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
          if (target->second.op.physReg() == it->first) {
             target->second.op.setFixed(swap.op.physReg());
             break;
-         }
-      }
-   }
-
-   /* copy constants into a registers which were operands */
-   if (constants) {
-      for (it = copy_map.begin(); it != copy_map.end(); ++it) {
-         if (!it->second.op.isConstant())
-            continue;
-         if (it->second.def.physReg() == scc) {
-            bld.sopc(aco_opcode::s_cmp_lg_i32, Definition(scc, s1), Operand(0u), Operand(it->second.op.constantValue() ? 1u : 0u));
-         } else {
-            bld.copy(it->second.def, it->second.op);
          }
       }
    }
@@ -921,7 +910,7 @@ void lower_to_hw_instr(Program* program)
                   if (op.isConstant()) {
                      const PhysReg reg = PhysReg{instr->definitions[0].physReg() + reg_idx};
                      const Definition def = Definition(reg, rc_def);
-                     copy_operations[reg] = {op, def, 0, 1};
+                     copy_operations[reg] = {op, def, 0, op.size()};
                      reg_idx++;
                      continue;
                   }
@@ -948,7 +937,7 @@ void lower_to_hw_instr(Program* program)
                   for (unsigned j = 0; j < k; j++) {
                      Operand op = Operand(PhysReg{instr->operands[0].physReg() + (i*k+j)}, rc_op);
                      Definition def = Definition(PhysReg{instr->definitions[i].physReg() + j}, rc_def);
-                     copy_operations[def.physReg()] = {op, def, 0, 1};
+                     copy_operations[def.physReg()] = {op, def, 0, op.size()};
                   }
                }
                handle_operands(copy_operations, &ctx, program->chip_class, pi);
@@ -963,7 +952,7 @@ void lower_to_hw_instr(Program* program)
                   Operand operand = instr->operands[i];
                   if (operand.isConstant() || operand.size() == 1) {
                      assert(instr->definitions[i].size() == operand.size());
-                     copy_operations[instr->definitions[i].physReg()] = {operand, instr->definitions[i], 0, 1};
+                     copy_operations[instr->definitions[i].physReg()] = {operand, instr->definitions[i], 0, operand.size()};
                   } else {
                      RegClass def_rc = RegClass(instr->definitions[i].regClass().type(), 1);
                      RegClass op_rc = RegClass(operand.getTemp().type(), 1);
@@ -1035,7 +1024,7 @@ void lower_to_hw_instr(Program* program)
                   Operand operand = instr->operands[0];
                   if (operand.isConstant() || operand.size() == 1) {
                      assert(instr->definitions[0].size() == 1);
-                     copy_operations[instr->definitions[0].physReg()] = {operand, instr->definitions[0], 0, 1};
+                     copy_operations[instr->definitions[0].physReg()] = {operand, instr->definitions[0], 0, operand.size()};
                   } else {
                      for (unsigned i = 0; i < operand.size(); i++)
                      {

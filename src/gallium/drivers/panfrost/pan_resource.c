@@ -235,29 +235,6 @@ panfrost_create_scanout_res(struct pipe_screen *screen,
         return res;
 }
 
-/* Computes sizes for checksumming, which is 8 bytes per 16x16 tile */
-
-#define CHECKSUM_TILE_WIDTH 16
-#define CHECKSUM_TILE_HEIGHT 16
-#define CHECKSUM_BYTES_PER_TILE 8
-
-static unsigned
-panfrost_compute_checksum_sizes(
-        struct panfrost_slice *slice,
-        unsigned width,
-        unsigned height)
-{
-        unsigned aligned_width = ALIGN_POT(width, CHECKSUM_TILE_WIDTH);
-        unsigned aligned_height = ALIGN_POT(height, CHECKSUM_TILE_HEIGHT);
-
-        unsigned tile_count_x = aligned_width / CHECKSUM_TILE_WIDTH;
-        unsigned tile_count_y = aligned_height / CHECKSUM_TILE_HEIGHT;
-
-        slice->checksum_stride = tile_count_x * CHECKSUM_BYTES_PER_TILE;
-
-        return slice->checksum_stride * tile_count_y;
-}
-
 /* Setup the mip tree given a particular layout, possibly with checksumming */
 
 static void
@@ -349,7 +326,7 @@ panfrost_setup_slices(struct panfrost_resource *pres, size_t *bo_size)
                 if (pres->checksummed) {
                         slice->checksum_offset = offset;
 
-                        unsigned size = panfrost_compute_checksum_sizes(
+                        unsigned size = panfrost_compute_checksum_size(
                                                 slice, width, height);
 
                         offset += size;
@@ -536,6 +513,9 @@ panfrost_resource_create(struct pipe_screen *screen,
         panfrost_resource_create_bo(pscreen, so);
         panfrost_resource_reset_damage(so);
 
+        if (template->bind & PIPE_BIND_INDEX_BUFFER)
+                so->index_cache = rzalloc(so, struct panfrost_minmax_cache);
+
         return (struct pipe_resource *)so;
 }
 
@@ -556,14 +536,6 @@ panfrost_resource_destroy(struct pipe_screen *screen,
         ralloc_free(rsrc);
 }
 
-static unsigned
-panfrost_get_layer_stride(struct panfrost_resource *rsrc, unsigned level)
-{
-        if (rsrc->base.target == PIPE_TEXTURE_3D)
-                return rsrc->slices[level].size0;
-        else
-                return rsrc->cubemap_stride;
-}
 
 static void *
 panfrost_transfer_map(struct pipe_context *pctx,
@@ -667,14 +639,27 @@ panfrost_transfer_map(struct pipe_context *pctx,
 
                 return transfer->map;
         } else {
+                /* Direct, persistent writes create holes in time for
+                 * caching... I don't know if this is actually possible but we
+                 * should still get it right */
+
+                unsigned dpw = PIPE_TRANSFER_MAP_DIRECTLY | PIPE_TRANSFER_WRITE | PIPE_TRANSFER_PERSISTENT;
+
+                if ((usage & dpw) == dpw && rsrc->index_cache)
+                        return NULL;
+
                 transfer->base.stride = rsrc->slices[level].stride;
-                transfer->base.layer_stride = panfrost_get_layer_stride(rsrc, level);
+                transfer->base.layer_stride = panfrost_get_layer_stride(
+                                rsrc->slices, rsrc->base.target == PIPE_TEXTURE_3D,
+                                rsrc->cubemap_stride, level);
 
                 /* By mapping direct-write, we're implicitly already
                  * initialized (maybe), so be conservative */
 
-                if ((usage & PIPE_TRANSFER_WRITE) && (usage & PIPE_TRANSFER_MAP_DIRECTLY))
+                if ((usage & PIPE_TRANSFER_WRITE) && (usage & PIPE_TRANSFER_MAP_DIRECTLY)) {
                         rsrc->slices[level].initialized = true;
+                        panfrost_minmax_cache_invalidate(rsrc->index_cache, &transfer->base);
+                }
 
                 return bo->cpu
                        + rsrc->slices[level].offset
@@ -722,6 +707,8 @@ panfrost_transfer_unmap(struct pipe_context *pctx,
         util_range_add(&prsrc->base, &prsrc->valid_buffer_range,
                        transfer->box.x,
                        transfer->box.x + transfer->box.width);
+
+        panfrost_minmax_cache_invalidate(prsrc->index_cache, transfer);
 
         /* Derefence the resource */
         pipe_resource_reference(&transfer->resource, NULL);
@@ -815,10 +802,8 @@ panfrost_get_texture_address(
         struct panfrost_resource *rsrc,
         unsigned level, unsigned face)
 {
-        unsigned level_offset = rsrc->slices[level].offset;
-        unsigned face_offset = face * panfrost_get_layer_stride(rsrc, level);
-
-        return rsrc->bo->gpu + level_offset + face_offset;
+        bool is_3d = rsrc->base.target == PIPE_TEXTURE_3D;
+        return rsrc->bo->gpu + panfrost_texture_offset(rsrc->slices, is_3d, rsrc->cubemap_stride, level, face);
 }
 
 /* Given a resource that has already been allocated, hint that it should use a
@@ -879,6 +864,8 @@ panfrost_resource_hint_layout(
                 panfrost_bo_unreference(rsrc->bo);
                 rsrc->bo = panfrost_bo_create(screen, new_size, PAN_BO_DELAY_MMAP);
         }
+
+        /* TODO: If there are textures bound, regenerate their descriptors */
 }
 
 static void

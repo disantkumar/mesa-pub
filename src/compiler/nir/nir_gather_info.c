@@ -102,12 +102,15 @@ mark_whole_variable(nir_shader *shader, nir_variable *var, bool is_output_read)
 }
 
 static unsigned
-get_io_offset(nir_deref_instr *deref, bool is_vertex_input)
+get_io_offset(nir_deref_instr *deref, bool is_vertex_input, bool per_vertex)
 {
    unsigned offset = 0;
 
    for (nir_deref_instr *d = deref; d; d = nir_deref_instr_parent(d)) {
       if (d->deref_type == nir_deref_type_array) {
+         if (per_vertex && nir_deref_instr_parent(d)->deref_type == nir_deref_type_var)
+            break;
+
          if (!nir_src_is_const(d->arr.index))
             return -1;
 
@@ -132,8 +135,9 @@ try_mask_partial_io(nir_shader *shader, nir_variable *var,
                     nir_deref_instr *deref, bool is_output_read)
 {
    const struct glsl_type *type = var->type;
+   bool per_vertex = nir_is_per_vertex_io(var, shader->info.stage);
 
-   if (nir_is_per_vertex_io(var, shader->info.stage)) {
+   if (per_vertex) {
       assert(glsl_type_is_array(type));
       type = glsl_get_array_element(type);
    }
@@ -157,7 +161,7 @@ try_mask_partial_io(nir_shader *shader, nir_variable *var,
       return false;
    }
 
-   unsigned offset = get_io_offset(deref, false);
+   unsigned offset = get_io_offset(deref, false, per_vertex);
    if (offset == -1)
       return false;
 
@@ -200,6 +204,8 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
    switch (instr->intrinsic) {
    case nir_intrinsic_demote:
    case nir_intrinsic_demote_if:
+      shader->info.fs.uses_demote = true;
+   /* fallthrough: quads with helper lanes only might be discarded entirely */
    case nir_intrinsic_discard:
    case nir_intrinsic_discard_if:
       assert(shader->info.stage == MESA_SHADER_FRAGMENT);
@@ -281,6 +287,7 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
       /* fall through */
 
    case nir_intrinsic_emit_vertex:
+   case nir_intrinsic_emit_vertex_with_counter:
       if (nir_intrinsic_stream_id(instr) > 0)
          shader->info.gs.uses_streams = true;
 
@@ -389,6 +396,7 @@ nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint)
    if (shader->info.stage == MESA_SHADER_FRAGMENT) {
       shader->info.fs.uses_sample_qualifier = false;
       shader->info.fs.uses_discard = false;
+      shader->info.fs.uses_demote = false;
       shader->info.fs.needs_helper_invocations = false;
    }
 

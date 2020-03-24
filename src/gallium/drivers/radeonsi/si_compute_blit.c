@@ -392,8 +392,23 @@ void si_compute_copy_image(struct si_context *sctx,
 	unsigned width = src_box->width;
 	unsigned height = src_box->height;
 	unsigned depth = src_box->depth;
+	enum pipe_format src_format = util_format_linear(src->format);
+	enum pipe_format dst_format = util_format_linear(dst->format);
 
-	unsigned data[] = {src_box->x, src_box->y, src_box->z, 0, dstx, dsty, dstz, 0};
+	assert(util_format_is_subsampled_422(src_format) ==
+	       util_format_is_subsampled_422(dst_format));
+
+	if (util_format_is_subsampled_422(src_format)) {
+		src_format = dst_format = PIPE_FORMAT_R32_UINT;
+		/* Interpreting 422 subsampled format (16 bpp) as 32 bpp
+		 * should force us to divide src_box->x, dstx and width by 2.
+		 * But given that ac_surface allocates this format as 32 bpp
+		 * and that surf_size is then modified to pack the values
+		 * we must keep the original values to get the correct results.
+		 */
+	}
+	unsigned data[] = {src_box->x, src_box->y, src_box->z, 0,
+	                   dstx, dsty, dstz, 0};
 
 	if (width == 0 || height == 0)
 		return;
@@ -430,7 +445,7 @@ void si_compute_copy_image(struct si_context *sctx,
 	struct pipe_image_view image[2] = {0};
 	image[0].resource = src;
 	image[0].shader_access = image[0].access = PIPE_IMAGE_ACCESS_READ;
-	image[0].format = util_format_linear(src->format);
+	image[0].format = src_format;
 	image[0].u.tex.level = src_level;
 	image[0].u.tex.first_layer = 0;
 	image[0].u.tex.last_layer =
@@ -438,7 +453,7 @@ void si_compute_copy_image(struct si_context *sctx,
 						: (unsigned)(src->array_size - 1);
 	image[1].resource = dst;
 	image[1].shader_access = image[1].access = PIPE_IMAGE_ACCESS_WRITE;
-	image[1].format = util_format_linear(dst->format);
+	image[1].format = dst_format;
 	image[1].u.tex.level = dst_level;
 	image[1].u.tex.first_layer = 0;
 	image[1].u.tex.last_layer =

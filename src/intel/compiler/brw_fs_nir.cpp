@@ -881,6 +881,16 @@ fs_visitor::emit_fsign(const fs_builder &bld, const nir_alu_instr *instr,
       }
 
       op[0] = offset(op[0], bld, fsign_instr->src[0].swizzle[channel]);
+
+      /* Resolve any source modifiers.  We could do slightly better on Gen8+
+       * if the only source modifier is negation, but *shrug*.
+       */
+      if (op[1].negate || op[1].abs) {
+         fs_reg tmp = bld.vgrf(op[1].type);
+
+         bld.MOV(tmp, op[1]);
+         op[1] = tmp;
+      }
    } else {
       assert(!instr->dest.saturate);
    }
@@ -3502,7 +3512,6 @@ fs_visitor::nir_emit_fs_intrinsic(const fs_builder &bld,
 
          if (alu != NULL &&
              alu->op != nir_op_bcsel &&
-             alu->op != nir_op_inot &&
              (devinfo->gen > 5 ||
               (alu->instr.pass_flags & BRW_NIR_BOOLEAN_MASK) != BRW_NIR_BOOLEAN_NEEDS_RESOLVE ||
               alu->op == nir_op_fne32 || alu->op == nir_op_feq32 ||
@@ -4056,27 +4065,6 @@ fs_visitor::get_nir_ssbo_intrinsic_index(const brw::fs_builder &bld,
    return bld.emit_uniformize(surf_index);
 }
 
-static unsigned
-image_intrinsic_coord_components(nir_intrinsic_instr *instr)
-{
-   switch (nir_intrinsic_image_dim(instr)) {
-   case GLSL_SAMPLER_DIM_1D:
-      return 1 + nir_intrinsic_image_array(instr);
-   case GLSL_SAMPLER_DIM_2D:
-   case GLSL_SAMPLER_DIM_RECT:
-      return 2 + nir_intrinsic_image_array(instr);
-   case GLSL_SAMPLER_DIM_3D:
-   case GLSL_SAMPLER_DIM_CUBE:
-      return 3;
-   case GLSL_SAMPLER_DIM_BUF:
-      return 1;
-   case GLSL_SAMPLER_DIM_MS:
-      return 2 + nir_intrinsic_image_array(instr);
-   default:
-      unreachable("Invalid image dimension");
-   }
-}
-
 /**
  * The offsets we get from NIR act as if each SIMD channel has it's own blob
  * of contiguous space.  However, if we actually place each SIMD channel in
@@ -4199,7 +4187,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
 
       srcs[SURFACE_LOGICAL_SRC_ADDRESS] = get_nir_src(instr->src[1]);
       srcs[SURFACE_LOGICAL_SRC_IMM_DIMS] =
-         brw_imm_ud(image_intrinsic_coord_components(instr));
+         brw_imm_ud(nir_image_intrinsic_coord_components(instr));
 
       /* Emit an image load, store or atomic op. */
       if (instr->intrinsic == nir_intrinsic_image_load ||

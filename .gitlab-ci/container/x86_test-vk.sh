@@ -6,8 +6,8 @@ set -o xtrace
 export DEBIAN_FRONTEND=noninteractive
 
 apt-get install -y \
-        ca-certificates \
-        gnupg \
+      ca-certificates \
+      gnupg
 
 # Upstream LLVM package repository
 apt-key add .gitlab-ci/container/llvm-snapshot.gpg.key
@@ -28,60 +28,89 @@ EOF
 apt-get dist-upgrade -y
 
 apt-get install -y --no-remove \
+      ccache \
       cmake \
       g++ \
-      git \
       gcc \
+      git \
+      git-lfs \
       libexpat1 \
       libgbm-dev \
       libgles2-mesa-dev \
-      libpng16-16 \
+      libllvm9 \
+      liblz4-1 \
+      liblz4-dev \
       libpng-dev \
-      libvulkan1 \
+      libpng16-16 \
       libvulkan-dev \
+      libvulkan1 \
+      libwayland-client0 \
       libwayland-server0 \
+      libxcb-ewmh-dev \
+      libxcb-ewmh2 \
+      libxcb-keysyms1 \
+      libxcb-keysyms1-dev \
       libxcb-randr0 \
       libxcb-xfixes0 \
-      libxkbcommon0 \
       libxkbcommon-dev \
-      libxrender1 \
+      libxkbcommon0 \
+      libxrandr-dev \
+      libxrandr2 \
       libxrender-dev \
-      libllvm9 \
+      libxrender1 \
       meson \
-      patch \
       pkg-config \
-      python3-distutils \
       python \
+      python3-distutils \
+      python3-pil \
+      python3-requests \
+      python3-yaml \
       xauth \
       xvfb
 
+. .gitlab-ci/container/container_pre_build.sh
 
 ############### Build dEQP runner
 
 . .gitlab-ci/build-cts-runner.sh
 
+############### Build Fossilize
+
+. .gitlab-ci/build-fossilize.sh
+
 ############### Build dEQP VK
 
 . .gitlab-ci/build-deqp-vk.sh
 
+############### Build gfxreconstruct
+
+. .gitlab-ci/build-gfxreconstruct.sh
+
+############### Build VulkanTools
+
+. .gitlab-ci/build-vulkantools.sh
 
 ############### Uninstall the build software
 
+ccache --show-stats
+
 apt-get purge -y \
+      ccache \
       cmake \
       g++ \
       gcc \
-      git \
       gnupg \
       libgbm-dev \
       libgles2-mesa-dev \
+      liblz4-dev \
       libpng-dev \
       libvulkan-dev \
+      libxcb-ewmh-dev \
+      libxcb-keysyms1-dev \
       libxkbcommon-dev \
+      libxrandr-dev \
       libxrender-dev \
       meson \
-      patch \
-      pkg-config \
-      python
+      pkg-config
 
 apt-get autoremove -y --purge

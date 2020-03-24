@@ -31,11 +31,18 @@ import sys
 
 header = """
 #include "api_exec.h"
-#include "context.h"
+#include "glthread_marshal.h"
 #include "dispatch.h"
-#include "glthread.h"
-#include "marshal.h"
-#include "marshal_generated.h"
+
+#define COMPAT (ctx->API != API_OPENGL_CORE)
+
+static inline int safe_mul(int a, int b)
+{
+    if (a < 0 || b < 0) return -1;
+    if (a == 0 || b == 0) return 0;
+    if (a > INT_MAX / b) return -1;
+    return a * b;
+}
 """
 
 
@@ -67,28 +74,22 @@ class PrintCode(gl_XML.gl_print_base):
 
     def printRealHeader(self):
         print(header)
-        print('static inline int safe_mul(int a, int b)')
-        print('{')
-        print('    if (a < 0 || b < 0) return -1;')
-        print('    if (a == 0 || b == 0) return 0;')
-        print('    if (a > INT_MAX / b) return -1;')
-        print('    return a * b;')
-        print('}')
-        print()
 
     def printRealFooter(self):
         pass
 
-    def print_sync_call(self, func):
+    def print_sync_call(self, func, unmarshal = 0):
         call = 'CALL_{0}(ctx->CurrentServerDispatch, ({1}))'.format(
             func.name, func.get_called_parameter_string())
         if func.return_type == 'void':
             out('{0};'.format(call))
+            if func.marshal_call_after and not unmarshal:
+                out(func.marshal_call_after);
         else:
             out('return {0};'.format(call))
+            assert not func.marshal_call_after
 
     def print_sync_dispatch(self, func):
-        out('debug_print_sync_fallback("{0}");'.format(func.name))
         self.print_sync_call(func)
 
     def print_sync_body(self, func):
@@ -98,8 +99,7 @@ class PrintCode(gl_XML.gl_print_base):
         out('{')
         with indent():
             out('GET_CURRENT_CONTEXT(ctx);')
-            out('_mesa_glthread_finish(ctx);')
-            out('debug_print_sync("{0}");'.format(func.name))
+            out('_mesa_glthread_finish_before(ctx, "{0}");'.format(func.name))
             self.print_sync_call(func)
         out('}')
         out('')
@@ -116,25 +116,30 @@ class PrintCode(gl_XML.gl_print_base):
                 out('cmd->{0} = {0};'.format(p.name))
         if func.variable_params:
             out('char *variable_data = (char *) (cmd + 1);')
+            i = 1
             for p in func.variable_params:
                 if p.img_null_flag:
                     out('cmd->{0}_null = !{0};'.format(p.name))
                     out('if (!cmd->{0}_null) {{'.format(p.name))
                     with indent():
-                        out(('memcpy(variable_data, {0}, {1});').format(
-                            p.name, p.size_string(False)))
-                        out('variable_data += {0};'.format(
-                            p.size_string(False)))
+                        out(('memcpy(variable_data, {0}, {0}_size);').format(p.name))
+                        if i < len(func.variable_params):
+                            out('variable_data += {0}_size;'.format(p.name))
                     out('}')
                 else:
-                    out(('memcpy(variable_data, {0}, {1});').format(
-                        p.name, p.size_string(False)))
-                    out('variable_data += {0};'.format(
-                        p.size_string(False)))
+                    out(('memcpy(variable_data, {0}, {0}_size);').format(p.name))
+                    if i < len(func.variable_params):
+                        out('variable_data += {0}_size;'.format(p.name))
+                i += 1
 
         if not func.fixed_params and not func.variable_params:
-            out('(void) cmd;\n')
-        out('_mesa_post_marshal_hook(ctx);')
+            out('(void) cmd;')
+
+        if func.marshal_call_after:
+            out(func.marshal_call_after);
+
+        # Uncomment this if you want to call _mesa_glthread_finish for debugging
+        #out('_mesa_glthread_finish(ctx);')
 
     def print_async_struct(self, func):
         out('struct marshal_cmd_{0}'.format(func.name))
@@ -157,17 +162,17 @@ class PrintCode(gl_XML.gl_print_base):
                 if p.count_scale != 1:
                     out(('/* Next {0} bytes are '
                          '{1} {2}[{3}][{4}] */').format(
-                            p.size_string(), p.get_base_type_string(),
+                            p.size_string(marshal = 1), p.get_base_type_string(),
                             p.name, p.counter, p.count_scale))
                 else:
                     out(('/* Next {0} bytes are '
                          '{1} {2}[{3}] */').format(
-                            p.size_string(), p.get_base_type_string(),
+                            p.size_string(marshal = 1), p.get_base_type_string(),
                             p.name, p.counter))
         out('};')
 
     def print_async_unmarshal(self, func):
-        out('static inline void')
+        out('static void')
         out(('_mesa_unmarshal_{0}(struct gl_context *ctx, '
              'const struct marshal_cmd_{0} *cmd)').format(func.name))
         out('{')
@@ -189,84 +194,83 @@ class PrintCode(gl_XML.gl_print_base):
 
             if func.variable_params:
                 for p in func.variable_params:
-                    out('const {0} * {1};'.format(
+                    out('{0} * {1};'.format(
                             p.get_base_type_string(), p.name))
                 out('const char *variable_data = (const char *) (cmd + 1);')
+                i = 1
                 for p in func.variable_params:
-                    out('{0} = (const {1} *) variable_data;'.format(
+                    out('{0} = ({1} *) variable_data;'.format(
                             p.name, p.get_base_type_string()))
 
                     if p.img_null_flag:
                         out('if (cmd->{0}_null)'.format(p.name))
                         with indent():
                             out('{0} = NULL;'.format(p.name))
-                        out('else')
-                        with indent():
-                            out('variable_data += {0};'.format(p.size_string(False)))
-                    else:
-                        out('variable_data += {0};'.format(p.size_string(False)))
+                        if i < len(func.variable_params):
+                            out('else')
+                            with indent():
+                                out('variable_data += {0};'.format(p.size_string(False, marshal = 1)))
+                    elif i < len(func.variable_params):
+                        out('variable_data += {0};'.format(p.size_string(False, marshal = 1)))
+                    i += 1
 
-            self.print_sync_call(func)
+            self.print_sync_call(func, unmarshal = 1)
         out('}')
 
     def validate_count_or_fallback(self, func):
         # Check that any counts for variable-length arguments might be < 0, in
         # which case the command alloc or the memcpy would blow up before we
         # get to the validation in Mesa core.
+        list = []
         for p in func.parameters:
             if p.is_variable_length():
-                out('if (unlikely({0} < 0)) {{'.format(p.size_string()))
-                with indent():
-                    out('goto fallback_to_sync;')
-                out('}')
-                return True
-        return False
+                list.append('{0}_size < 0'.format(p.name))
+                list.append('({0}_size > 0 && !{0})'.format(p.name))
 
+        if len(list) == 0:
+            return
+
+        list.append('(unsigned)cmd_size > MARSHAL_MAX_CMD_SIZE')
+
+        out('if (unlikely({0})) {{'.format(' || '.join(list)))
+        with indent():
+            out('_mesa_glthread_finish_before(ctx, "{0}");'.format(func.name))
+            self.print_sync_dispatch(func)
+            out('return;')
+        out('}')
 
     def print_async_marshal(self, func):
-        need_fallback_sync = False
         out('static void GLAPIENTRY')
         out('_mesa_marshal_{0}({1})'.format(
                 func.name, func.get_parameter_string()))
         out('{')
         with indent():
             out('GET_CURRENT_CONTEXT(ctx);')
+            for p in func.variable_params:
+                out('int {0}_size = {1};'.format(p.name, p.size_string(marshal = 1)))
+
             struct = 'struct marshal_cmd_{0}'.format(func.name)
             size_terms = ['sizeof({0})'.format(struct)]
             for p in func.variable_params:
-                size = p.size_string()
                 if p.img_null_flag:
-                    size = '({0} ? {1} : 0)'.format(p.name, size)
-                size_terms.append(size)
-            out('size_t cmd_size = {0};'.format(' + '.join(size_terms)))
+                    size_terms.append('({0} ? {0}_size : 0)'.format(p.name))
+                else:
+                    size_terms.append('{0}_size'.format(p.name))
+            out('int cmd_size = {0};'.format(' + '.join(size_terms)))
             out('{0} *cmd;'.format(struct))
 
-            out('debug_print_marshal("{0}");'.format(func.name))
+            self.validate_count_or_fallback(func)
 
-            need_fallback_sync = self.validate_count_or_fallback(func)
-
-            if func.marshal_fail:
-                out('if ({0}) {{'.format(func.marshal_fail))
+            if func.marshal_sync:
+                out('if ({0}) {{'.format(func.marshal_sync))
                 with indent():
-                    out('_mesa_glthread_finish(ctx);')
-                    out('_mesa_glthread_restore_dispatch(ctx, __func__);')
+                    out('_mesa_glthread_finish_before(ctx, "{0}");'.format(func.name))
                     self.print_sync_dispatch(func)
                     out('return;')
                 out('}')
 
-            out('if (cmd_size <= MARSHAL_MAX_CMD_SIZE) {')
-            with indent():
-                self.print_async_dispatch(func)
-                out('return;')
-            out('}')
-
-        out('')
-        if need_fallback_sync:
-            out('fallback_to_sync:')
         with indent():
-            out('_mesa_glthread_finish(ctx);')
-            self.print_sync_dispatch(func)
-
+            self.print_async_dispatch(func)
         out('}')
 
     def print_async_body(self, func):
@@ -278,31 +282,14 @@ class PrintCode(gl_XML.gl_print_base):
         out('')
 
     def print_unmarshal_dispatch_cmd(self, api):
-        out('size_t')
-        out('_mesa_unmarshal_dispatch_cmd(struct gl_context *ctx, '
-            'const void *cmd)')
-        out('{')
+        out('const _mesa_unmarshal_func _mesa_unmarshal_dispatch[NUM_DISPATCH_CMD] = {')
         with indent():
-            out('const struct marshal_cmd_base *cmd_base = cmd;')
-            out('switch (cmd_base->cmd_id) {')
             for func in api.functionIterateAll():
                 flavor = func.marshal_flavor()
                 if flavor in ('skip', 'sync'):
                     continue
-                out('case DISPATCH_CMD_{0}:'.format(func.name))
-                with indent():
-                    out('debug_print_unmarshal("{0}");'.format(func.name))
-                    out(('_mesa_unmarshal_{0}(ctx, (const struct marshal_cmd_{0} *)'
-                         ' cmd);').format(func.name))
-                    out('break;')
-            out('default:')
-            with indent():
-                out('assert(!"Unrecognized command ID");')
-                out('break;')
-            out('}')
-            out('')
-            out('return cmd_base->cmd_size;')
-        out('}')
+                out('[DISPATCH_CMD_{0}] = (_mesa_unmarshal_func)_mesa_unmarshal_{0},'.format(func.name))
+        out('};')
         out('')
         out('')
 

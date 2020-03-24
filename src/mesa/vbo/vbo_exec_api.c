@@ -240,7 +240,7 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
  */
 static void
 vbo_exec_wrap_upgrade_vertex(struct vbo_exec_context *exec,
-                             GLuint attr, GLuint newSize)
+                             GLuint attr, GLuint newSize, GLenum newType)
 {
    struct gl_context *ctx = exec->ctx;
    struct vbo_context *vbo = vbo_context(ctx);
@@ -278,6 +278,8 @@ vbo_exec_wrap_upgrade_vertex(struct vbo_exec_context *exec,
    /* Fix up sizes:
     */
    exec->vtx.attr[attr].size = newSize;
+   exec->vtx.attr[attr].active_size = newSize;
+   exec->vtx.attr[attr].type = newType;
    exec->vtx.vertex_size += newSize - oldSize;
    exec->vtx.vertex_size_no_pos = exec->vtx.vertex_size - exec->vtx.attr[0].size;
    exec->vtx.max_vert = vbo_compute_max_verts(exec);
@@ -411,7 +413,7 @@ vbo_exec_fixup_vertex(struct gl_context *ctx, GLuint attr,
       /* New size is larger.  Need to flush existing vertices and get
        * an enlarged vertex format.
        */
-      vbo_exec_wrap_upgrade_vertex(exec, attr, newSize);
+      vbo_exec_wrap_upgrade_vertex(exec, attr, newSize, newType);
    }
    else if (newSize < exec->vtx.attr[attr].active_size) {
       GLuint i;
@@ -423,10 +425,9 @@ vbo_exec_fixup_vertex(struct gl_context *ctx, GLuint attr,
        */
       for (i = newSize; i <= exec->vtx.attr[attr].size; i++)
          exec->vtx.attrptr[attr][i-1] = id[i-1];
-   }
 
-   exec->vtx.attr[attr].active_size = newSize;
-   exec->vtx.attr[attr].type = newType;
+      exec->vtx.attr[attr].active_size = newSize;
+   }
 }
 
 
@@ -473,24 +474,33 @@ do {                                                                    \
                                                                         \
    assert(sz == 1 || sz == 2);                                          \
                                                                         \
-   /* check if attribute size or type is changing */                    \
-   if (unlikely(exec->vtx.attr[A].active_size != N * sz ||              \
-                exec->vtx.attr[A].type != T)) {                         \
-      vbo_exec_fixup_vertex(ctx, A, N * sz, T);                         \
-   }                                                                    \
-                                                                        \
    /* store a copy of the attribute in exec except for glVertex */      \
    if ((A) != 0) {                                                      \
+      /* Check if attribute size or type is changing. */                \
+      if (unlikely(exec->vtx.attr[A].active_size != N * sz ||           \
+                   exec->vtx.attr[A].type != T)) {                      \
+         vbo_exec_fixup_vertex(ctx, A, N * sz, T);                      \
+      }                                                                 \
+                                                                        \
       C *dest = (C *)exec->vtx.attrptr[A];                              \
       if (N>0) dest[0] = V0;                                            \
       if (N>1) dest[1] = V1;                                            \
       if (N>2) dest[2] = V2;                                            \
       if (N>3) dest[3] = V3;                                            \
       assert(exec->vtx.attr[A].type == T);                              \
-   }                                                                    \
                                                                         \
-   if ((A) == 0) {                                                      \
+      /* we now have accumulated a per-vertex attribute */              \
+      ctx->Driver.NeedFlush |= FLUSH_UPDATE_CURRENT;                    \
+   } else {                                                             \
       /* This is a glVertex call */                                     \
+      int size = exec->vtx.attr[0].size;                                \
+                                                                        \
+      /* Check if attribute size or type is changing. */                \
+      if (unlikely(size < N * sz ||                                     \
+                   exec->vtx.attr[0].type != T)) {                      \
+         vbo_exec_wrap_upgrade_vertex(exec, 0, N * sz, T);              \
+      }                                                                 \
+                                                                        \
       uint32_t *dst = (uint32_t *)exec->vtx.buffer_ptr;                 \
       uint32_t *src = (uint32_t *)exec->vtx.vertex;                     \
       unsigned vertex_size_no_pos = exec->vtx.vertex_size_no_pos;       \
@@ -506,6 +516,12 @@ do {                                                                    \
          if (N > 1) *dst++ = V1;                                        \
          if (N > 2) *dst++ = V2;                                        \
          if (N > 3) *dst++ = V3;                                        \
+                                                                        \
+         if (unlikely(N < size)) {                                      \
+            if (N < 2 && size >= 2) *dst++ = V1;                        \
+            if (N < 3 && size >= 3) *dst++ = V2;                        \
+            if (N < 4 && size >= 4) *dst++ = V3;                        \
+         }                                                              \
       } else {                                                          \
          /* 64 bits: dst can be unaligned, so copy each 4-byte word */  \
          /* separately */                                               \
@@ -513,6 +529,12 @@ do {                                                                    \
          if (N > 1) SET_64BIT(dst, V1);                                 \
          if (N > 2) SET_64BIT(dst, V2);                                 \
          if (N > 3) SET_64BIT(dst, V3);                                 \
+                                                                        \
+         if (unlikely(N * 2 < size)) {                                  \
+            if (N < 2 && size >= 4) SET_64BIT(dst, V1);                 \
+            if (N < 3 && size >= 6) SET_64BIT(dst, V2);                 \
+            if (N < 4 && size >= 8) SET_64BIT(dst, V3);                 \
+         }                                                              \
       }                                                                 \
                                                                         \
       /* dst now points at the beginning of the next vertex */          \
@@ -523,9 +545,6 @@ do {                                                                    \
                                                                         \
       if (unlikely(++exec->vtx.vert_count >= exec->vtx.max_vert))       \
          vbo_exec_vtx_wrap(exec);                                       \
-   } else {                                                             \
-      /* we now have accumulated per-vertex attributes */               \
-      ctx->Driver.NeedFlush |= FLUSH_UPDATE_CURRENT;                    \
    }                                                                    \
 } while (0)
 
@@ -810,11 +829,8 @@ vbo_exec_Begin(GLenum mode)
    exec->vtx.prim[i].mode = mode;
    exec->vtx.prim[i].begin = 1;
    exec->vtx.prim[i].end = 0;
-   exec->vtx.prim[i].indexed = 0;
    exec->vtx.prim[i].start = exec->vtx.vert_count;
    exec->vtx.prim[i].count = 0;
-   exec->vtx.prim[i].num_instances = 1;
-   exec->vtx.prim[i].base_instance = 0;
 
    ctx->Driver.CurrentExecPrimitive = mode;
 
@@ -850,14 +866,8 @@ try_vbo_merge(struct vbo_exec_context *exec)
       struct _mesa_prim *prev = &exec->vtx.prim[exec->vtx.prim_count - 2];
       assert(prev == cur - 1);
 
-      if (vbo_can_merge_prims(prev, cur)) {
-         assert(cur->begin);
-         assert(cur->end);
-         assert(prev->begin);
-         assert(prev->end);
-         vbo_merge_prims(prev, cur);
+      if (vbo_merge_draws(exec->ctx, false, prev, cur))
          exec->vtx.prim_count--;  /* drop the last primitive */
-      }
    }
 }
 
@@ -1007,7 +1017,8 @@ vbo_exec_vtx_init(struct vbo_exec_context *exec, bool use_buffer_objects)
                                     &exec->vtx.bufferobj,
                                     ctx->Shared->NullBufferObj);
 
-      exec->vtx.buffer_map = _mesa_align_malloc(VBO_VERT_BUFFER_SIZE, 64);
+      exec->vtx.buffer_map =
+         _mesa_align_malloc(ctx->Const.glBeginEndBufferSize, 64);
       exec->vtx.buffer_ptr = exec->vtx.buffer_map;
    }
 

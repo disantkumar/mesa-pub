@@ -5566,7 +5566,9 @@ static void si_init_config(struct si_context *sctx)
 			/* For Wave32, the hw will launch twice the number of late
 			 * alloc waves, so 1 == 2x wave32.
 			 */
-			if (num_cu_per_sh <= 6) {
+			if (!sscreen->info.use_late_alloc) {
+				late_alloc_wave64 = 0;
+			} else if (num_cu_per_sh <= 6) {
 				late_alloc_wave64 = num_cu_per_sh - 2;
 			} else {
 				late_alloc_wave64 = (num_cu_per_sh - 2) * 4;
@@ -5578,8 +5580,8 @@ static void si_init_config(struct si_context *sctx)
 					     sctx->family != CHIP_NAVI14 ? 0xfff3 : 0xffff;
 			}
 		} else {
-			if (sctx->family == CHIP_KABINI) {
-				late_alloc_wave64 = 0; /* Potential hang on Kabini. */
+			if (!sscreen->info.use_late_alloc) {
+				late_alloc_wave64 = 0;
 			} else if (num_cu_per_sh <= 4) {
 				/* Too few available compute units per SH. Disallowing
 				 * VS to run on one CU could hurt us more than late VS
@@ -5633,23 +5635,34 @@ static void si_init_config(struct si_context *sctx)
 				       sscreen->info.pa_sc_tile_steering_override);
 		}
 
+		/* Enable CMASK/FMASK/HTILE/DCC caching in L2 for small chips. */
+		unsigned meta_write_policy, meta_read_policy;
+		/* TODO: investigate whether LRU improves performance on other chips too */
+		if (sscreen->info.num_render_backends <= 4) {
+			meta_write_policy = V_02807C_CACHE_LRU_WR; /* cache writes */
+			meta_read_policy =  V_02807C_CACHE_LRU_RD; /* cache reads */
+		} else {
+			meta_write_policy = V_02807C_CACHE_STREAM_WR; /* write combine */
+			meta_read_policy =  V_02807C_CACHE_NOA_RD;    /* don't cache reads */
+		}
+
 		si_pm4_set_reg(pm4, R_02807C_DB_RMI_L2_CACHE_CONTROL,
 			       S_02807C_Z_WR_POLICY(V_02807C_CACHE_STREAM_WR) |
 			       S_02807C_S_WR_POLICY(V_02807C_CACHE_STREAM_WR) |
-			       S_02807C_HTILE_WR_POLICY(V_02807C_CACHE_STREAM_WR) |
+			       S_02807C_HTILE_WR_POLICY(meta_write_policy) |
 			       S_02807C_ZPCPSD_WR_POLICY(V_02807C_CACHE_STREAM_WR) |
 			       S_02807C_Z_RD_POLICY(V_02807C_CACHE_NOA_RD) |
 			       S_02807C_S_RD_POLICY(V_02807C_CACHE_NOA_RD) |
-			       S_02807C_HTILE_RD_POLICY(V_02807C_CACHE_NOA_RD));
+			       S_02807C_HTILE_RD_POLICY(meta_read_policy));
 
 		si_pm4_set_reg(pm4, R_028410_CB_RMI_GL2_CACHE_CONTROL,
-			       S_028410_CMASK_WR_POLICY(V_028410_CACHE_STREAM_WR) |
-			       S_028410_FMASK_WR_POLICY(V_028410_CACHE_STREAM_WR) |
-			       S_028410_DCC_WR_POLICY(V_028410_CACHE_STREAM_WR) |
+			       S_028410_CMASK_WR_POLICY(meta_write_policy) |
+			       S_028410_FMASK_WR_POLICY(meta_write_policy) |
+			       S_028410_DCC_WR_POLICY(meta_write_policy) |
 			       S_028410_COLOR_WR_POLICY(V_028410_CACHE_STREAM_WR) |
-			       S_028410_CMASK_RD_POLICY(V_028410_CACHE_NOA_RD) |
-			       S_028410_FMASK_RD_POLICY(V_028410_CACHE_NOA_RD) |
-			       S_028410_DCC_RD_POLICY(V_028410_CACHE_NOA_RD) |
+			       S_028410_CMASK_RD_POLICY(meta_read_policy) |
+			       S_028410_FMASK_RD_POLICY(meta_read_policy) |
+			       S_028410_DCC_RD_POLICY(meta_read_policy) |
 			       S_028410_COLOR_RD_POLICY(V_028410_CACHE_NOA_RD));
 		si_pm4_set_reg(pm4, R_028428_CB_COVERAGE_OUT_CONTROL, 0);
 
@@ -5659,7 +5672,14 @@ static void si_init_config(struct si_context *sctx)
 		si_pm4_set_reg(pm4, R_00B1C0_SPI_SHADER_REQ_CTRL_VS, 0);
 	}
 
-	if (sctx->chip_class >= GFX8) {
+	if (sctx->chip_class >= GFX9) {
+		si_pm4_set_reg(pm4, R_028B50_VGT_TESS_DISTRIBUTION,
+			       S_028B50_ACCUM_ISOLINE(40) |
+			       S_028B50_ACCUM_TRI(30) |
+			       S_028B50_ACCUM_QUAD(24) |
+			       S_028B50_DONUT_SPLIT(24) |
+			       S_028B50_TRAP_SPLIT(6));
+	} else if (sctx->chip_class >= GFX8) {
 		unsigned vgt_tess_distribution;
 
 		vgt_tess_distribution =

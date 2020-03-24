@@ -446,8 +446,7 @@ struct brw_vertex_buffer {
    GLuint step_rate;
 };
 struct brw_vertex_element {
-   const struct gl_array_attributes *glattrib;
-   const struct gl_vertex_buffer_binding *glbinding;
+   const struct gl_vertex_format *glformat;
 
    int buffer;
    bool is_dual_slot;
@@ -907,6 +906,13 @@ struct brw_context
        */
       struct brw_bo *draw_params_count_bo;
       uint32_t draw_params_count_offset;
+
+      /**
+       * Draw indirect buffer.
+       */
+      unsigned draw_indirect_stride;
+      GLsizeiptr draw_indirect_offset;
+      struct gl_buffer_object *draw_indirect_data;
    } draw;
 
    struct {

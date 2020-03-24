@@ -59,6 +59,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_POINT_SPRITE:
 	case PIPE_CAP_OCCLUSION_QUERY:
 	case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
+	case PIPE_CAP_TEXTURE_SHADOW_LOD:
 	case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
 	case PIPE_CAP_BLEND_EQUATION_SEPARATE:
 	case PIPE_CAP_TEXTURE_SWIZZLE:
@@ -159,6 +160,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_PACKED_UNIFORMS:
 	case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
 	case PIPE_CAP_GL_SPIRV:
+	case PIPE_CAP_DRAW_INFO_START_WITH_USER_INDICES:
 		return 1;
 
 	case PIPE_CAP_QUERY_SO_OVERFLOW:
@@ -200,6 +202,9 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_MAX_TEXTURE_UPLOAD_MEMORY_BUDGET:
 		/* Optimal number for good TexSubImage performance on Polaris10. */
 		return 64 * 1024 * 1024;
+
+	case PIPE_CAP_GL_BEGIN_END_BUFFER_SIZE:
+		return 4096 * 1024;
 
 	case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
 	case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
@@ -560,12 +565,14 @@ static int si_get_video_param(struct pipe_screen *screen,
 	if (entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE) {
 		switch (param) {
 		case PIPE_VIDEO_CAP_SUPPORTED:
-			return (codec == PIPE_VIDEO_FORMAT_MPEG4_AVC &&
-				(si_vce_is_fw_version_supported(sscreen) ||
-				sscreen->info.family >= CHIP_RAVEN)) ||
+			return ((codec == PIPE_VIDEO_FORMAT_MPEG4_AVC &&
+				(sscreen->info.family >= CHIP_RAVEN ||
+				 si_vce_is_fw_version_supported(sscreen))) ||
 				(profile == PIPE_VIDEO_PROFILE_HEVC_MAIN &&
 				(sscreen->info.family >= CHIP_RAVEN ||
-				si_radeon_uvd_enc_supported(sscreen)));
+				 si_radeon_uvd_enc_supported(sscreen))) ||
+				(profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10 &&
+				 sscreen->info.family >= CHIP_RENOIR));
 		case PIPE_VIDEO_CAP_NPOT_TEXTURES:
 			return 1;
 		case PIPE_VIDEO_CAP_MAX_WIDTH:
@@ -710,10 +717,11 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen,
 				       enum pipe_video_profile profile,
 				       enum pipe_video_entrypoint entrypoint)
 {
-	/* HEVC 10 bit decoding should use P016 instead of NV12 if possible */
+	/* HEVC 10 bit decoding should use P010 instead of NV12 if possible */
 	if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
 		return (format == PIPE_FORMAT_NV12) ||
-			(format == PIPE_FORMAT_P016);
+		       (format == PIPE_FORMAT_P010) ||
+		       (format == PIPE_FORMAT_P016);
 
 	/* Vp9 profile 2 supports 10 bit decoding using P016 */
 	if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)

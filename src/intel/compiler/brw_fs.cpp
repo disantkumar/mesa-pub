@@ -1641,6 +1641,26 @@ fs_visitor::assign_curb_setup()
    this->first_non_payload_grf = payload.num_regs + prog_data->curb_read_length;
 }
 
+/*
+ * Build up an array of indices into the urb_setup array that
+ * references the active entries of the urb_setup array.
+ * Used to accelerate walking the active entries of the urb_setup array
+ * on each upload.
+ */
+void
+brw_compute_urb_setup_index(struct brw_wm_prog_data *wm_prog_data)
+{
+   /* Make sure uint8_t is sufficient */
+   STATIC_ASSERT(VARYING_SLOT_MAX <= 0xff);
+   uint8_t index = 0;
+   for (uint8_t attr = 0; attr < VARYING_SLOT_MAX; attr++) {
+      if (wm_prog_data->urb_setup[attr] >= 0) {
+         wm_prog_data->urb_setup_attribs[index++] = attr;
+      }
+   }
+   wm_prog_data->urb_setup_attribs_count = index;
+}
+
 static void
 calculate_urb_setup(const struct gen_device_info *devinfo,
                     const struct brw_wm_prog_key *key,
@@ -1728,6 +1748,8 @@ calculate_urb_setup(const struct gen_device_info *devinfo,
    }
 
    prog_data->num_varying_inputs = urb_next;
+
+   brw_compute_urb_setup_index(prog_data);
 }
 
 void
@@ -2029,7 +2051,7 @@ fs_visitor::split_virtual_grfs()
          }
       }
    }
-   invalidate_live_intervals();
+   invalidate_analysis(DEPENDENCY_INSTRUCTION_DETAIL | DEPENDENCY_VARIABLES);
 
    delete[] split_points;
    delete[] new_virtual_grf;
@@ -2037,7 +2059,7 @@ fs_visitor::split_virtual_grfs()
 }
 
 /**
- * Remove unused virtual GRFs and compact the virtual_grf_* arrays.
+ * Remove unused virtual GRFs and compact the vgrf_* arrays.
  *
  * During code generation, we create tons of temporary variables, many of
  * which get immediately killed and are never used again.  Yet, in later
@@ -2074,7 +2096,7 @@ fs_visitor::compact_virtual_grfs()
       } else {
          remap_table[i] = new_index;
          alloc.sizes[new_index] = alloc.sizes[i];
-         invalidate_live_intervals();
+         invalidate_analysis(DEPENDENCY_INSTRUCTION_DETAIL | DEPENDENCY_VARIABLES);
          ++new_index;
       }
    }
@@ -2537,7 +2559,7 @@ fs_visitor::lower_constant_loads()
          inst->remove(block);
       }
    }
-   invalidate_live_intervals();
+   invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 }
 
 bool
@@ -2815,6 +2837,11 @@ fs_visitor::opt_algebraic()
          }
       }
    }
+
+   if (progress)
+      invalidate_analysis(DEPENDENCY_INSTRUCTION_DATA_FLOW |
+                          DEPENDENCY_INSTRUCTION_DETAIL);
+
    return progress;
 }
 
@@ -2864,7 +2891,7 @@ fs_visitor::opt_zero_samples()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTION_DETAIL);
 
    return progress;
 }
@@ -2961,7 +2988,7 @@ fs_visitor::opt_sampler_eot()
     * flag and submit a header together with the sampler message as required
     * by the hardware.
     */
-   invalidate_live_intervals();
+   invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
    return true;
 }
 
@@ -3014,7 +3041,8 @@ fs_visitor::opt_register_renaming()
    }
 
    if (progress) {
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTION_DETAIL |
+                          DEPENDENCY_VARIABLES);
 
       for (unsigned i = 0; i < ARRAY_SIZE(delta_xy); i++) {
          if (delta_xy[i].file == VGRF && remap[delta_xy[i].nr] != ~0u) {
@@ -3062,7 +3090,7 @@ fs_visitor::opt_redundant_discard_jumps()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 
    return progress;
 }
@@ -3093,7 +3121,7 @@ fs_visitor::compute_to_mrf()
    if (devinfo->gen >= 7)
       return false;
 
-   calculate_live_intervals();
+   const fs_live_variables &live = live_analysis.require();
 
    foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
       int ip = next_ip;
@@ -3111,7 +3139,7 @@ fs_visitor::compute_to_mrf()
       /* Can't compute-to-MRF this GRF if someone else was going to
        * read it later.
        */
-      if (this->virtual_grf_end[inst->src[0].nr] > ip)
+      if (live.vgrf_end[inst->src[0].nr] > ip)
 	 continue;
 
       /* Found a move of a GRF to a MRF.  Let's see if we can go rewrite the
@@ -3256,7 +3284,7 @@ fs_visitor::compute_to_mrf()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 
    return progress;
 }
@@ -3312,6 +3340,9 @@ fs_visitor::eliminate_find_live_channel()
          break;
       }
    }
+
+   if (progress)
+      invalidate_analysis(DEPENDENCY_INSTRUCTION_DETAIL);
 
    return progress;
 }
@@ -3459,7 +3490,7 @@ fs_visitor::remove_duplicate_mrf_writes()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 
    return progress;
 }
@@ -3508,7 +3539,7 @@ fs_visitor::remove_extra_rounding_modes()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 
    return progress;
 }
@@ -3689,7 +3720,7 @@ fs_visitor::insert_gen4_send_dependency_workarounds()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 }
 
 /**
@@ -3729,7 +3760,7 @@ fs_visitor::lower_uniform_pull_constant_loads()
          inst->header_size = 1;
          inst->mlen = 1;
 
-         invalidate_live_intervals();
+         invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
       } else {
          /* Before register allocation, we didn't tell the scheduler about the
           * MRF we use.  We know it's safe to use this MRF because nothing
@@ -3847,7 +3878,7 @@ fs_visitor::lower_load_payload()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 
    return progress;
 }
@@ -4147,7 +4178,7 @@ fs_visitor::lower_integer_multiplication()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 
    return progress;
 }
@@ -4177,7 +4208,7 @@ fs_visitor::lower_minmax()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 
    return progress;
 }
@@ -4266,7 +4297,7 @@ fs_visitor::lower_sub_sat()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 
    return progress;
 }
@@ -5978,7 +6009,7 @@ fs_visitor::lower_logical_sends()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 
    return progress;
 }
@@ -6863,7 +6894,7 @@ fs_visitor::lower_simd_width()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 
    return progress;
 }
@@ -6944,19 +6975,19 @@ fs_visitor::lower_barycentrics()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 
    return progress;
 }
 
 void
-fs_visitor::dump_instructions()
+fs_visitor::dump_instructions() const
 {
    dump_instructions(NULL);
 }
 
 void
-fs_visitor::dump_instructions(const char *name)
+fs_visitor::dump_instructions(const char *name) const
 {
    FILE *file = stderr;
    if (name && geteuid() != 0) {
@@ -6966,11 +6997,11 @@ fs_visitor::dump_instructions(const char *name)
    }
 
    if (cfg) {
-      calculate_register_pressure();
-      int ip = 0, max_pressure = 0;
+      const register_pressure &rp = regpressure_analysis.require();
+      unsigned ip = 0, max_pressure = 0;
       foreach_block_and_inst(block, backend_instruction, inst, cfg) {
-         max_pressure = MAX2(max_pressure, regs_live_at_ip[ip]);
-         fprintf(file, "{%3d} %4d: ", regs_live_at_ip[ip], ip);
+         max_pressure = MAX2(max_pressure, rp.regs_live_at_ip[ip]);
+         fprintf(file, "{%3d} %4d: ", rp.regs_live_at_ip[ip], ip);
          dump_instruction(inst, file);
          ip++;
       }
@@ -6989,15 +7020,15 @@ fs_visitor::dump_instructions(const char *name)
 }
 
 void
-fs_visitor::dump_instruction(backend_instruction *be_inst)
+fs_visitor::dump_instruction(const backend_instruction *be_inst) const
 {
    dump_instruction(be_inst, stderr);
 }
 
 void
-fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
+fs_visitor::dump_instruction(const backend_instruction *be_inst, FILE *file) const
 {
-   fs_inst *inst = (fs_inst *)be_inst;
+   const fs_inst *inst = (const fs_inst *)be_inst;
 
    if (inst->predicate) {
       fprintf(file, "(%cf%d.%d) ",
@@ -7350,22 +7381,31 @@ fs_visitor::setup_cs_payload()
    payload.num_regs = 1;
 }
 
-void
-fs_visitor::calculate_register_pressure()
+brw::register_pressure::register_pressure(const fs_visitor *v)
 {
-   invalidate_live_intervals();
-   calculate_live_intervals();
+   const fs_live_variables &live = v->live_analysis.require();
+   const unsigned num_instructions = v->cfg->num_blocks ?
+      v->cfg->blocks[v->cfg->num_blocks - 1]->end_ip + 1 : 0;
 
-   unsigned num_instructions = 0;
-   foreach_block(block, cfg)
-      num_instructions += block->instructions.length();
+   regs_live_at_ip = new unsigned[num_instructions]();
 
-   regs_live_at_ip = rzalloc_array(mem_ctx, int, num_instructions);
-
-   for (unsigned reg = 0; reg < alloc.count; reg++) {
-      for (int ip = virtual_grf_start[reg]; ip <= virtual_grf_end[reg]; ip++)
-         regs_live_at_ip[ip] += alloc.sizes[reg];
+   for (unsigned reg = 0; reg < v->alloc.count; reg++) {
+      for (int ip = live.vgrf_start[reg]; ip <= live.vgrf_end[reg]; ip++)
+         regs_live_at_ip[ip] += v->alloc.sizes[reg];
    }
+}
+
+brw::register_pressure::~register_pressure()
+{
+   delete[] regs_live_at_ip;
+}
+
+void
+fs_visitor::invalidate_analysis(brw::analysis_dependency_class c)
+{
+   backend_shader::invalidate_analysis(c);
+   live_analysis.invalidate(c);
+   regpressure_analysis.invalidate(c);
 }
 
 void
@@ -7580,7 +7620,7 @@ fs_visitor::fixup_sends_duplicate_payload()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 
    return progress;
 }
@@ -7603,7 +7643,8 @@ fs_visitor::fixup_3src_null_dest()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTION_DETAIL |
+                          DEPENDENCY_VARIABLES);
 }
 
 /**
@@ -7651,15 +7692,15 @@ fs_visitor::fixup_nomask_control_flow()
    unsigned depth = 0;
    bool progress = false;
 
-   calculate_live_intervals();
+   const fs_live_variables &live_vars = live_analysis.require();
 
    /* Scan the program backwards in order to be able to easily determine
     * whether the flag register is live at any point.
     */
    foreach_block_reverse_safe(block, cfg) {
-      BITSET_WORD flag_liveout = live_intervals->block_data[block->num]
+      BITSET_WORD flag_liveout = live_vars.block_data[block->num]
                                                .flag_liveout[0];
-      STATIC_ASSERT(ARRAY_SIZE(live_intervals->block_data[0].flag_liveout) == 1);
+      STATIC_ASSERT(ARRAY_SIZE(live_vars.block_data[0].flag_liveout) == 1);
 
       foreach_inst_in_block_reverse_safe(fs_inst, inst, block) {
          if (!inst->predicate && inst->exec_size >= 8)
@@ -7746,7 +7787,7 @@ fs_visitor::fixup_nomask_control_flow()
    }
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 
    return progress;
 }
@@ -7783,6 +7824,24 @@ fs_visitor::allocate_registers(unsigned min_dispatch_width, bool allow_spilling)
          allocated = true;
          break;
       }
+
+      /* Scheduling may create additional opportunities for CMOD propagation,
+       * so let's do it again.  If CMOD propagation made any progress,
+       * elminate dead code one more time.
+       */
+      bool progress = false;
+      const int iteration = 99;
+      int pass_num = 0;
+
+      if (OPT(opt_cmod_propagation)) {
+         /* dead_code_eliminate "undoes" the fixing done by
+          * fixup_3src_null_dest, so we have to do it again if
+          * dead_code_eliminiate makes any progress.
+          */
+         if (OPT(dead_code_eliminate))
+            fixup_3src_null_dest();
+      }
+
 
       /* We only allow spilling for the last schedule mode and only if the
        * allow_spilling parameter and dispatch width work out ok.
@@ -8134,6 +8193,8 @@ gen9_ps_header_only_workaround(struct brw_wm_prog_data *wm_prog_data)
 
    wm_prog_data->urb_setup[VARYING_SLOT_LAYER] = 0;
    wm_prog_data->num_varying_inputs = 1;
+
+   brw_compute_urb_setup_index(wm_prog_data);
 }
 
 bool
@@ -8582,6 +8643,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    brw_compute_flat_inputs(prog_data, shader);
 
    cfg_t *simd8_cfg = NULL, *simd16_cfg = NULL, *simd32_cfg = NULL;
+   struct shader_stats v8_shader_stats, v16_shader_stats, v32_shader_stats;
 
    fs_visitor v8(compiler, log_data, mem_ctx, &key->base,
                  &prog_data->base, shader, 8,
@@ -8593,6 +8655,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
       return NULL;
    } else if (likely(!(INTEL_DEBUG & DEBUG_NO8))) {
       simd8_cfg = v8.cfg;
+      v8_shader_stats = v8.shader_stats;
       prog_data->base.dispatch_grf_start_reg = v8.payload.num_regs;
       prog_data->reg_blocks_8 = brw_register_blocks(v8.grf_used);
    }
@@ -8620,6 +8683,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
                                    v16.fail_msg);
       } else {
          simd16_cfg = v16.cfg;
+         v16_shader_stats = v16.shader_stats;
          prog_data->dispatch_grf_start_reg_16 = v16.payload.num_regs;
          prog_data->reg_blocks_16 = brw_register_blocks(v16.grf_used);
       }
@@ -8640,6 +8704,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
                                    v32.fail_msg);
       } else {
          simd32_cfg = v32.cfg;
+         v32_shader_stats = v32.shader_stats;
          prog_data->dispatch_grf_start_reg_32 = v32.payload.num_regs;
          prog_data->reg_blocks_32 = brw_register_blocks(v32.grf_used);
       }
@@ -8693,8 +8758,7 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
    }
 
    fs_generator g(compiler, log_data, mem_ctx, &prog_data->base,
-                  v8.shader_stats, v8.runtime_check_aads_emit,
-                  MESA_SHADER_FRAGMENT);
+                  v8.runtime_check_aads_emit, MESA_SHADER_FRAGMENT);
 
    if (unlikely(INTEL_DEBUG & DEBUG_WM)) {
       g.enable_debug(ralloc_asprintf(mem_ctx, "%s fragment shader %s",
@@ -8705,19 +8769,19 @@ brw_compile_fs(const struct brw_compiler *compiler, void *log_data,
 
    if (simd8_cfg) {
       prog_data->dispatch_8 = true;
-      g.generate_code(simd8_cfg, 8, stats);
+      g.generate_code(simd8_cfg, 8, v8_shader_stats, stats);
       stats = stats ? stats + 1 : NULL;
    }
 
    if (simd16_cfg) {
       prog_data->dispatch_16 = true;
-      prog_data->prog_offset_16 = g.generate_code(simd16_cfg, 16, stats);
+      prog_data->prog_offset_16 = g.generate_code(simd16_cfg, 16, v16_shader_stats, stats);
       stats = stats ? stats + 1 : NULL;
    }
 
    if (simd32_cfg) {
       prog_data->dispatch_32 = true;
-      prog_data->prog_offset_32 = g.generate_code(simd32_cfg, 32, stats);
+      prog_data->prog_offset_32 = g.generate_code(simd32_cfg, 32, v32_shader_stats, stats);
       stats = stats ? stats + 1 : NULL;
    }
 
@@ -8841,8 +8905,10 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
       src_shader->info.cs.local_size[0] * src_shader->info.cs.local_size[1] *
       src_shader->info.cs.local_size[2];
 
+   /* Limit max_threads to 64 for the GPGPU_WALKER command */
+   const uint32_t max_threads = MIN2(64, compiler->devinfo->max_cs_threads);
    unsigned min_dispatch_width =
-      DIV_ROUND_UP(local_workgroup_size, compiler->devinfo->max_cs_threads);
+      DIV_ROUND_UP(local_workgroup_size, max_threads);
    min_dispatch_width = MAX2(8, min_dispatch_width);
    min_dispatch_width = util_next_power_of_two(min_dispatch_width);
    assert(min_dispatch_width <= 32);
@@ -8958,8 +9024,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
          *error_str = ralloc_strdup(mem_ctx, fail_msg);
    } else {
       fs_generator g(compiler, log_data, mem_ctx, &prog_data->base,
-                     v->shader_stats, v->runtime_check_aads_emit,
-                     MESA_SHADER_COMPUTE);
+                     v->runtime_check_aads_emit, MESA_SHADER_COMPUTE);
       if (INTEL_DEBUG & DEBUG_CS) {
          char *name = ralloc_asprintf(mem_ctx, "%s compute shader %s",
                                       src_shader->info.label ?
@@ -8968,7 +9033,7 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
          g.enable_debug(name);
       }
 
-      g.generate_code(v->cfg, prog_data->simd_size, stats);
+      g.generate_code(v->cfg, prog_data->simd_size, v->shader_stats, stats);
 
       ret = g.get_assembly();
    }

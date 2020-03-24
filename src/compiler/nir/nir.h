@@ -1448,18 +1448,19 @@ typedef enum {
    /* Memory ordering. */
    NIR_MEMORY_ACQUIRE        = 1 << 0,
    NIR_MEMORY_RELEASE        = 1 << 1,
+   NIR_MEMORY_ACQ_REL        = NIR_MEMORY_ACQUIRE | NIR_MEMORY_RELEASE,
 
    /* Memory visibility operations. */
-   NIR_MEMORY_MAKE_AVAILABLE = 1 << 3,
-   NIR_MEMORY_MAKE_VISIBLE   = 1 << 4,
+   NIR_MEMORY_MAKE_AVAILABLE = 1 << 2,
+   NIR_MEMORY_MAKE_VISIBLE   = 1 << 3,
 } nir_memory_semantics;
 
 typedef enum {
-   NIR_SCOPE_DEVICE,
-   NIR_SCOPE_QUEUE_FAMILY,
-   NIR_SCOPE_WORKGROUP,
-   NIR_SCOPE_SUBGROUP,
    NIR_SCOPE_INVOCATION,
+   NIR_SCOPE_SUBGROUP,
+   NIR_SCOPE_WORKGROUP,
+   NIR_SCOPE_QUEUE_FAMILY,
+   NIR_SCOPE_DEVICE,
 } nir_scope;
 
 /**
@@ -1765,6 +1766,9 @@ nir_intrinsic_align(const nir_intrinsic_instr *intrin)
    return align_offset ? 1 << (ffs(align_offset) - 1) : align_mul;
 }
 
+unsigned
+nir_image_intrinsic_coord_components(const nir_intrinsic_instr *instr);
+
 /* Converts a image_deref_* intrinsic into a image_* one */
 void nir_rewrite_image_intrinsic(nir_intrinsic_instr *instr,
                                  nir_ssa_def *handle, bool bindless);
@@ -1879,9 +1883,6 @@ typedef struct {
     * then the texture index is given by texture_index + texture_offset.
     */
    unsigned texture_index;
-
-   /** The size of the texture array or 0 if it's not an array */
-   unsigned texture_array_size;
 
    /** The sampler index
     *
@@ -2917,6 +2918,11 @@ typedef struct nir_shader_compiler_options {
     */
    bool has_imul24;
 
+   /* Whether to generate only scoped_memory_barrier intrinsics instead of the
+    * set of memory barrier intrinsics based on GLSL.
+    */
+   bool use_scoped_memory_barrier;
+
    /**
     * Is this the Intel vec4 backend?
     *
@@ -3890,6 +3896,7 @@ typedef struct nir_lower_subgroups_options {
    bool lower_shuffle_to_32bit:1;
    bool lower_quad:1;
    bool lower_quad_broadcast_dynamic:1;
+   bool lower_quad_broadcast_dynamic_to_const:1;
 } nir_lower_subgroups_options;
 
 bool nir_lower_subgroups(nir_shader *shader,
@@ -4191,6 +4198,8 @@ typedef enum {
 bool nir_lower_interpolation(nir_shader *shader,
                              nir_lower_interpolation_options options);
 
+bool nir_lower_discard_to_demote(nir_shader *shader);
+
 bool nir_normalize_cubemap_coords(nir_shader *shader);
 
 void nir_live_ssa_defs_impl(nir_function_impl *impl);
@@ -4218,6 +4227,7 @@ bool nir_lower_ssa_defs_to_regs_block(nir_block *block);
 bool nir_rematerialize_derefs_in_use_blocks_impl(nir_function_impl *impl);
 
 bool nir_lower_samplers(nir_shader *shader);
+bool nir_lower_ssbo(nir_shader *shader);
 
 /* This is here for unit tests. */
 bool nir_opt_comparison_pre_impl(nir_function_impl *impl);
@@ -4229,6 +4239,17 @@ bool nir_opt_algebraic(nir_shader *shader);
 bool nir_opt_algebraic_before_ffma(nir_shader *shader);
 bool nir_opt_algebraic_late(nir_shader *shader);
 bool nir_opt_constant_folding(nir_shader *shader);
+
+/* Try to combine a and b into a.  Return true if combination was possible,
+ * which will result in b being removed by the pass.  Return false if
+ * combination wasn't possible.
+ */
+typedef bool (*nir_combine_memory_barrier_cb)(
+   nir_intrinsic_instr *a, nir_intrinsic_instr *b, void *data);
+
+bool nir_opt_combine_memory_barriers(nir_shader *shader,
+                                     nir_combine_memory_barrier_cb combine_cb,
+                                     void *data);
 
 bool nir_opt_combine_stores(nir_shader *shader, nir_variable_mode modes);
 

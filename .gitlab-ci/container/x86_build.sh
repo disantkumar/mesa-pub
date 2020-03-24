@@ -24,14 +24,6 @@ sed -i -e 's/http:\/\/deb/https:\/\/deb/g' /etc/apt/sources.list
 echo 'deb https://deb.debian.org/debian buster-backports main' >/etc/apt/sources.list.d/backports.list
 
 apt-get update
-
-# Use newer packages from backports by default
-cat >/etc/apt/preferences <<EOF
-Package: *
-Pin: release a=buster-backports
-Pin-Priority: 500
-EOF
-
 apt-get dist-upgrade -y
 
 apt-get install -y --no-remove \
@@ -82,6 +74,8 @@ apt-get install -y --no-remove \
       pkg-config \
       python-mako \
       python3-mako \
+      python3-pil \
+      python3-requests \
       qemu-user \
       scons \
       x11proto-dri2-dev \
@@ -90,27 +84,31 @@ apt-get install -y --no-remove \
       xz-utils \
       zlib1g-dev
 
+. .gitlab-ci/container/container_pre_build.sh
+
 # Cross-build Mesa deps
 for arch in $CROSS_ARCHITECTURES; do
     apt-get install -y --no-remove \
             crossbuild-essential-${arch} \
             libdrm-dev:${arch} \
             libelf-dev:${arch} \
-            libexpat1-dev:${arch}
+            libexpat1-dev:${arch} \
+            libffi-dev:${arch} \
+            libllvm8:${arch} \
+            libstdc++6:${arch} \
+            libtinfo-dev:${arch}
 
-    if [ "$arch" != "i386" ]; then
-        mkdir /var/cache/apt/archives/${arch}
+    if [ "$arch" == "i386" ]; then
+        # libpciaccess-dev is only needed for Intel.
         apt-get install -y --no-remove \
-                libffi-dev:${arch} \
-                libllvm8:${arch} \
-                libstdc++6:${arch} \
-                libtinfo-dev:${arch} \
-
-        # Download llvm-* packages, but don't install them yet, since they can
-        # only be installed for one architecture at a time
-        apt-get install -o Dir::Cache::archives=/var/cache/apt/archives/$arch --download-only -y --no-remove \
-            llvm-8-dev:${arch}
+            libpciaccess-dev:${arch}
     fi
+
+    mkdir /var/cache/apt/archives/${arch}
+    # Download llvm-* packages, but don't install them yet, since they can
+    # only be installed for one architecture at a time
+    apt-get install -o Dir::Cache::archives=/var/cache/apt/archives/$arch --download-only -y --no-remove \
+       llvm-8-dev:${arch}
 done
 
 apt-get install -y --no-remove \
@@ -118,11 +116,11 @@ apt-get install -y --no-remove \
 
 # for 64bit windows cross-builds
 apt-get install -y --no-remove \
-    libz-mingw-w64-dev \
-    mingw-w64 \
-    wine \
-    wine32 \
-    wine64
+      libz-mingw-w64-dev \
+      mingw-w64 \
+      wine \
+      wine32 \
+      wine64
 
 # Debian's pkg-config wrapers for mingw are broken, and there's no sign that
 # they're going to be fixed, so we'll just have to fix it ourselves
@@ -190,6 +188,7 @@ tar -xvf $LIBDRM_VERSION.tar.bz2 && rm $LIBDRM_VERSION.tar.bz2
 cd $LIBDRM_VERSION
 meson build -D vc4=true -D freedreno=true -D etnaviv=true -D libdir=lib/x86_64-linux-gnu; ninja -j4 -C build install
 rm -rf build; meson --cross-file=/cross_file-ppc64el.txt build -D libdir=lib/powerpc64le-linux-gnu; ninja -j4 -C build install
+rm -rf build; meson --cross-file=/cross_file-i386.txt build -D libdir=lib/i386-linux-gnu; ninja -j4 -C build install
 cd ..
 rm -rf $LIBDRM_VERSION
 
@@ -222,10 +221,6 @@ make -j4
 popd
 
 
-# Remove ccache directory, useless for the build jobs
-rm -rf $(ccache --get-config=cache_dir)
-
-
 ############### Uninstall the build software
 
 apt-get purge -y \
@@ -240,4 +235,4 @@ apt-get purge -y \
       unzip \
       wget
 
-apt-get autoremove -y --purge
+. .gitlab-ci/container/container_post_build.sh

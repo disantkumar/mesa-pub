@@ -28,6 +28,7 @@ inc_panfrost = include_directories([
 ])
 
 subdir('shared')
+subdir('util')
 subdir('midgard')
 subdir('bifrost')
 subdir('pandecode')

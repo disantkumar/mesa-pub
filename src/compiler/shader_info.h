@@ -140,6 +140,9 @@ typedef struct shader_info {
    /** Bitfield of which textures are used by texelFetch() */
    uint32_t textures_used_by_txf;
 
+   /** Bitfield of which images are used */
+   uint32_t images_used;
+
    /* SPV_KHR_float_controls: execution mode for floating point ops */
    uint16_t float_controls_execution_mode;
 
@@ -217,6 +220,7 @@ typedef struct shader_info {
 
       struct {
          bool uses_discard:1;
+         bool uses_demote:1;
 
          /**
           * True if this fragment shader requires helper invocations.  This

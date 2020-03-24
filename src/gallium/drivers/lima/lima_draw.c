@@ -45,6 +45,8 @@
 #include "lima_util.h"
 #include "lima_gpu.h"
 
+#include "pan_minmax_cache.h"
+
 #include <drm-uapi/lima_drm.h>
 
 static bool
@@ -116,7 +118,7 @@ lima_clear(struct pipe_context *pctx, unsigned buffers,
    /* no need to reload if cleared */
    if (ctx->framebuffer.base.nr_cbufs && (buffers & PIPE_CLEAR_COLOR0)) {
       struct lima_surface *surf = lima_surface(ctx->framebuffer.base.cbufs[0]);
-      surf->reload = false;
+      surf->reload &= ~PIPE_CLEAR_COLOR0;
    }
 
    struct lima_job_clear *clear = &job->clear;
@@ -136,11 +138,20 @@ lima_clear(struct pipe_context *pctx, unsigned buffers,
          float_to_ushort(color->f[0]);
    }
 
-   if (buffers & PIPE_CLEAR_DEPTH)
-      clear->depth = util_pack_z(PIPE_FORMAT_Z24X8_UNORM, depth);
+   struct lima_surface *zsbuf = lima_surface(ctx->framebuffer.base.zsbuf);
 
-   if (buffers & PIPE_CLEAR_STENCIL)
+   if (buffers & PIPE_CLEAR_DEPTH) {
+      clear->depth = util_pack_z(PIPE_FORMAT_Z24X8_UNORM, depth);
+      if (zsbuf)
+         zsbuf->reload &= ~PIPE_CLEAR_DEPTH;
+   } else
+      clear->depth = 0x00ffffff;
+
+   if (buffers & PIPE_CLEAR_STENCIL) {
       clear->stencil = stencil;
+      if (zsbuf)
+         zsbuf->reload &= ~PIPE_CLEAR_STENCIL;
+   }
 
    ctx->dirty |= LIMA_CONTEXT_DIRTY_CLEAR;
 
@@ -823,6 +834,19 @@ lima_update_gp_uniform(struct lima_context *ctx)
 
    struct lima_job *job = lima_job_get(ctx);
 
+   if (lima_debug & LIMA_DEBUG_GP) {
+      float *vs_const_buff_f = vs_const_buff;
+      printf("gp uniforms:\n");
+      for (int i = 0; i < (size / sizeof(float)); i++) {
+         if ((i % 4) == 0)
+            printf("%4d:", i / 4);
+         printf(" %8.4f", vs_const_buff_f[i]);
+         if ((i % 4) == 3)
+            printf("\n");
+      }
+      printf("\n");
+   }
+
    lima_dump_command_stream_print(
       job->dump, vs_const_buff, size, true,
       "update gp uniform at va %x\n",
@@ -1007,14 +1031,14 @@ lima_draw_vbo_indexed(struct pipe_context *pctx,
    struct lima_context *ctx = lima_context(pctx);
    struct lima_job *job = lima_job_get(ctx);
    struct pipe_resource *indexbuf = NULL;
+   bool needs_indices = true;
 
    /* Mali Utgard GPU always need min/max index info for index draw,
     * compute it if upper layer does not do for us */
-   if (info->max_index == ~0u)
-      u_vbuf_get_minmax_index(pctx, info, &ctx->min_index, &ctx->max_index);
-   else {
+   if (info->max_index != ~0u) {
       ctx->min_index = info->min_index;
       ctx->max_index = info->max_index;
+      needs_indices = false;
    }
 
    if (info->has_user_indices) {
@@ -1024,6 +1048,15 @@ lima_draw_vbo_indexed(struct pipe_context *pctx,
    else {
       ctx->index_res = lima_resource(info->index.resource);
       ctx->index_offset = 0;
+      needs_indices = !panfrost_minmax_cache_get(ctx->index_res->index_cache, info->start,
+                                                 info->count, &ctx->min_index, &ctx->max_index);
+   }
+
+   if (needs_indices) {
+      u_vbuf_get_minmax_index(pctx, info, &ctx->min_index, &ctx->max_index);
+      if (!info->has_user_indices)
+         panfrost_minmax_cache_add(ctx->index_res->index_cache, info->start, info->count,
+                                   ctx->min_index, ctx->max_index);
    }
 
    lima_job_add_bo(job, LIMA_PIPE_GP, ctx->index_res->bo, LIMA_SUBMIT_BO_READ);

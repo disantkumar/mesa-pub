@@ -113,6 +113,8 @@ enum barrier_interaction : uint8_t {
    barrier_gs_data = 0x10,
    /* used for geometry shaders to ensure s_sendmsg instructions are in-order. */
    barrier_gs_sendmsg = 0x20,
+   /* used by barriers. created by s_barrier */
+   barrier_barrier = 0x40,
    barrier_count = 6,
 };
 
@@ -274,10 +276,13 @@ struct PhysReg {
 /* helper expressions for special registers */
 static constexpr PhysReg m0{124};
 static constexpr PhysReg vcc{106};
+static constexpr PhysReg vcc_hi{107};
 static constexpr PhysReg sgpr_null{125}; /* GFX10+ */
 static constexpr PhysReg exec{126};
 static constexpr PhysReg exec_lo{126};
 static constexpr PhysReg exec_hi{127};
+static constexpr PhysReg vccz{251};
+static constexpr PhysReg execz{252};
 static constexpr PhysReg scc{253};
 
 /**
@@ -293,7 +298,8 @@ class Operand final
 public:
    constexpr Operand()
       : reg_(PhysReg{128}), isTemp_(false), isFixed_(true), isConstant_(false),
-        isKill_(false), isUndef_(true), isFirstKill_(false), is64BitConst_(false) {}
+        isKill_(false), isUndef_(true), isFirstKill_(false), is64BitConst_(false),
+        isLateKill_(false) {}
 
    explicit Operand(Temp r) noexcept
    {
@@ -466,6 +472,49 @@ public:
       return isConstant() && constantValue() == cmp;
    }
 
+   constexpr uint64_t constantValue64(bool signext=false) const noexcept
+   {
+      if (is64BitConst_) {
+         if (reg_.reg <= 192)
+            return reg_.reg - 128;
+         else if (reg_.reg <= 208)
+            return 0xFFFFFFFFFFFFFFFF - (reg_.reg - 193);
+
+         switch (reg_.reg) {
+         case 240:
+            return 0x3FE0000000000000;
+         case 241:
+            return 0xBFE0000000000000;
+         case 242:
+            return 0x3FF0000000000000;
+         case 243:
+            return 0xBFF0000000000000;
+         case 244:
+            return 0x4000000000000000;
+         case 245:
+            return 0xC000000000000000;
+         case 246:
+            return 0x4010000000000000;
+         case 247:
+            return 0xC010000000000000;
+         }
+      }
+      return (signext && (data_.i & 0x80000000u) ? 0xffffffff00000000ull : 0ull) | data_.i;
+   }
+
+   /* Indicates that the killed operand's live range intersects with the
+    * instruction's definitions. Unlike isKill() and isFirstKill(), this is
+    * not set by liveness analysis. */
+   constexpr void setLateKill(bool flag) noexcept
+   {
+      isLateKill_ = flag;
+   }
+
+   constexpr bool isLateKill() const noexcept
+   {
+      return isLateKill_;
+   }
+
    constexpr void setKill(bool flag) noexcept
    {
       isKill_ = flag;
@@ -492,6 +541,33 @@ public:
       return isFirstKill_;
    }
 
+   constexpr bool isKillBeforeDef() const noexcept
+   {
+      return isKill() && !isLateKill();
+   }
+
+   constexpr bool isFirstKillBeforeDef() const noexcept
+   {
+      return isFirstKill() && !isLateKill();
+   }
+
+   constexpr bool operator == (Operand other) const noexcept
+   {
+      if (other.size() != size())
+         return false;
+      if (isFixed() != other.isFixed() || isKillBeforeDef() != other.isKillBeforeDef())
+         return false;
+      if (isFixed() && other.isFixed() && physReg() != other.physReg())
+         return false;
+      if (isLiteral())
+         return other.isLiteral() && other.constantValue() == constantValue();
+      else if (isConstant())
+         return other.isConstant() && other.physReg() == physReg();
+      else if (isUndefined())
+         return other.isUndefined() && other.regClass() == regClass();
+      else
+         return other.isTemp() && other.getTemp() == getTemp();
+   }
 private:
    union {
       uint32_t i;
@@ -508,6 +584,7 @@ private:
          uint8_t isUndef_:1;
          uint8_t isFirstKill_:1;
          uint8_t is64BitConst_:1;
+         uint8_t isLateKill_:1;
       };
       /* can't initialize bit-fields in c++11, so work around using a union */
       uint8_t control_ = 0;
@@ -1139,7 +1216,7 @@ static constexpr Stage tess_eval_geometry_gs = sw_tes | sw_gs | hw_gs;
 static constexpr Stage vertex_ls = sw_vs | hw_ls; /* vertex before tesselation control */
 static constexpr Stage vertex_es = sw_vs | hw_es; /* vertex before geometry */
 static constexpr Stage tess_control_hs = sw_tcs | hw_hs;
-static constexpr Stage tess_eval_es = sw_tes | hw_gs; /* tesselation evaluation before geometry */
+static constexpr Stage tess_eval_es = sw_tes | hw_es; /* tesselation evaluation before geometry */
 static constexpr Stage geometry_gs = sw_gs | hw_gs;
 
 class Program final {
@@ -1167,6 +1244,7 @@ public:
    uint16_t min_waves = 0;
    uint16_t lds_alloc_granule;
    uint32_t lds_limit; /* in bytes */
+   bool has_16bank_lds;
    uint16_t vgpr_limit;
    uint16_t sgpr_limit;
    uint16_t physical_sgprs;
@@ -1259,6 +1337,11 @@ void perfwarn(bool cond, const char *msg, Instruction *instr=NULL);
 
 void aco_print_instr(Instruction *instr, FILE *output);
 void aco_print_program(Program *program, FILE *output);
+
+/* utilities for dealing with register demand */
+RegisterDemand get_live_changes(aco_ptr<Instruction>& instr);
+RegisterDemand get_temp_registers(aco_ptr<Instruction>& instr);
+RegisterDemand get_demand_before(RegisterDemand demand, aco_ptr<Instruction>& instr, aco_ptr<Instruction>& instr_before);
 
 /* number of sgprs that need to be allocated but might notbe addressable as s0-s105 */
 uint16_t get_extra_sgprs(Program *program);

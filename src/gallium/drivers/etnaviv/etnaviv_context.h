@@ -73,6 +73,11 @@ struct etna_transfer {
    void *mapped;
 };
 
+struct etna_constbuf_state {
+   struct pipe_constant_buffer cb[ETNA_MAX_CONST_BUF];
+   uint32_t enabled_mask;
+};
+
 struct etna_vertexbuf_state {
    struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
    struct compiled_set_vertex_buffer cvb[PIPE_MAX_ATTRIBS];
@@ -109,7 +114,6 @@ struct etna_context {
    /* Get sampler TS pointer for sampler view */
    struct etna_sampler_ts *(*ts_for_sampler_view)(struct pipe_sampler_view *pview);
 
-   struct etna_specs specs;
    struct etna_screen *screen;
    struct etna_cmd_stream *stream;
 
@@ -164,7 +168,7 @@ struct etna_context {
    uint32_t active_sampler_views;
    uint32_t dirty_sampler_views;
    struct pipe_sampler_view *sampler_view[PIPE_MAX_SAMPLERS];
-   struct pipe_constant_buffer constant_buffer[PIPE_SHADER_TYPES][ETNA_MAX_CONST_BUF];
+   struct etna_constbuf_state constant_buffer[PIPE_SHADER_TYPES];
    struct etna_vertexbuf_state vertex_buffer;
    struct etna_index_buffer index_buffer;
    struct etna_shader_state shader;

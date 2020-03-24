@@ -39,6 +39,7 @@
 #include "c11/threads.h"
 
 #include "main/glheader.h"
+#include "main/glthread.h"
 #include "main/menums.h"
 #include "main/config.h"
 #include "glapi/glapi.h"
@@ -3174,6 +3175,9 @@ struct gl_shader_compiler_options
                                               * gl_CullDistance together from
                                               * float[8] to vec4[2]
                                               **/
+   GLbitfield LowerBuiltinVariablesXfb;   /**< Which builtin variables should
+                                           * be lowered for transform feedback
+                                           **/
 
    /**
     * \name Forms of indirect addressing the driver cannot do.
@@ -3975,6 +3979,15 @@ struct gl_constants
    GLboolean DisableVaryingPacking;
 
    /**
+    * Disable varying packing if used for transform feedback.  This is needed
+    * for some drivers (e.g. Panfrost) where transform feedback requires
+    * unpacked varyings.
+    *
+    * This variable is mutually exlusive with DisableVaryingPacking.
+    */
+   GLboolean DisableTransformFeedbackPacking;
+
+   /**
     * UBOs and SSBOs can be packed tightly by the OpenGL implementation when
     * layout is set as shared (the default) or packed. However most Mesa drivers
     * just use STD140 for these layouts. This flag allows drivers to use STD430
@@ -4160,6 +4173,9 @@ struct gl_constants
    /** Whether the vertex buffer offset is a signed 32-bit integer. */
    bool VertexBufferOffsetIsInt32;
 
+   /** Whether the driver can handle MultiDrawElements with non-VBO indices. */
+   bool MultiDrawWithUserIndices;
+
    /** GL_ARB_gl_spirv */
    struct spirv_supported_capabilities SpirVCapabilities;
 
@@ -4167,6 +4183,9 @@ struct gl_constants
    struct spirv_supported_extensions *SpirVExtensions;
 
    char *VendorOverride;
+
+   /** Buffer size used to upload vertices from glBegin/glEnd. */
+   unsigned glBeginEndBufferSize;
 };
 
 
@@ -4337,6 +4356,7 @@ struct gl_extensions
    GLboolean EXT_texture_filter_anisotropic;
    GLboolean EXT_texture_integer;
    GLboolean EXT_texture_mirror_clamp;
+   GLboolean EXT_texture_norm16;
    GLboolean EXT_texture_shadow_lod;
    GLboolean EXT_texture_shared_exponent;
    GLboolean EXT_texture_snorm;
@@ -4394,6 +4414,7 @@ struct gl_extensions
    GLboolean MESA_ycbcr_texture;
    GLboolean NV_compute_shader_derivatives;
    GLboolean NV_conditional_render;
+   GLboolean NV_copy_image;
    GLboolean NV_fill_rectangle;
    GLboolean NV_fog_distance;
    GLboolean NV_point_sprite;
@@ -4567,7 +4588,7 @@ struct gl_dlist_state
    GLvertexformat ListVtxfmt;
 
    GLubyte ActiveAttribSize[VERT_ATTRIB_MAX];
-   GLfloat CurrentAttrib[VERT_ATTRIB_MAX][8];
+   uint32_t CurrentAttrib[VERT_ATTRIB_MAX][8];
 
    GLubyte ActiveMaterialSize[MAT_ATTRIB_MAX];
    GLfloat CurrentMaterial[MAT_ATTRIB_MAX][4];
@@ -4887,7 +4908,7 @@ struct gl_context
 
    /*@}*/
 
-   struct glthread_state *GLThread;
+   struct glthread_state GLThread;
 
    struct gl_config Visual;
    struct gl_framebuffer *DrawBuffer;	/**< buffer for writing */

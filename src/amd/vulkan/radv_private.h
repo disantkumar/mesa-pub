@@ -65,8 +65,6 @@
 #include "radv_extensions.h"
 #include "sid.h"
 
-#include <llvm-c/TargetMachine.h>
-
 /* Pre-declarations needed for WSI entrypoints */
 struct wl_surface;
 struct wl_display;
@@ -285,14 +283,23 @@ void radv_logi_v(const char *format, va_list va);
 		return;					\
 	} while (0)
 
-void *radv_lookup_entrypoint_unchecked(const char *name);
-void *radv_lookup_entrypoint_checked(const char *name,
-                                    uint32_t core_version,
-                                    const struct radv_instance_extension_table *instance,
-                                    const struct radv_device_extension_table *device);
-void *radv_lookup_physical_device_entrypoint_checked(const char *name,
-                                                     uint32_t core_version,
-                                                     const struct radv_instance_extension_table *instance);
+int radv_get_instance_entrypoint_index(const char *name);
+int radv_get_device_entrypoint_index(const char *name);
+int radv_get_physical_device_entrypoint_index(const char *name);
+
+const char *radv_get_instance_entry_name(int index);
+const char *radv_get_physical_device_entry_name(int index);
+const char *radv_get_device_entry_name(int index);
+
+bool radv_instance_entrypoint_is_enabled(int index, uint32_t core_version,
+					 const struct radv_instance_extension_table *instance);
+bool radv_physical_device_entrypoint_is_enabled(int index, uint32_t core_version,
+						const struct radv_instance_extension_table *instance);
+bool radv_device_entrypoint_is_enabled(int index, uint32_t core_version,
+				       const struct radv_instance_extension_table *instance,
+				       const struct radv_device_extension_table *device);
+
+void *radv_lookup_entrypoint(const char *name);
 
 struct radv_physical_device {
 	VK_LOADER_DATA                              _loader_data;
@@ -364,6 +371,9 @@ struct radv_instance {
 	struct vk_debug_report_instance             debug_report_callbacks;
 
 	struct radv_instance_extension_table enabled_extensions;
+	struct radv_instance_dispatch_table          dispatch;
+	struct radv_physical_device_dispatch_table   physical_device_dispatch;
+	struct radv_device_dispatch_table            device_dispatch;
 
 	struct driOptionCache dri_options;
 	struct driOptionCache available_dri_options;
@@ -835,6 +845,7 @@ struct radv_device {
 	uint64_t dmesg_timestamp;
 
 	struct radv_device_extension_table enabled_extensions;
+	struct radv_device_dispatch_table dispatch;
 
 	/* Whether the app has enabled the robustBufferAccess feature. */
 	bool robust_buffer_access;
@@ -852,6 +863,14 @@ struct radv_device {
 	/* Condition variable for legacy timelines, to notify waiters when a
 	 * new point gets submitted. */
 	pthread_cond_t timeline_cond;
+
+	/* Thread trace. */
+	struct radeon_cmdbuf *thread_trace_start_cs[2];
+	struct radeon_cmdbuf *thread_trace_stop_cs[2];
+	struct radeon_winsys_bo *thread_trace_bo;
+	void *thread_trace_ptr;
+	uint32_t thread_trace_buffer_size;
+	int thread_trace_start_frame;
 };
 
 struct radv_device_memory {
@@ -1291,6 +1310,11 @@ struct radv_cmd_state {
 	VkQueryPipelineStatisticFlags inherited_pipeline_statistics;
 
 	bool context_roll_without_scissor_emitted;
+
+	/* SQTT related state. */
+	uint32_t current_event_type;
+	uint32_t num_events;
+	uint32_t num_layout_transitions;
 };
 
 struct radv_cmd_pool {
@@ -2287,6 +2311,9 @@ struct radv_semaphore {
 	struct radv_semaphore_part temporary;
 };
 
+bool radv_queue_internal_submit(struct radv_queue *queue,
+				struct radeon_cmdbuf *cs);
+
 void radv_set_descriptor_set(struct radv_cmd_buffer *cmd_buffer,
 			     VkPipelineBindPoint bind_point,
 			     struct radv_descriptor_set *set,
@@ -2334,16 +2361,11 @@ struct radv_fence {
 /* radv_nir_to_llvm.c */
 struct radv_shader_args;
 
-void radv_compile_gs_copy_shader(struct ac_llvm_compiler *ac_llvm,
-				 struct nir_shader *geom_shader,
-				 struct radv_shader_binary **rbinary,
-				 const struct radv_shader_args *args);
-
-void radv_compile_nir_shader(struct ac_llvm_compiler *ac_llvm,
-			     struct radv_shader_binary **rbinary,
-			     const struct radv_shader_args *args,
-			     struct nir_shader *const *nir,
-			     int nir_count);
+void llvm_compile_shader(struct radv_device *device,
+			 unsigned shader_count,
+			 struct nir_shader *const *shaders,
+			 struct radv_shader_binary **binary,
+			 struct radv_shader_args *args);
 
 unsigned radv_nir_get_max_workgroup_size(enum chip_class chip_class,
 					 gl_shader_stage stage,
@@ -2359,6 +2381,96 @@ void radv_nir_shader_info_pass(const struct nir_shader *nir,
 			       struct radv_shader_info *info);
 
 void radv_nir_shader_info_init(struct radv_shader_info *info);
+
+/* radv_sqtt.c */
+struct radv_thread_trace_info {
+	uint32_t cur_offset;
+	uint32_t trace_status;
+	union {
+		uint32_t gfx9_write_counter;
+		uint32_t gfx10_dropped_cntr;
+	};
+};
+
+struct radv_thread_trace_se {
+	struct radv_thread_trace_info info;
+	void *data_ptr;
+	uint32_t shader_engine;
+	uint32_t compute_unit;
+};
+
+struct radv_thread_trace {
+	uint32_t num_traces;
+	struct radv_thread_trace_se traces[4];
+};
+
+bool radv_thread_trace_init(struct radv_device *device);
+void radv_thread_trace_finish(struct radv_device *device);
+bool radv_begin_thread_trace(struct radv_queue *queue);
+bool radv_end_thread_trace(struct radv_queue *queue);
+bool radv_get_thread_trace(struct radv_queue *queue,
+			   struct radv_thread_trace *thread_trace);
+void radv_emit_thread_trace_userdata(struct radeon_cmdbuf *cs,
+				     const void *data, uint32_t num_dwords);
+
+/* radv_rgp.c */
+int radv_dump_thread_trace(struct radv_device *device,
+			   const struct radv_thread_trace *trace);
+
+/* radv_sqtt_layer_.c */
+struct radv_barrier_data {
+	union {
+		struct {
+			uint16_t depth_stencil_expand : 1;
+			uint16_t htile_hiz_range_expand : 1;
+			uint16_t depth_stencil_resummarize : 1;
+			uint16_t dcc_decompress : 1;
+			uint16_t fmask_decompress : 1;
+			uint16_t fast_clear_eliminate : 1;
+			uint16_t fmask_color_expand : 1;
+			uint16_t init_mask_ram : 1;
+			uint16_t reserved : 8;
+		};
+		uint16_t all;
+	} layout_transitions;
+};
+
+/**
+ * Value for the reason field of an RGP barrier start marker originating from
+ * the Vulkan client (does not include PAL-defined values). (Table 15)
+ */
+enum rgp_barrier_reason {
+	RGP_BARRIER_UNKNOWN_REASON = 0xFFFFFFFF,
+
+	/* External app-generated barrier reasons, i.e. API synchronization
+	 * commands Range of valid values: [0x00000001 ... 0x7FFFFFFF].
+	 */
+	RGP_BARRIER_EXTERNAL_CMD_PIPELINE_BARRIER = 0x00000001,
+	RGP_BARRIER_EXTERNAL_RENDER_PASS_SYNC	  = 0x00000002,
+	RGP_BARRIER_EXTERNAL_CMD_WAIT_EVENTS	  = 0x00000003,
+
+	/* Internal barrier reasons, i.e. implicit synchronization inserted by
+	 * the Vulkan driver Range of valid values: [0xC0000000 ... 0xFFFFFFFE].
+	 */
+	RGP_BARRIER_INTERNAL_BASE                             = 0xC0000000,
+	RGP_BARRIER_INTERNAL_PRE_RESET_QUERY_POOL_SYNC        = RGP_BARRIER_INTERNAL_BASE + 0,
+	RGP_BARRIER_INTERNAL_POST_RESET_QUERY_POOL_SYNC       = RGP_BARRIER_INTERNAL_BASE + 1,
+	RGP_BARRIER_INTERNAL_GPU_EVENT_RECYCLE_STALL	      = RGP_BARRIER_INTERNAL_BASE + 2,
+	RGP_BARRIER_INTERNAL_PRE_COPY_QUERY_POOL_RESULTS_SYNC = RGP_BARRIER_INTERNAL_BASE + 3
+};
+
+void radv_describe_begin_cmd_buffer(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_end_cmd_buffer(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_draw(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_dispatch(struct radv_cmd_buffer *cmd_buffer, int x, int y, int z);
+void radv_describe_begin_render_pass_clear(struct radv_cmd_buffer *cmd_buffer,
+					   VkImageAspectFlagBits aspects);
+void radv_describe_end_render_pass_clear(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_barrier_start(struct radv_cmd_buffer *cmd_buffer,
+				 enum rgp_barrier_reason reason);
+void radv_describe_barrier_end(struct radv_cmd_buffer *cmd_buffer);
+void radv_describe_layout_transition(struct radv_cmd_buffer *cmd_buffer,
+				     const struct radv_barrier_data *barrier);
 
 struct radeon_winsys_sem;
 
@@ -2387,6 +2499,10 @@ si_conv_gl_prim_to_vertices(unsigned gl_prim)
 		return 0;
 	}
 }
+
+void radv_cmd_buffer_begin_render_pass(struct radv_cmd_buffer *cmd_buffer,
+				       const VkRenderPassBeginInfo *pRenderPassBegin);
+void radv_cmd_buffer_end_render_pass(struct radv_cmd_buffer *cmd_buffer);
 
 #define RADV_DEFINE_HANDLE_CASTS(__radv_type, __VkType)		\
 								\

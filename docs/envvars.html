@@ -397,6 +397,8 @@ Mesa EGL supports different sets of environment variables.  See the
     <code>GALLIUM_HUD_TOGGLE_SIGNAL</code> to <code>10</code>
     (<code>SIGUSR1</code>).
     Use <code>kill -10 &lt;pid&gt;</code> to toggle the hud as desired.</dd>
+<dt><code>GALLIUM_HUD_SCALE</code></dt>
+<dd>Scale hud by an integer factor, for high DPI displays. Default is 1.</dd>
 <dt><code>GALLIUM_HUD_DUMP_DIR</code></dt>
 <dd>specifies a directory for writing the displayed hud values into files.</dd>
 <dt><code>GALLIUM_DRIVER</code></dt>
@@ -583,8 +585,6 @@ Mesa EGL supports different sets of environment variables.  See the
    <dd>disable memory shaders cache</dd>
    <dt><code>nongg</code></dt>
    <dd>disable NGG for GFX10+</dd>
-   <dt><code>noop</code></dt>
-   <dd>do not submit any IBs</dd>
    <dt><code>nooutoforder</code></dt>
    <dd>disable out-of-order rasterization</dd>
    <dt><code>noshaderballot</code></dt>
@@ -712,8 +712,6 @@ Mesa EGL supports different sets of environment variables.  See the
   <dt><code>preoptir</code></dt>
   <dd>Print the LLVM IR before initial optimizations</dd>
   <h4>Shader compilation tuning flags:</h4>
-  <dt><code>sisched</code></dt>
-  <dd>Enable LLVM SI Machine Instruction Scheduler.</dd>
   <dt><code>gisel</code></dt>
   <dd>Enable LLVM global instruction selector.</dd>
   <dt><code>w32ge</code></dt>

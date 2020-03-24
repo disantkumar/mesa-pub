@@ -73,7 +73,10 @@ void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
 		shader_variant_flags |= 1 << 1;
 	if (si_get_wave_size(sel->screen, sel->type, ngg, es) == 32)
 		shader_variant_flags |= 1 << 2;
-	if (sel->force_correct_derivs_after_kill)
+	if (sel->type == PIPE_SHADER_FRAGMENT &&
+	    sel->info.uses_derivatives &&
+	    sel->info.uses_kill &&
+	    sel->screen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL))
 		shader_variant_flags |= 1 << 3;
 
 	struct mesa_sha1 ctx;
@@ -1224,7 +1227,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
 	 *
 	 * Don't use late alloc for NGG on Navi14 due to a hw bug.
 	 */
-	if (sscreen->info.family == CHIP_NAVI14)
+	if (sscreen->info.family == CHIP_NAVI14 || !sscreen->info.use_late_alloc)
 		late_alloc_wave64 = 0;
 	else if (num_cu_per_sh <= 6)
 		late_alloc_wave64 = num_cu_per_sh - 2; /* All CUs enabled */
@@ -1232,6 +1235,12 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
 		late_alloc_wave64 = (num_cu_per_sh - 2) * 6;
 	else
 		late_alloc_wave64 = (num_cu_per_sh - 2) * 4;
+
+	/* Limit LATE_ALLOC_GS for prevent a hang (hw bug). */
+	if (sscreen->info.family == CHIP_NAVI10 ||
+	    sscreen->info.family == CHIP_NAVI12 ||
+	    sscreen->info.family == CHIP_NAVI14)
+		late_alloc_wave64 = MIN2(late_alloc_wave64, 64);
 
 	si_pm4_set_reg(pm4, R_00B204_SPI_SHADER_PGM_RSRC4_GS,
 		       S_00B204_CU_EN(0xffff) |
@@ -1309,7 +1318,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
 	}
 
 	unsigned oversub_pc_lines = sscreen->info.pc_lines * oversub_pc_factor;
-	shader->ctx_reg.ngg.ge_pc_alloc = S_030980_OVERSUB_EN(1) |
+	shader->ctx_reg.ngg.ge_pc_alloc = S_030980_OVERSUB_EN(sscreen->info.use_late_alloc) |
 					  S_030980_NUM_PC_LINES(oversub_pc_lines - 1);
 
 	if (shader->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_TRI_LIST) {
@@ -1519,7 +1528,7 @@ static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
 			S_02870C_POS3_EXPORT_FORMAT(shader->info.nr_pos_exports > 3 ?
 						    V_02870C_SPI_SHADER_4COMP :
 						    V_02870C_SPI_SHADER_NONE);
-	shader->ctx_reg.vs.ge_pc_alloc = S_030980_OVERSUB_EN(1) |
+	shader->ctx_reg.vs.ge_pc_alloc = S_030980_OVERSUB_EN(sscreen->info.use_late_alloc) |
 					 S_030980_NUM_PC_LINES(sscreen->info.pc_lines / 4 - 1);
 	shader->pa_cl_vs_out_cntl = si_get_vs_out_cntl(shader->selector, false);
 
@@ -2821,12 +2830,6 @@ static void *si_create_shader_selector(struct pipe_context *ctx,
 	sel->vs_needs_prolog = sel->type == PIPE_SHADER_VERTEX &&
 			       sel->info.num_inputs &&
 			       !sel->info.properties[TGSI_PROPERTY_VS_BLIT_SGPRS_AMD];
-
-	sel->force_correct_derivs_after_kill =
-		sel->type == PIPE_SHADER_FRAGMENT &&
-		sel->info.uses_derivatives &&
-		sel->info.uses_kill &&
-		sctx->screen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL);
 
 	sel->prim_discard_cs_allowed =
 		sel->type == PIPE_SHADER_VERTEX &&

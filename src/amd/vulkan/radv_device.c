@@ -41,7 +41,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <llvm/Config/llvm-config.h>
 
 #include "radv_debug.h"
 #include "radv_private.h"
@@ -53,6 +52,7 @@
 #include <amdgpu.h>
 #include <amdgpu_drm.h>
 #include "winsys/amdgpu/radv_amdgpu_winsys_public.h"
+#include "winsys/null/radv_null_winsys_public.h"
 #include "ac_llvm_util.h"
 #include "vk_format.h"
 #include "sid.h"
@@ -287,97 +287,69 @@ radv_physical_device_init_mem_types(struct radv_physical_device *device)
 	}
 }
 
-static void
-radv_handle_env_var_force_family(struct radv_physical_device *device)
-{
-	const char *family = getenv("RADV_FORCE_FAMILY");
-	unsigned i;
-
-	if (!family)
-		return;
-
-	for (i = CHIP_TAHITI; i < CHIP_LAST; i++) {
-		if (!strcmp(family, ac_get_llvm_processor_name(i))) {
-			/* Override family and chip_class. */
-			device->rad_info.family = i;
-			device->rad_info.name = "OVERRIDDEN";
-
-			if (i >= CHIP_NAVI10)
-				device->rad_info.chip_class = GFX10;
-			else if (i >= CHIP_VEGA10)
-				device->rad_info.chip_class = GFX9;
-			else if (i >= CHIP_TONGA)
-				device->rad_info.chip_class = GFX8;
-			else if (i >= CHIP_BONAIRE)
-				device->rad_info.chip_class = GFX7;
-			else
-				device->rad_info.chip_class = GFX6;
-
-			/* Don't submit any IBs. */
-			device->instance->debug_flags |= RADV_DEBUG_NOOP;
-			return;
-		}
-	}
-
-	fprintf(stderr, "radv: Unknown family: %s\n", family);
-	exit(1);
-}
-
 static VkResult
 radv_physical_device_init(struct radv_physical_device *device,
 			  struct radv_instance *instance,
 			  drmDevicePtr drm_device)
 {
-	const char *path = drm_device->nodes[DRM_NODE_RENDER];
 	VkResult result;
-	drmVersionPtr version;
-	int fd;
+	int fd = -1;
 	int master_fd = -1;
 
-	fd = open(path, O_RDWR | O_CLOEXEC);
-	if (fd < 0) {
-		if (instance->debug_flags & RADV_DEBUG_STARTUP)
-			radv_logi("Could not open device '%s'", path);
+	if (drm_device) {
+		const char *path = drm_device->nodes[DRM_NODE_RENDER];
+		drmVersionPtr version;
 
-		return vk_error(instance, VK_ERROR_INCOMPATIBLE_DRIVER);
-	}
+		fd = open(path, O_RDWR | O_CLOEXEC);
+		if (fd < 0) {
+			if (instance->debug_flags & RADV_DEBUG_STARTUP)
+				radv_logi("Could not open device '%s'", path);
 
-	version = drmGetVersion(fd);
-	if (!version) {
-		close(fd);
+			return vk_error(instance, VK_ERROR_INCOMPATIBLE_DRIVER);
+		}
 
-		if (instance->debug_flags & RADV_DEBUG_STARTUP)
-			radv_logi("Could not get the kernel driver version for device '%s'", path);
+		version = drmGetVersion(fd);
+		if (!version) {
+			close(fd);
 
-		return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-				 "failed to get version %s: %m", path);
-	}
+			if (instance->debug_flags & RADV_DEBUG_STARTUP)
+				radv_logi("Could not get the kernel driver version for device '%s'", path);
 
-	if (strcmp(version->name, "amdgpu")) {
+			return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+					 "failed to get version %s: %m", path);
+		}
+
+		if (strcmp(version->name, "amdgpu")) {
+			drmFreeVersion(version);
+			close(fd);
+
+			if (instance->debug_flags & RADV_DEBUG_STARTUP)
+				radv_logi("Device '%s' is not using the amdgpu kernel driver.", path);
+
+			return VK_ERROR_INCOMPATIBLE_DRIVER;
+		}
 		drmFreeVersion(version);
-		close(fd);
 
 		if (instance->debug_flags & RADV_DEBUG_STARTUP)
-			radv_logi("Device '%s' is not using the amdgpu kernel driver.", path);
-
-		return VK_ERROR_INCOMPATIBLE_DRIVER;
+				radv_logi("Found compatible device '%s'.", path);
 	}
-	drmFreeVersion(version);
-
-	if (instance->debug_flags & RADV_DEBUG_STARTUP)
-			radv_logi("Found compatible device '%s'.", path);
 
 	device->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
 	device->instance = instance;
 
-	device->ws = radv_amdgpu_winsys_create(fd, instance->debug_flags,
-					       instance->perftest_flags);
+	if (drm_device) {
+		device->ws = radv_amdgpu_winsys_create(fd, instance->debug_flags,
+						       instance->perftest_flags);
+	} else {
+		device->ws = radv_null_winsys_create();
+	}
+
 	if (!device->ws) {
 		result = vk_error(instance, VK_ERROR_INCOMPATIBLE_DRIVER);
 		goto fail;
 	}
 
-	if (instance->enabled_extensions.KHR_display) {
+	if (drm_device && instance->enabled_extensions.KHR_display) {
 		master_fd = open(drm_device->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
 		if (master_fd >= 0) {
 			uint32_t accel_working = 0;
@@ -397,8 +369,6 @@ radv_physical_device_init(struct radv_physical_device *device,
 	device->master_fd = master_fd;
 	device->local_fd = fd;
 	device->ws->query_info(device->ws, &device->rad_info);
-
-	radv_handle_env_var_force_family(device);
 
 	device->use_aco = instance->perftest_flags & RADV_PERFTEST_ACO;
 
@@ -468,7 +438,8 @@ radv_physical_device_init(struct radv_physical_device *device,
 	radv_physical_device_init_mem_types(device);
 	radv_fill_device_extension_table(device, &device->supported_extensions);
 
-	device->bus_info = *drm_device->businfo.pci;
+	if (drm_device)
+		device->bus_info = *drm_device->businfo.pci;
 
 	if ((device->instance->debug_flags & RADV_DEBUG_INFO))
 		ac_print_gpu_info(&device->rad_info);
@@ -560,7 +531,6 @@ static const struct debug_control radv_debug_options[] = {
 	{"allentrypoints", RADV_DEBUG_ALL_ENTRYPOINTS},
 	{"metashaders", RADV_DEBUG_DUMP_META_SHADERS},
 	{"nomemorycache", RADV_DEBUG_NO_MEMORY_CACHE},
-	{"noop", RADV_DEBUG_NOOP},
 	{NULL, 0}
 };
 
@@ -628,6 +598,9 @@ radv_handle_per_app_options(struct radv_instance *instance,
 		 * uninitialized data in an indirect draw.
 		 */
 		instance->debug_flags |= RADV_DEBUG_ZERO_VRAM;
+	} else if (!strcmp(name, "No Man's Sky")) {
+		/* Work around a NMS game bug */
+		instance->debug_flags |= RADV_DEBUG_DISCARD_TO_DEMOTE;
 	}
 }
 
@@ -737,6 +710,50 @@ VkResult radv_CreateInstance(
 		instance->enabled_extensions.extensions[index] = true;
 	}
 
+	bool unchecked = instance->debug_flags & RADV_DEBUG_ALL_ENTRYPOINTS;
+
+	for (unsigned i = 0; i < ARRAY_SIZE(instance->dispatch.entrypoints); i++) {
+		/* Vulkan requires that entrypoints for extensions which have
+		 * not been enabled must not be advertised.
+		 */
+		if (!unchecked &&
+		    !radv_instance_entrypoint_is_enabled(i, instance->apiVersion,
+							 &instance->enabled_extensions)) {
+			instance->dispatch.entrypoints[i] = NULL;
+		} else {
+			instance->dispatch.entrypoints[i] =
+				radv_instance_dispatch_table.entrypoints[i];
+		}
+	}
+
+	 for (unsigned i = 0; i < ARRAY_SIZE(instance->physical_device_dispatch.entrypoints); i++) {
+		/* Vulkan requires that entrypoints for extensions which have
+		 * not been enabled must not be advertised.
+		 */
+		if (!unchecked &&
+		    !radv_physical_device_entrypoint_is_enabled(i, instance->apiVersion,
+								&instance->enabled_extensions)) {
+			instance->physical_device_dispatch.entrypoints[i] = NULL;
+		} else {
+			instance->physical_device_dispatch.entrypoints[i] =
+				radv_physical_device_dispatch_table.entrypoints[i];
+		}
+	}
+
+	for (unsigned i = 0; i < ARRAY_SIZE(instance->device_dispatch.entrypoints); i++) {
+		/* Vulkan requires that entrypoints for extensions which have
+		 * not been enabled must not be advertised.
+		 */
+		if (!unchecked &&
+		    !radv_device_entrypoint_is_enabled(i, instance->apiVersion,
+						       &instance->enabled_extensions, NULL)) {
+			instance->device_dispatch.entrypoints[i] = NULL;
+		} else {
+			instance->device_dispatch.entrypoints[i] =
+				radv_device_dispatch_table.entrypoints[i];
+		}
+	}
+
 	result = vk_debug_report_instance_init(&instance->debug_report_callbacks);
 	if (result != VK_SUCCESS) {
 		vk_free2(&default_alloc, pAllocator, instance);
@@ -795,6 +812,19 @@ radv_enumerate_devices(struct radv_instance *instance)
 	int max_devices;
 
 	instance->physicalDeviceCount = 0;
+
+	if (getenv("RADV_FORCE_FAMILY")) {
+		/* When RADV_FORCE_FAMILY is set, the driver creates a nul
+		 * device that allows to test the compiler without having an
+		 * AMDGPU instance.
+		 */
+		result = radv_physical_device_init(instance->physicalDevices +
+			                           instance->physicalDeviceCount,
+			                           instance, NULL);
+
+		++instance->physicalDeviceCount;
+		return VK_SUCCESS;
+	}
 
 	max_devices = drmGetDevices2(0, devices, ARRAY_SIZE(devices));
 
@@ -1451,8 +1481,9 @@ radv_get_physical_device_properties_1_1(struct radv_physical_device *pdevice,
 					 VK_SUBGROUP_FEATURE_CLUSTERED_BIT |
 					 VK_SUBGROUP_FEATURE_QUAD_BIT;
 
-	if (pdevice->rad_info.chip_class == GFX8 ||
-	    pdevice->rad_info.chip_class == GFX9) {
+	if (((pdevice->rad_info.chip_class == GFX6 ||
+	      pdevice->rad_info.chip_class == GFX7) && !pdevice->use_aco) ||
+	    pdevice->rad_info.chip_class >= GFX8) {
 		p->subgroupSupportedOperations |= VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
 						  VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT;
 	}
@@ -1672,32 +1703,31 @@ void radv_GetPhysicalDeviceProperties2(
 				pdevice->rad_info.max_sh_per_se;
 			properties->computeUnitsPerShaderArray =
 				pdevice->rad_info.num_good_cu_per_sh;
-			properties->simdPerComputeUnit = 4;
+			properties->simdPerComputeUnit =
+				pdevice->rad_info.num_simd_per_compute_unit;
 			properties->wavefrontsPerSimd =
-				pdevice->rad_info.family == CHIP_TONGA ||
-				pdevice->rad_info.family == CHIP_ICELAND ||
-				pdevice->rad_info.family == CHIP_POLARIS10 ||
-				pdevice->rad_info.family == CHIP_POLARIS11 ||
-				pdevice->rad_info.family == CHIP_POLARIS12 ||
-				pdevice->rad_info.family == CHIP_VEGAM ? 8 : 10;
+				pdevice->rad_info.max_wave64_per_simd;
 			properties->wavefrontSize = 64;
 
 			/* SGPR. */
 			properties->sgprsPerSimd =
 				pdevice->rad_info.num_physical_sgprs_per_simd;
 			properties->minSgprAllocation =
-				pdevice->rad_info.chip_class >= GFX8 ? 16 : 8;
+				pdevice->rad_info.min_sgpr_alloc;
 			properties->maxSgprAllocation =
-				pdevice->rad_info.family == CHIP_TONGA ||
-				pdevice->rad_info.family == CHIP_ICELAND ? 96 : 104;
+				pdevice->rad_info.max_sgpr_alloc;
 			properties->sgprAllocationGranularity =
-				pdevice->rad_info.chip_class >= GFX8 ? 16 : 8;
+				pdevice->rad_info.sgpr_alloc_granularity;
 
 			/* VGPR. */
-			properties->vgprsPerSimd = RADV_NUM_PHYSICAL_VGPRS;
-			properties->minVgprAllocation = 4;
-			properties->maxVgprAllocation = 256;
-			properties->vgprAllocationGranularity = 4;
+			properties->vgprsPerSimd =
+				pdevice->rad_info.num_physical_wave64_vgprs_per_simd;
+			properties->minVgprAllocation =
+				pdevice->rad_info.min_wave64_vgpr_alloc;
+			properties->maxVgprAllocation =
+				pdevice->rad_info.max_vgpr_alloc;
+			properties->vgprAllocationGranularity =
+				pdevice->rad_info.wave64_vgpr_alloc_granularity;
 			break;
 		}
 		case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CORE_PROPERTIES_2_AMD: {
@@ -2812,6 +2842,39 @@ static VkResult fork_secure_compile_idle_device(struct radv_device *device)
 	return VK_SUCCESS;
 }
 
+static void
+radv_device_init_dispatch(struct radv_device *device)
+{
+	const struct radv_instance *instance = device->physical_device->instance;
+	const struct radv_device_dispatch_table *dispatch_table_layer = NULL;
+	bool unchecked = instance->debug_flags & RADV_DEBUG_ALL_ENTRYPOINTS;
+	int radv_thread_trace = radv_get_int_debug_option("RADV_THREAD_TRACE", -1);
+
+	if (radv_thread_trace >= 0) {
+		/* Use device entrypoints from the SQTT layer if enabled. */
+		dispatch_table_layer = &sqtt_device_dispatch_table;
+	}
+
+	for (unsigned i = 0; i < ARRAY_SIZE(device->dispatch.entrypoints); i++) {
+		/* Vulkan requires that entrypoints for extensions which have not been
+		 * enabled must not be advertised.
+		 */
+		if (!unchecked &&
+		    !radv_device_entrypoint_is_enabled(i, instance->apiVersion,
+						       &instance->enabled_extensions,
+						       &device->enabled_extensions)) {
+			device->dispatch.entrypoints[i] = NULL;
+		} else if (dispatch_table_layer &&
+			   dispatch_table_layer->entrypoints[i]) {
+			device->dispatch.entrypoints[i] =
+				dispatch_table_layer->entrypoints[i];
+		} else {
+			device->dispatch.entrypoints[i] =
+				radv_device_dispatch_table.entrypoints[i];
+		}
+	}
+}
+
 static VkResult
 radv_create_pthread_cond(pthread_cond_t *cond)
 {
@@ -2883,6 +2946,8 @@ VkResult radv_CreateDevice(
 
 		device->enabled_extensions.extensions[index] = true;
 	}
+
+	radv_device_init_dispatch(device);
 
 	keep_shader_info = device->enabled_extensions.AMD_shader_info;
 
@@ -2986,6 +3051,28 @@ VkResult radv_CreateDevice(
 		radv_dump_enabled_options(device, stderr);
 	}
 
+	int radv_thread_trace = radv_get_int_debug_option("RADV_THREAD_TRACE", -1);
+	if (radv_thread_trace >= 0) {
+		fprintf(stderr, "*************************************************\n");
+		fprintf(stderr, "* WARNING: Thread trace support is experimental *\n");
+		fprintf(stderr, "*************************************************\n");
+
+		if (device->physical_device->rad_info.chip_class < GFX8) {
+			fprintf(stderr, "GPU hardware not supported: refer to "
+					"the RGP documentation for the list of "
+					"supported GPUs!\n");
+			abort();
+		}
+
+		/* Default buffer size set to 1MB per SE. */
+		device->thread_trace_buffer_size =
+			radv_get_int_debug_option("RADV_THREAD_TRACE_BUFFER_SIZE", 1024 * 1024);
+		device->thread_trace_start_frame = radv_thread_trace;
+
+		if (!radv_thread_trace_init(device))
+			goto fail;
+	}
+
 	/* Temporarily disable secure compile while we create meta shaders, etc */
 	uint8_t sc_threads = device->instance->num_sc_threads;
 	if (sc_threads)
@@ -3061,6 +3148,8 @@ fail_meta:
 fail:
 	radv_bo_list_finish(&device->bo_list);
 
+	radv_thread_trace_finish(device);
+
 	if (device->trace_bo)
 		device->ws->buffer_destroy(device->trace_bo);
 
@@ -3110,6 +3199,9 @@ void radv_DestroyDevice(
 
 	pthread_cond_destroy(&device->timeline_cond);
 	radv_bo_list_finish(&device->bo_list);
+
+	radv_thread_trace_finish(device);
+
 	if (radv_device_use_secure_compile(device->instance)) {
 		for (unsigned i = 0; i < device->instance->num_sc_threads; i++ ) {
 			destroy_secure_compile_device(device, i);
@@ -3899,6 +3991,9 @@ radv_get_preamble_cs(struct radv_queue *queue,
 		if (gds_oa_bo)
 			radv_cs_add_buffer(queue->device->ws, cs, gds_oa_bo);
 
+		if (queue->device->trace_bo)
+			radv_cs_add_buffer(queue->device->ws, cs, queue->device->trace_bo);
+
 		if (i == 0) {
 			si_cs_emit_cache_flush(cs,
 			                       queue->device->physical_device->rad_info.chip_class,
@@ -4666,6 +4761,25 @@ static VkResult radv_queue_submit(struct radv_queue *queue,
 	return radv_process_submissions(&processing_list);
 }
 
+bool
+radv_queue_internal_submit(struct radv_queue *queue, struct radeon_cmdbuf *cs)
+{
+	struct radeon_winsys_ctx *ctx = queue->hw_ctx;
+	struct radv_winsys_sem_info sem_info;
+	VkResult result;
+	int ret;
+
+	result = radv_alloc_sem_info(queue->device, &sem_info, 0, NULL, 0, 0,
+				     0, NULL, VK_NULL_HANDLE);
+	if (result != VK_SUCCESS)
+		return false;
+
+	ret = queue->device->ws->cs_submit(ctx, queue->queue_idx, &cs, 1, NULL,
+					   NULL, &sem_info, NULL, false, NULL);
+	radv_free_sem_info(&sem_info);
+	return !ret;
+}
+
 /* Signals fence as soon as all the work currently put on queue is done. */
 static VkResult radv_signal_fence(struct radv_queue *queue,
                               VkFence fence)
@@ -4815,16 +4929,41 @@ PFN_vkVoidFunction radv_GetInstanceProcAddr(
 	const char*                                 pName)
 {
 	RADV_FROM_HANDLE(radv_instance, instance, _instance);
-	bool unchecked = instance ? instance->debug_flags & RADV_DEBUG_ALL_ENTRYPOINTS : false;
 
-	if (unchecked) {
-		return radv_lookup_entrypoint_unchecked(pName);
-	} else {
-		return radv_lookup_entrypoint_checked(pName,
-						      instance ? instance->apiVersion : 0,
-						      instance ? &instance->enabled_extensions : NULL,
-						      NULL);
-	}
+	/* The Vulkan 1.0 spec for vkGetInstanceProcAddr has a table of exactly
+	 * when we have to return valid function pointers, NULL, or it's left
+	 * undefined.  See the table for exact details.
+	 */
+	if (pName == NULL)
+		return NULL;
+
+#define LOOKUP_RADV_ENTRYPOINT(entrypoint) \
+	if (strcmp(pName, "vk" #entrypoint) == 0) \
+		return (PFN_vkVoidFunction)radv_##entrypoint
+
+	LOOKUP_RADV_ENTRYPOINT(EnumerateInstanceExtensionProperties);
+	LOOKUP_RADV_ENTRYPOINT(EnumerateInstanceLayerProperties);
+	LOOKUP_RADV_ENTRYPOINT(EnumerateInstanceVersion);
+	LOOKUP_RADV_ENTRYPOINT(CreateInstance);
+
+#undef LOOKUP_RADV_ENTRYPOINT
+
+	if (instance == NULL)
+		return NULL;
+
+	int idx = radv_get_instance_entrypoint_index(pName);
+	if (idx >= 0)
+		return instance->dispatch.entrypoints[idx];
+
+	idx = radv_get_physical_device_entrypoint_index(pName);
+	if (idx >= 0)
+		return instance->physical_device_dispatch.entrypoints[idx];
+
+	idx = radv_get_device_entrypoint_index(pName);
+	if (idx >= 0)
+		return instance->device_dispatch.entrypoints[idx];
+
+	return NULL;
 }
 
 /* The loader wants us to expose a second GetInstanceProcAddr function
@@ -4855,9 +4994,14 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetPhysicalDeviceProcAddr(
 {
 	RADV_FROM_HANDLE(radv_instance, instance, _instance);
 
-	return radv_lookup_physical_device_entrypoint_checked(pName,
-	                                                      instance ? instance->apiVersion : 0,
-	                                                      instance ? &instance->enabled_extensions : NULL);
+	if (!pName || !instance)
+		return NULL;
+
+	int idx = radv_get_physical_device_entrypoint_index(pName);
+	if (idx < 0)
+		return NULL;
+
+	return instance->physical_device_dispatch.entrypoints[idx];
 }
 
 PFN_vkVoidFunction radv_GetDeviceProcAddr(
@@ -4865,16 +5009,15 @@ PFN_vkVoidFunction radv_GetDeviceProcAddr(
 	const char*                                 pName)
 {
 	RADV_FROM_HANDLE(radv_device, device, _device);
-	bool unchecked = device ? device->instance->debug_flags & RADV_DEBUG_ALL_ENTRYPOINTS : false;
 
-	if (unchecked) {
-		return radv_lookup_entrypoint_unchecked(pName);
-	} else {
-		return radv_lookup_entrypoint_checked(pName,
-						      device->instance->apiVersion,
-						      &device->instance->enabled_extensions,
-						      &device->enabled_extensions);
-	}
+	if (!device || !pName)
+		return NULL;
+
+	int idx = radv_get_device_entrypoint_index(pName);
+	if (idx < 0)
+		return NULL;
+
+	return device->dispatch.entrypoints[idx];
 }
 
 bool radv_get_memory_fd(struct radv_device *device,

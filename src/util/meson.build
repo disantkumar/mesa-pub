@@ -113,6 +113,7 @@ files_mesa_util = files(
   'u_mm.h',
   'u_debug.c',
   'u_debug.h',
+  'u_debug_memory.c',
   'u_cpu_detect.c',
   'u_cpu_detect.h',
   'vma.c',
@@ -277,6 +278,28 @@ if with_tests
      suite : ['util'],
   )
 
+  process_test_exe = executable(
+    'process_test',
+    files('process_test.c'),
+    include_directories : inc_common,
+    dependencies : idep_mesautil,
+    c_args : [c_msvc_compat_args],
+  )
+  if not (host_machine.system() == 'windows')
+    process_test_exe_full_path = process_test_exe.full_path()
+  else
+    process_test_exe_full_path = run_command(
+      'winepath', '-w', process_test_exe.full_path()
+    ).stdout().strip()
+  endif
+
+  test(
+    'process',
+    process_test_exe,
+    suite : ['util'],
+    env: ['BUILD_FULL_PATH='+process_test_exe_full_path]
+  )
+
   subdir('tests/fast_idiv_by_const')
   subdir('tests/fast_urem_by_const')
   subdir('tests/hash_table')
@@ -289,7 +312,10 @@ if with_tests
   endif
   subdir('tests/vma')
   subdir('tests/set')
-  subdir('tests/sparse_array')
+  # FIXME: this test on the Wine version in GitLab CI
+  if host_machine.system() != 'windows'
+    subdir('tests/sparse_array')
+  endif
   subdir('tests/format')
   subdir('tests/vector')
 endif

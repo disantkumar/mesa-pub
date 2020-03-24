@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include "aco_ir.h"
 #include "nir.h"
+#include "nir_control_flow.h"
 #include "vulkan/radv_shader.h"
 #include "vulkan/radv_descriptor_set.h"
 #include "vulkan/radv_shader_args.h"
@@ -94,6 +95,10 @@ struct isel_context {
    unsigned num_clip_distances;
    unsigned num_cull_distances;
 
+   /* tessellation information */
+   uint32_t tcs_num_inputs;
+   uint32_t tcs_num_patches;
+
    /* VS, FS or GS output information */
    output_state outputs;
 };
@@ -132,6 +137,84 @@ unsigned get_interp_input(nir_intrinsic_op intrin, enum glsl_interp_mode interp)
    return 0;
 }
 
+/* If one side of a divergent IF ends in a branch and the other doesn't, we
+ * might have to emit the contents of the side without the branch at the merge
+ * block instead. This is so that we can use any SGPR live-out of the side
+ * without the branch without creating a linear phi in the invert or merge block. */
+bool
+sanitize_if(nir_function_impl *impl, bool *divergent, nir_if *nif)
+{
+   if (!divergent[nif->condition.ssa->index])
+      return false;
+
+   nir_block *then_block = nir_if_last_then_block(nif);
+   nir_block *else_block = nir_if_last_else_block(nif);
+   bool then_jump = nir_block_ends_in_jump(then_block) || nir_block_is_unreachable(then_block);
+   bool else_jump = nir_block_ends_in_jump(else_block) || nir_block_is_unreachable(else_block);
+   if (then_jump == else_jump)
+      return false;
+
+   /* If the continue from block is empty then return as there is nothing to
+    * move.
+    */
+   if (nir_cf_list_is_empty_block(else_jump ? &nif->then_list : &nif->else_list))
+      return false;
+
+   /* Even though this if statement has a jump on one side, we may still have
+    * phis afterwards.  Single-source phis can be produced by loop unrolling
+    * or dead control-flow passes and are perfectly legal.  Run a quick phi
+    * removal on the block after the if to clean up any such phis.
+    */
+   nir_opt_remove_phis_block(nir_cf_node_as_block(nir_cf_node_next(&nif->cf_node)));
+
+   /* Finally, move the continue from branch after the if-statement. */
+   nir_block *last_continue_from_blk = else_jump ? then_block : else_block;
+   nir_block *first_continue_from_blk = else_jump ?
+      nir_if_first_then_block(nif) : nir_if_first_else_block(nif);
+
+   nir_cf_list tmp;
+   nir_cf_extract(&tmp, nir_before_block(first_continue_from_blk),
+                        nir_after_block(last_continue_from_blk));
+   nir_cf_reinsert(&tmp, nir_after_cf_node(&nif->cf_node));
+
+   /* nir_cf_extract() invalidates dominance metadata, but it should still be
+    * correct because of the specific type of transformation we did. Block
+    * indices are not valid except for block_0's, which is all we care about for
+    * nir_block_is_unreachable(). */
+   impl->valid_metadata =
+      (nir_metadata)(impl->valid_metadata | nir_metadata_dominance | nir_metadata_block_index);
+
+   return true;
+}
+
+bool
+sanitize_cf_list(nir_function_impl *impl, bool *divergent, struct exec_list *cf_list)
+{
+   bool progress = false;
+   foreach_list_typed(nir_cf_node, cf_node, node, cf_list) {
+      switch (cf_node->type) {
+      case nir_cf_node_block:
+         break;
+      case nir_cf_node_if: {
+         nir_if *nif = nir_cf_node_as_if(cf_node);
+         progress |= sanitize_cf_list(impl, divergent, &nif->then_list);
+         progress |= sanitize_cf_list(impl, divergent, &nif->else_list);
+         progress |= sanitize_if(impl, divergent, nif);
+         break;
+      }
+      case nir_cf_node_loop: {
+         nir_loop *loop = nir_cf_node_as_loop(cf_node);
+         progress |= sanitize_cf_list(impl, divergent, &loop->body);
+         break;
+      }
+      case nir_cf_node_function:
+         unreachable("Invalid cf type");
+      }
+   }
+
+   return progress;
+}
+
 void init_context(isel_context *ctx, nir_shader *shader)
 {
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
@@ -139,6 +222,19 @@ void init_context(isel_context *ctx, nir_shader *shader)
 
    ctx->shader = shader;
    ctx->divergent_vals = nir_divergence_analysis(shader, nir_divergence_view_index_uniform);
+
+   /* sanitize control flow */
+   nir_metadata_require(impl, nir_metadata_dominance);
+   sanitize_cf_list(impl, ctx->divergent_vals, &impl->body);
+   nir_metadata_preserve(impl, (nir_metadata)~nir_metadata_block_index);
+
+   /* we'll need this for isel */
+   nir_metadata_require(impl, nir_metadata_block_index);
+
+   if (!(ctx->stage & sw_gs_copy) && ctx->options->dump_preoptir) {
+      fprintf(stderr, "NIR shader before instruction selection:\n");
+      nir_print_shader(shader, stderr);
+   }
 
    std::unique_ptr<Temp[]> allocated{new Temp[impl->ssa_alloc]()};
 
@@ -307,8 +403,10 @@ void init_context(isel_context *ctx, nir_shader *shader)
                   case nir_intrinsic_load_sample_id:
                   case nir_intrinsic_load_sample_mask_in:
                   case nir_intrinsic_load_input:
+                  case nir_intrinsic_load_output:
                   case nir_intrinsic_load_input_vertex:
                   case nir_intrinsic_load_per_vertex_input:
+                  case nir_intrinsic_load_per_vertex_output:
                   case nir_intrinsic_load_vertex_id:
                   case nir_intrinsic_load_vertex_id_zero_base:
                   case nir_intrinsic_load_barycentric_sample:
@@ -324,6 +422,7 @@ void init_context(isel_context *ctx, nir_shader *shader)
                   case nir_intrinsic_load_local_invocation_id:
                   case nir_intrinsic_load_local_invocation_index:
                   case nir_intrinsic_load_subgroup_invocation:
+                  case nir_intrinsic_load_tess_coord:
                   case nir_intrinsic_write_invocation_amd:
                   case nir_intrinsic_mbcnt_amd:
                   case nir_intrinsic_load_instance_id:
@@ -494,6 +593,8 @@ void init_context(isel_context *ctx, nir_shader *shader)
                unsigned size = nir_instr_as_ssa_undef(instr)->def.num_components;
                if (nir_instr_as_ssa_undef(instr)->def.bit_size == 64)
                   size *= 2;
+               else if (nir_instr_as_ssa_undef(instr)->def.bit_size == 1)
+                  size *= lane_mask_size;
                allocated[nir_instr_as_ssa_undef(instr)->def.index] = Temp(0, RegClass(RegType::sgpr, size));
                break;
             }
@@ -731,11 +832,15 @@ setup_vs_variables(isel_context *ctx, nir_shader *nir)
    {
       if (ctx->stage == vertex_geometry_gs)
          variable->data.driver_location = util_bitcount64(ctx->output_masks[nir->info.stage] & ((1ull << variable->data.location) - 1ull)) * 4;
-      else if (ctx->stage == vertex_es)
-         //TODO: make this more compact
-         variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot)variable->data.location) * 4;
-      else
+      else if (ctx->stage == vertex_es ||
+               ctx->stage == vertex_ls ||
+               ctx->stage == vertex_tess_control_hs)
+         // TODO: make this more compact
+         variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot) variable->data.location) * 4;
+      else if (ctx->stage == vertex_vs)
          variable->data.driver_location = variable->data.location * 4;
+      else
+         unreachable("Unsupported VS stage");
    }
 
    if (ctx->stage == vertex_vs) {
@@ -750,6 +855,103 @@ setup_vs_variables(isel_context *ctx, nir_shader *nir)
        */
       /* radv_es_output_info *outinfo = &ctx->program->info->vs.es_info;
       outinfo->esgs_itemsize = util_bitcount64(ctx->output_masks[nir->info.stage]) * 16u; */
+   }
+}
+
+void setup_gs_variables(isel_context *ctx, nir_shader *nir)
+{
+   if (ctx->stage == vertex_geometry_gs || ctx->stage == tess_eval_geometry_gs) {
+      nir_foreach_variable(variable, &nir->inputs) {
+         variable->data.driver_location = util_bitcount64(ctx->input_masks[nir->info.stage] & ((1ull << variable->data.location) - 1ull)) * 4;
+      }
+   } else if (ctx->stage == geometry_gs) {
+      //TODO: make this more compact
+      nir_foreach_variable(variable, &nir->inputs) {
+         variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot)variable->data.location) * 4;
+      }
+   } else {
+      unreachable("Unsupported GS stage.");
+   }
+
+   nir_foreach_variable(variable, &nir->outputs) {
+      variable->data.driver_location = variable->data.location * 4;
+   }
+
+   if (ctx->stage == vertex_geometry_gs)
+      ctx->program->info->gs.es_type = MESA_SHADER_VERTEX;
+   else if (ctx->stage == tess_eval_geometry_gs)
+      ctx->program->info->gs.es_type = MESA_SHADER_TESS_EVAL;
+}
+
+void
+setup_tcs_variables(isel_context *ctx, nir_shader *nir)
+{
+   switch (ctx->stage) {
+   case tess_control_hs:
+      ctx->tcs_num_inputs = ctx->args->options->key.tcs.num_inputs;
+      break;
+   case vertex_tess_control_hs:
+      ctx->tcs_num_inputs = util_last_bit64(ctx->args->shader_info->vs.ls_outputs_written);
+      break;
+   default:
+      unreachable("Unsupported TCS shader stage");
+   }
+
+   ctx->tcs_num_patches = get_tcs_num_patches(
+                             ctx->args->options->key.tcs.input_vertices,
+                             nir->info.tess.tcs_vertices_out,
+                             ctx->tcs_num_inputs,
+                             ctx->args->shader_info->tcs.outputs_written,
+                             ctx->args->shader_info->tcs.patch_outputs_written,
+                             ctx->args->options->tess_offchip_block_dw_size,
+                             ctx->args->options->chip_class,
+                             ctx->args->options->family);
+   unsigned lds_size = calculate_tess_lds_size(
+                             ctx->args->options->key.tcs.input_vertices,
+                             nir->info.tess.tcs_vertices_out,
+                             ctx->tcs_num_inputs,
+                             ctx->tcs_num_patches,
+                             ctx->args->shader_info->tcs.outputs_written,
+                             ctx->args->shader_info->tcs.patch_outputs_written);
+
+   ctx->args->shader_info->tcs.num_patches = ctx->tcs_num_patches;
+   ctx->args->shader_info->tcs.lds_size = lds_size;
+   ctx->program->config->lds_size = (lds_size + ctx->program->lds_alloc_granule - 1) /
+                                    ctx->program->lds_alloc_granule;
+
+   nir_foreach_variable(variable, &nir->inputs) {
+      variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot) variable->data.location) * 4;
+   }
+
+   nir_foreach_variable(variable, &nir->outputs) {
+      variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot) variable->data.location) * 4;
+   }
+}
+
+void
+setup_tes_variables(isel_context *ctx, nir_shader *nir)
+{
+   ctx->tcs_num_patches = ctx->args->options->key.tes.num_patches;
+
+   nir_foreach_variable(variable, &nir->inputs) {
+      variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot) variable->data.location) * 4;
+   }
+
+   nir_foreach_variable(variable, &nir->outputs) {
+      if (ctx->stage == tess_eval_vs)
+         variable->data.driver_location = variable->data.location * 4;
+      else if (ctx->stage == tess_eval_es)
+         variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot) variable->data.location) * 4;
+      else if (ctx->stage == tess_eval_geometry_gs)
+         variable->data.driver_location = util_bitcount64(ctx->output_masks[nir->info.stage] & ((1ull << variable->data.location) - 1ull)) * 4;
+      else
+         unreachable("Unsupported TES shader stage");
+   }
+
+   if (ctx->stage == tess_eval_vs) {
+      radv_vs_output_info *outinfo = &ctx->program->info->tes.outinfo;
+      setup_vs_output_info(ctx, nir, outinfo->export_prim_id,
+                           ctx->options->key.vs_common_out.export_clip_dists, outinfo);
    }
 }
 
@@ -775,22 +977,15 @@ setup_variables(isel_context *ctx, nir_shader *nir)
       break;
    }
    case MESA_SHADER_GEOMETRY: {
-      assert(ctx->stage == vertex_geometry_gs || ctx->stage == geometry_gs);
-      if (ctx->stage == vertex_geometry_gs) {
-         nir_foreach_variable(variable, &nir->inputs) {
-            variable->data.driver_location = util_bitcount64(ctx->input_masks[nir->info.stage] & ((1ull << variable->data.location) - 1ull)) * 4;
-         }
-      } else {
-         //TODO: make this more compact
-         nir_foreach_variable(variable, &nir->inputs) {
-            variable->data.driver_location = shader_io_get_unique_index((gl_varying_slot)variable->data.location) * 4;
-         }
-      }
-      nir_foreach_variable(variable, &nir->outputs) {
-         variable->data.driver_location = variable->data.location * 4;
-      }
-      if (ctx->stage == vertex_geometry_gs)
-         ctx->program->info->gs.es_type = MESA_SHADER_VERTEX; /* tesselation shaders are not yet supported */
+      setup_gs_variables(ctx, nir);
+      break;
+   }
+   case MESA_SHADER_TESS_CTRL: {
+      setup_tcs_variables(ctx, nir);
+      break;
+   }
+   case MESA_SHADER_TESS_EVAL: {
+      setup_tes_variables(ctx, nir);
       break;
    }
    default:
@@ -922,7 +1117,6 @@ setup_nir(isel_context *ctx, nir_shader *nir)
 
    nir_function_impl *func = nir_shader_get_entrypoint(nir);
    nir_index_ssa_defs(func);
-   nir_metadata_require(func, nir_metadata_block_index);
 }
 
 isel_context
@@ -974,6 +1168,18 @@ setup_isel_context(Program* program,
       program->stage |= hw_vs;
    else if (program->stage == (sw_vs | sw_gs) && gfx9_plus && !ngg)
       program->stage |= hw_gs;
+   else if (program->stage == sw_vs && args->shader_info->vs.as_ls)
+      program->stage |= hw_ls; /* GFX6-8: VS is a Local Shader, when tessellation is used */
+   else if (program->stage == sw_tcs)
+      program->stage |= hw_hs; /* GFX6-8: TCS is a Hull Shader */
+   else if (program->stage == (sw_vs | sw_tcs))
+      program->stage |= hw_hs; /* GFX9-10: VS+TCS merged into a Hull Shader */
+   else if (program->stage == sw_tes && !args->shader_info->tes.as_es && !ngg)
+      program->stage |= hw_vs; /* GFX6-9: TES without GS uses the HW VS stage (and GFX10/legacy) */
+   else if (program->stage == sw_tes && args->shader_info->tes.as_es && !ngg)
+      program->stage |= hw_es; /* GFX6-8: TES is an Export Shader */
+   else if (program->stage == (sw_tes | sw_gs) && gfx9_plus && !ngg)
+      program->stage |= hw_gs; /* GFX9: TES+GS merged into a GS (and GFX10/legacy) */
    else
       unreachable("Shader stage not implemented");
 
@@ -986,6 +1192,9 @@ setup_isel_context(Program* program,
 
    program->lds_alloc_granule = args->options->chip_class >= GFX7 ? 512 : 256;
    program->lds_limit = args->options->chip_class >= GFX7 ? 65536 : 32768;
+   /* apparently gfx702 also has 16-bank LDS but I can't find a family for that */
+   program->has_16bank_lds = args->options->family == CHIP_KABINI || args->options->family == CHIP_STONEY;
+
    program->vgpr_limit = 256;
    program->vgpr_alloc_granule = 3;
 
@@ -1007,9 +1216,6 @@ setup_isel_context(Program* program,
       program->sgpr_limit = 104;
    }
 
-   /* TODO: we don't have to allocate VCC if we don't need it */
-   program->needs_vcc = true;
-
    calc_min_waves(program);
    program->vgpr_limit = get_addr_vgpr_from_waves(program, program->min_waves);
    program->sgpr_limit = get_addr_sgpr_from_waves(program, program->min_waves);
@@ -1030,11 +1236,6 @@ setup_isel_context(Program* program,
       for (unsigned i = 0; i < shader_count; i++) {
          nir_shader *nir = shaders[i];
          setup_nir(&ctx, nir);
-
-         if (args->options->dump_preoptir) {
-            fprintf(stderr, "NIR shader before instruction selection:\n");
-            nir_print_shader(nir, stderr);
-         }
       }
 
       for (unsigned i = 0; i < shader_count; i++)

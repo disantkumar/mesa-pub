@@ -186,14 +186,12 @@ brw_reg_from_fs_reg(const struct gen_device_info *devinfo, fs_inst *inst,
 fs_generator::fs_generator(const struct brw_compiler *compiler, void *log_data,
                            void *mem_ctx,
                            struct brw_stage_prog_data *prog_data,
-                           struct shader_stats shader_stats,
                            bool runtime_check_aads_emit,
                            gl_shader_stage stage)
 
    : compiler(compiler), log_data(log_data),
      devinfo(compiler->devinfo),
      prog_data(prog_data),
-     shader_stats(shader_stats),
      runtime_check_aads_emit(runtime_check_aads_emit), debug_flag(false),
      stage(stage), mem_ctx(mem_ctx)
 {
@@ -420,6 +418,13 @@ fs_generator::generate_mov_indirect(fs_inst *inst,
       /* We use VxH indirect addressing, clobbering a0.0 through a0.7. */
       struct brw_reg addr = vec8(brw_address_reg(0));
 
+      /* Whether we can use destination dependency control without running the
+       * risk of a hang if an instruction gets shot down.
+       */
+      const bool use_dep_ctrl = !inst->predicate &&
+                                inst->exec_size == dispatch_width;
+      brw_inst *insn;
+
       /* The destination stride of an instruction (in bytes) must be greater
        * than or equal to the size of the rest of the instruction.  Since the
        * address register is of type UW, we can't use a D-type instruction.
@@ -453,17 +458,28 @@ fs_generator::generate_mov_indirect(fs_inst *inst,
        * code, using it saves us 0 instructions and would require quite a bit
        * of case-by-case work.  It's just not worth it.
        *
-       * There's some sort of HW bug on Gen12 which causes issues if we write
-       * to the address register in control-flow.  Since we only ever touch
-       * the address register from the generator, we can easily enough work
-       * around it by setting NoMask on the add.
+       * Due to a hardware bug some platforms (particularly Gen11+) seem to
+       * require the address components of all channels to be valid whether or
+       * not they're active, which causes issues if we use VxH addressing
+       * under non-uniform control-flow.  We can easily work around that by
+       * initializing the whole address register with a pipelined NoMask MOV
+       * instruction.
        */
-      brw_push_insn_state(p);
-      if (devinfo->gen == 12)
-         brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-      brw_ADD(p, addr, indirect_byte_offset, brw_imm_uw(imm_byte_offset));
-      brw_pop_insn_state(p);
-      brw_set_default_swsb(p, tgl_swsb_regdist(1));
+      if (devinfo->gen >= 7) {
+         insn = brw_MOV(p, addr, brw_imm_uw(imm_byte_offset));
+         brw_inst_set_mask_control(devinfo, insn, BRW_MASK_DISABLE);
+         brw_inst_set_pred_control(devinfo, insn, BRW_PREDICATE_NONE);
+         if (devinfo->gen >= 12)
+            brw_set_default_swsb(p, tgl_swsb_null());
+         else
+            brw_inst_set_no_dd_clear(devinfo, insn, use_dep_ctrl);
+      }
+
+      insn = brw_ADD(p, addr, indirect_byte_offset, brw_imm_uw(imm_byte_offset));
+      if (devinfo->gen >= 12)
+         brw_set_default_swsb(p, tgl_swsb_regdist(1));
+      else if (devinfo->gen >= 7)
+         brw_inst_set_no_dd_check(devinfo, insn, use_dep_ctrl);
 
       if (type_sz(reg.type) > 4 &&
           ((devinfo->gen == 7 && !devinfo->is_haswell) ||
@@ -1698,6 +1714,7 @@ fs_generator::enable_debug(const char *shader_name)
 
 int
 fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
+                            struct shader_stats shader_stats,
                             struct brw_compile_stats *stats)
 {
    /* align to 64 byte boundary. */
@@ -1715,7 +1732,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
     * effect is already counted in spill/fill counts.
     */
    int spill_count = 0, fill_count = 0;
-   int loop_count = 0, send_count = 0;
+   int loop_count = 0, send_count = 0, nop_count = 0;
    bool is_accum_used = false;
 
    struct disasm_info *disasm_info = disasm_initialize(devinfo, cfg);
@@ -1745,6 +1762,12 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
           inst->dst.component_size(inst->exec_size) > REG_SIZE) {
          brw_NOP(p);
          last_insn_offset = p->next_insn_offset;
+
+         /* In order to avoid spurious instruction count differences when the
+          * instruction schedule changes, keep track of the number of inserted
+          * NOPs.
+          */
+         nop_count++;
       }
 
       /* GEN:BUG:14010017096:
@@ -2460,7 +2483,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
                               "Promoted %u constants, "
                               "compacted %d to %d bytes.",
                               _mesa_shader_stage_to_abbrev(stage),
-                              dispatch_width, before_size / 16,
+                              dispatch_width, before_size / 16 - nop_count,
                               loop_count, cfg->cycle_count,
                               spill_count, fill_count, send_count,
                               shader_stats.scheduler_mode,
@@ -2468,7 +2491,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
                               before_size, after_size);
    if (stats) {
       stats->dispatch_width = dispatch_width;
-      stats->instructions = before_size / 16;
+      stats->instructions = before_size / 16 - nop_count;
       stats->loops = loop_count;
       stats->cycles = cfg->cycle_count;
       stats->spills = spill_count;

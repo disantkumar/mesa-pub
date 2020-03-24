@@ -30,6 +30,7 @@
 
 #include "util/ralloc.h"
 #include "util/format/u_format.h"
+#include "util/half_float.h"
 #include "compiler/glsl_types.h"
 #include "list.h"
 #include "ir_visitor.h"
@@ -765,6 +766,13 @@ public:
        * to generic inputs and outputs.
        */
       unsigned is_unmatched_generic_inout:1;
+
+      /**
+       * Is this varying used by transform feedback?
+       *
+       * This is used by the linker to decide if it's safe to pack the varying.
+       */
+      unsigned is_xfb:1;
 
       /**
        * Is this varying used only by transform feedback?
@@ -2172,6 +2180,7 @@ union ir_constant_data {
       float f[16];
       bool b[16];
       double d[16];
+      uint16_t f16[16];
       uint64_t u64[16];
       int64_t i64[16];
 };
@@ -2183,6 +2192,7 @@ public:
    ir_constant(bool b, unsigned vector_elements=1);
    ir_constant(unsigned int u, unsigned vector_elements=1);
    ir_constant(int i, unsigned vector_elements=1);
+   ir_constant(float16_t f16, unsigned vector_elements=1);
    ir_constant(float f, unsigned vector_elements=1);
    ir_constant(double d, unsigned vector_elements=1);
    ir_constant(uint64_t u64, unsigned vector_elements=1);
@@ -2235,6 +2245,7 @@ public:
    /*@{*/
    bool get_bool_component(unsigned i) const;
    float get_float_component(unsigned i) const;
+   uint16_t get_float16_component(unsigned i) const;
    double get_double_component(unsigned i) const;
    int get_int_component(unsigned i) const;
    unsigned get_uint_component(unsigned i) const;

@@ -241,8 +241,8 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 			OUT_REG(ring, A6XX_RB_STENCIL_INFO(0));
 		}
 	} else {
-		OUT_PKT4(ring, REG_A6XX_RB_DEPTH_BUFFER_INFO, 6);                                                                                                                                                                                                                                                                                                                                                                         
-		OUT_RING(ring, A6XX_RB_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH6_NONE));                                                                                                                                                                                                                                                                                                                                                      
+		OUT_PKT4(ring, REG_A6XX_RB_DEPTH_BUFFER_INFO, 6);
+		OUT_RING(ring, A6XX_RB_DEPTH_BUFFER_INFO_DEPTH_FORMAT(DEPTH6_NONE));
 		OUT_RING(ring, 0x00000000);    /* RB_DEPTH_BUFFER_PITCH */
 		OUT_RING(ring, 0x00000000);    /* RB_DEPTH_BUFFER_ARRAY_PITCH */
 		OUT_RING(ring, 0x00000000);    /* RB_DEPTH_BUFFER_BASE_LO */
@@ -739,6 +739,10 @@ fd6_emit_tile_init(struct fd_batch *batch)
 
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);
+
+	/* blob controls "local" in IB2, but I think that is not required */
+	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_LOCAL, 1);
+	OUT_RING(ring, 0x1);
 
 	fd_wfi(batch, ring);
 	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
@@ -1355,9 +1359,6 @@ fd6_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
 	} else {
 		emit_conditional_ib(batch, tile, batch->tile_fini);
 	}
-
-	OUT_PKT7(ring, CP_SET_MARKER, 1);
-	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_YIELD));
 }
 
 static void
@@ -1471,6 +1472,9 @@ fd6_emit_sysmem_prep(struct fd_batch *batch)
 
 	fd6_emit_lrz_flush(ring);
 
+	if (batch->lrz_clear)
+		fd6_emit_ib(ring, batch->lrz_clear);
+
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
 	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_BYPASS));
@@ -1481,6 +1485,10 @@ fd6_emit_sysmem_prep(struct fd_batch *batch)
 
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);
+
+	/* blob controls "local" in IB2, but I think that is not required */
+	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_LOCAL, 1);
+	OUT_RING(ring, 0x1);
 
 	fd6_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
 	fd6_cache_inv(batch, ring);

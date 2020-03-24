@@ -958,6 +958,7 @@ else
     '-fno-math-errno',
     '-fno-trapping-math',
     '-Qunused-arguments',
+    '-fno-common',
   ]
   # MinGW chokes on format specifiers and I can't get it all working
   if not (cc.get_id() == 'gcc' and host_machine.system() == 'windows')
@@ -1508,6 +1509,14 @@ if host_machine.system() == 'windows'
   endif
 else
   prog_bison = find_program('bison', required : with_any_opengl)
+
+  # Disable deprecated keyword warnings, since we have to use them for
+  # old-bison compat.  See discussion in
+  # https://gitlab.freedesktop.org/mesa/mesa/merge_requests/2161
+  if meson.version().version_compare('>= 0.52.0') and find_program('bison', required : false, version : '> 2.3').found()
+    prog_bison = [prog_bison, '-Wno-deprecated']
+  endif
+
   prog_flex = find_program('flex', required : with_any_opengl)
 endif
 
