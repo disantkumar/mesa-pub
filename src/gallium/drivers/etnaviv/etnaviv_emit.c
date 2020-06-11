@@ -391,33 +391,11 @@ etna_emit_state(struct etna_context *ctx)
       /*00A38*/ EMIT_STATE(PA_WIDE_LINE_WIDTH0, rasterizer->PA_LINE_WIDTH);
       /*00A3C*/ EMIT_STATE(PA_WIDE_LINE_WIDTH1, rasterizer->PA_LINE_WIDTH);
    }
-   if (unlikely(dirty & (ETNA_DIRTY_SCISSOR | ETNA_DIRTY_FRAMEBUFFER |
-                         ETNA_DIRTY_RASTERIZER | ETNA_DIRTY_VIEWPORT))) {
-      /* this is a bit of a mess: rasterizer.scissor determines whether to use
-       * only the framebuffer scissor, or specific scissor state, and the
-       * viewport clips too so the logic spans four CSOs */
-      struct etna_rasterizer_state *rasterizer = etna_rasterizer_state(ctx->rasterizer);
-
-      uint32_t scissor_left =
-         MAX2(ctx->framebuffer.SE_SCISSOR_LEFT, ctx->viewport.SE_SCISSOR_LEFT);
-      uint32_t scissor_top =
-         MAX2(ctx->framebuffer.SE_SCISSOR_TOP, ctx->viewport.SE_SCISSOR_TOP);
-      uint32_t scissor_right =
-         MIN2(ctx->framebuffer.SE_SCISSOR_RIGHT, ctx->viewport.SE_SCISSOR_RIGHT);
-      uint32_t scissor_bottom =
-         MIN2(ctx->framebuffer.SE_SCISSOR_BOTTOM, ctx->viewport.SE_SCISSOR_BOTTOM);
-
-      if (rasterizer->scissor) {
-         scissor_left = MAX2(ctx->scissor.SE_SCISSOR_LEFT, scissor_left);
-         scissor_top = MAX2(ctx->scissor.SE_SCISSOR_TOP, scissor_top);
-         scissor_right = MIN2(ctx->scissor.SE_SCISSOR_RIGHT, scissor_right);
-         scissor_bottom = MIN2(ctx->scissor.SE_SCISSOR_BOTTOM, scissor_bottom);
-      }
-
-      /*00C00*/ EMIT_STATE_FIXP(SE_SCISSOR_LEFT, scissor_left);
-      /*00C04*/ EMIT_STATE_FIXP(SE_SCISSOR_TOP, scissor_top);
-      /*00C08*/ EMIT_STATE_FIXP(SE_SCISSOR_RIGHT, scissor_right);
-      /*00C0C*/ EMIT_STATE_FIXP(SE_SCISSOR_BOTTOM, scissor_bottom);
+   if (unlikely(dirty & (ETNA_DIRTY_SCISSOR_CLIP))) {
+      /*00C00*/ EMIT_STATE_FIXP(SE_SCISSOR_LEFT, ctx->clipping.minx << 16);
+      /*00C04*/ EMIT_STATE_FIXP(SE_SCISSOR_TOP, ctx->clipping.miny << 16);
+      /*00C08*/ EMIT_STATE_FIXP(SE_SCISSOR_RIGHT, (ctx->clipping.maxx << 16) + ETNA_SE_SCISSOR_MARGIN_RIGHT);
+      /*00C0C*/ EMIT_STATE_FIXP(SE_SCISSOR_BOTTOM, (ctx->clipping.maxy << 16) + ETNA_SE_SCISSOR_MARGIN_BOTTOM);
    }
    if (unlikely(dirty & (ETNA_DIRTY_RASTERIZER))) {
       struct etna_rasterizer_state *rasterizer = etna_rasterizer_state(ctx->rasterizer);
@@ -426,22 +404,9 @@ etna_emit_state(struct etna_context *ctx)
       /*00C14*/ EMIT_STATE(SE_DEPTH_BIAS, rasterizer->SE_DEPTH_BIAS);
       /*00C18*/ EMIT_STATE(SE_CONFIG, rasterizer->SE_CONFIG);
    }
-   if (unlikely(dirty & (ETNA_DIRTY_SCISSOR | ETNA_DIRTY_FRAMEBUFFER |
-                         ETNA_DIRTY_RASTERIZER | ETNA_DIRTY_VIEWPORT))) {
-      struct etna_rasterizer_state *rasterizer = etna_rasterizer_state(ctx->rasterizer);
-
-      uint32_t clip_right =
-         MIN2(ctx->framebuffer.SE_CLIP_RIGHT, ctx->viewport.SE_CLIP_RIGHT);
-      uint32_t clip_bottom =
-         MIN2(ctx->framebuffer.SE_CLIP_BOTTOM, ctx->viewport.SE_CLIP_BOTTOM);
-
-      if (rasterizer->scissor) {
-         clip_right = MIN2(ctx->scissor.SE_CLIP_RIGHT, clip_right);
-         clip_bottom = MIN2(ctx->scissor.SE_CLIP_BOTTOM, clip_bottom);
-      }
-
-      /*00C20*/ EMIT_STATE_FIXP(SE_CLIP_RIGHT, clip_right);
-      /*00C24*/ EMIT_STATE_FIXP(SE_CLIP_BOTTOM, clip_bottom);
+   if (unlikely(dirty & (ETNA_DIRTY_SCISSOR_CLIP))) {
+      /*00C20*/ EMIT_STATE_FIXP(SE_CLIP_RIGHT, (ctx->clipping.maxx << 16) + ETNA_SE_CLIP_MARGIN_RIGHT);
+      /*00C24*/ EMIT_STATE_FIXP(SE_CLIP_BOTTOM, (ctx->clipping.maxy << 16) + ETNA_SE_CLIP_MARGIN_BOTTOM);
    }
    if (unlikely(dirty & (ETNA_DIRTY_SHADER))) {
       /*00E00*/ EMIT_STATE(RA_CONTROL, ctx->shader_state.RA_CONTROL);
@@ -537,7 +502,8 @@ etna_emit_state(struct etna_context *ctx)
          /*014A8*/ EMIT_STATE(PE_DITHER(x), blend->PE_DITHER[x]);
       }
    }
-   if (unlikely(dirty & (ETNA_DIRTY_BLEND_COLOR))) {
+   if (unlikely(dirty & (ETNA_DIRTY_BLEND_COLOR)) &&
+       VIV_FEATURE(screen, chipMinorFeatures1, HALF_FLOAT)) {
          /*014B0*/ EMIT_STATE(PE_ALPHA_COLOR_EXT0, ctx->blend_color.PE_ALPHA_COLOR_EXT0);
          /*014B4*/ EMIT_STATE(PE_ALPHA_COLOR_EXT1, ctx->blend_color.PE_ALPHA_COLOR_EXT1);
    }
@@ -568,17 +534,17 @@ etna_emit_state(struct etna_context *ctx)
    else
       emit_pre_halti5_state(ctx);
 
-   ctx->emit_texture_state(ctx);
-
-   /* Insert a FE/PE stall as changing the shader instructions (and maybe
-    * the uniforms) can corrupt the previous in-progress draw operation.
-    * Observed with amoeba on GC2000 during the right-to-left rendering
-    * of PI, and can cause GPU hangs immediately after.
-    * I summise that this is because the "new" locations at 0xc000 are not
-    * properly protected against updates as other states seem to be. Hence,
-    * we detect the "new" vertex shader instruction offset to apply this. */
-   if (ctx->dirty & (ETNA_DIRTY_SHADER | ETNA_DIRTY_CONSTBUF) && screen->specs.vs_offset > 0x4000)
+   /* Beginning from Halti0 some of the new shader and sampler states are not
+    * self-synchronizing anymore. Thus we need to stall the FE on PE completion
+    * before loading the new states to avoid corrupting the state of the
+    * in-flight draw.
+    */
+   if (screen->specs.halti >= 0 &&
+       (ctx->dirty & (ETNA_DIRTY_SHADER | ETNA_DIRTY_CONSTBUF |
+                      ETNA_DIRTY_SAMPLERS | ETNA_DIRTY_SAMPLER_VIEWS)))
       etna_stall(ctx->stream, SYNC_RECIPIENT_FE, SYNC_RECIPIENT_PE);
+
+   ctx->emit_texture_state(ctx);
 
    /* We need to update the uniform cache only if one of the following bits are
     * set in ctx->dirty:

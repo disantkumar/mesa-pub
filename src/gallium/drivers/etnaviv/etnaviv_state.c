@@ -33,6 +33,7 @@
 #include "etnaviv_clear_blit.h"
 #include "etnaviv_context.h"
 #include "etnaviv_format.h"
+#include "etnaviv_rasterizer.h"
 #include "etnaviv_screen.h"
 #include "etnaviv_shader.h"
 #include "etnaviv_surface.h"
@@ -89,7 +90,7 @@ etna_set_constant_buffer(struct pipe_context *pctx,
 
    util_copy_constant_buffer(&so->cb[index], cb);
 
-   /* Note that the state tracker can unbind constant buffers by
+   /* Note that the gallium frontends can unbind constant buffers by
     * passing NULL here. */
    if (unlikely(!cb || (!cb->buffer && !cb->user_buffer))) {
       so->enabled_mask &= ~(1 << index);
@@ -348,14 +349,6 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
       break;
    }
 
-   /* Scissor setup */
-   cs->SE_SCISSOR_LEFT = 0; /* affected by rasterizer and scissor state as well */
-   cs->SE_SCISSOR_TOP = 0;
-   cs->SE_SCISSOR_RIGHT = (fb->width << 16) + ETNA_SE_SCISSOR_MARGIN_RIGHT;
-   cs->SE_SCISSOR_BOTTOM = (fb->height << 16) + ETNA_SE_SCISSOR_MARGIN_BOTTOM;
-   cs->SE_CLIP_RIGHT = (fb->width << 16) + ETNA_SE_CLIP_MARGIN_RIGHT;
-   cs->SE_CLIP_BOTTOM = (fb->height << 16) + ETNA_SE_CLIP_MARGIN_BOTTOM;
-
    cs->TS_MEM_CONFIG = ts_mem_config;
    cs->PE_MEM_CONFIG = pe_mem_config;
 
@@ -384,19 +377,10 @@ etna_set_scissor_states(struct pipe_context *pctx, unsigned start_slot,
       unsigned num_scissors, const struct pipe_scissor_state *ss)
 {
    struct etna_context *ctx = etna_context(pctx);
-   struct compiled_scissor_state *cs = &ctx->scissor;
    assert(ss->minx <= ss->maxx);
    assert(ss->miny <= ss->maxy);
 
-   /* note that this state is only used when rasterizer_state->scissor is on */
-   ctx->scissor_s = *ss;
-   cs->SE_SCISSOR_LEFT = (ss->minx << 16);
-   cs->SE_SCISSOR_TOP = (ss->miny << 16);
-   cs->SE_SCISSOR_RIGHT = (ss->maxx << 16) + ETNA_SE_SCISSOR_MARGIN_RIGHT;
-   cs->SE_SCISSOR_BOTTOM = (ss->maxy << 16) + ETNA_SE_SCISSOR_MARGIN_BOTTOM;
-   cs->SE_CLIP_RIGHT = (ss->maxx << 16) + ETNA_SE_CLIP_MARGIN_RIGHT;
-   cs->SE_CLIP_BOTTOM = (ss->maxy << 16) + ETNA_SE_CLIP_MARGIN_BOTTOM;
-
+   ctx->scissor = *ss;
    ctx->dirty |= ETNA_DIRTY_SCISSOR;
 }
 
@@ -431,14 +415,10 @@ etna_set_viewport_states(struct pipe_context *pctx, unsigned start_slot,
    /* Compute scissor rectangle (fixp) from viewport.
     * Make sure left is always < right and top always < bottom.
     */
-   cs->SE_SCISSOR_LEFT = etna_f32_to_fixp16(MAX2(vs->translate[0] - fabsf(vs->scale[0]), 0.0f));
-   cs->SE_SCISSOR_TOP = etna_f32_to_fixp16(MAX2(vs->translate[1] - fabsf(vs->scale[1]), 0.0f));
-   uint32_t right_fixp = etna_f32_to_fixp16(MAX2(vs->translate[0] + fabsf(vs->scale[0]), 0.0f));
-   uint32_t bottom_fixp = etna_f32_to_fixp16(MAX2(vs->translate[1] + fabsf(vs->scale[1]), 0.0f));
-   cs->SE_SCISSOR_RIGHT = right_fixp + ETNA_SE_SCISSOR_MARGIN_RIGHT;
-   cs->SE_SCISSOR_BOTTOM = bottom_fixp + ETNA_SE_SCISSOR_MARGIN_BOTTOM;
-   cs->SE_CLIP_RIGHT = right_fixp + ETNA_SE_CLIP_MARGIN_RIGHT;
-   cs->SE_CLIP_BOTTOM = bottom_fixp + ETNA_SE_CLIP_MARGIN_BOTTOM;
+   cs->SE_SCISSOR_LEFT = MAX2(vs->translate[0] - fabsf(vs->scale[0]), 0.0f);
+   cs->SE_SCISSOR_TOP = MAX2(vs->translate[1] - fabsf(vs->scale[1]), 0.0f);
+   cs->SE_SCISSOR_RIGHT = ceilf(MAX2(vs->translate[0] + fabsf(vs->scale[0]), 0.0f));
+   cs->SE_SCISSOR_BOTTOM = ceilf(MAX2(vs->translate[1] + fabsf(vs->scale[1]), 0.0f));
 
    cs->PE_DEPTH_NEAR = fui(0.0); /* not affected if depth mode is Z (as in GL) */
    cs->PE_DEPTH_FAR = fui(1.0);
@@ -667,6 +647,36 @@ etna_update_ts_config(struct etna_context *ctx)
    return true;
 }
 
+static bool
+etna_update_clipping(struct etna_context *ctx)
+{
+   const struct etna_rasterizer_state *rasterizer = etna_rasterizer_state(ctx->rasterizer);
+   const struct pipe_framebuffer_state *fb = &ctx->framebuffer_s;
+
+   /* clip framebuffer against viewport */
+   uint32_t scissor_left = ctx->viewport.SE_SCISSOR_LEFT;
+   uint32_t scissor_top = ctx->viewport.SE_SCISSOR_TOP;
+   uint32_t scissor_right = MIN2(fb->width, ctx->viewport.SE_SCISSOR_RIGHT);
+   uint32_t scissor_bottom = MIN2(fb->height, ctx->viewport.SE_SCISSOR_BOTTOM);
+
+   /* clip against scissor */
+   if (rasterizer->scissor) {
+      scissor_left = MAX2(ctx->scissor.minx, scissor_left);
+      scissor_top = MAX2(ctx->scissor.miny, scissor_top);
+      scissor_right = MIN2(ctx->scissor.maxx, scissor_right);
+      scissor_bottom = MIN2(ctx->scissor.maxy, scissor_bottom);
+   }
+
+   ctx->clipping.minx = scissor_left;
+   ctx->clipping.miny = scissor_top;
+   ctx->clipping.maxx = scissor_right;
+   ctx->clipping.maxy = scissor_bottom;
+
+   ctx->dirty |= ETNA_DIRTY_SCISSOR_CLIP;
+
+   return true;
+}
+
 struct etna_state_updater {
    bool (*update)(struct etna_context *ctx);
    uint32_t dirty;
@@ -687,6 +697,10 @@ static const struct etna_state_updater etna_state_updates[] = {
    },
    {
       etna_update_ts_config, ETNA_DIRTY_DERIVE_TS,
+   },
+   {
+      etna_update_clipping, ETNA_DIRTY_SCISSOR | ETNA_DIRTY_FRAMEBUFFER |
+                            ETNA_DIRTY_RASTERIZER | ETNA_DIRTY_VIEWPORT,
    }
 };
 

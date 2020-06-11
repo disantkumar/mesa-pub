@@ -47,7 +47,7 @@ resource_read(struct fd_batch *batch, struct pipe_resource *prsc)
 {
 	if (!prsc)
 		return;
-	fd_batch_resource_used(batch, fd_resource(prsc), false);
+	fd_batch_resource_read(batch, fd_resource(prsc));
 }
 
 static void
@@ -55,7 +55,7 @@ resource_written(struct fd_batch *batch, struct pipe_resource *prsc)
 {
 	if (!prsc)
 		return;
-	fd_batch_resource_used(batch, fd_resource(prsc), true);
+	fd_batch_resource_write(batch, fd_resource(prsc));
 }
 
 static void
@@ -93,8 +93,6 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 		return;
 	}
 
-	fd_fence_ref(&ctx->last_fence, NULL);
-
 	/* Upload a user index buffer. */
 	struct pipe_resource *indexbuf = NULL;
 	unsigned index_offset = 0;
@@ -112,12 +110,12 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 		}
 	}
 
-	if (ctx->in_blit) {
+	if (ctx->in_discard_blit) {
 		fd_batch_reset(batch);
 		fd_context_all_dirty(ctx);
 	}
 
-	batch->blit = ctx->in_blit;
+	batch->blit = ctx->in_discard_blit;
 	batch->back_blit = ctx->in_shadow;
 
 	/* NOTE: needs to be before resource_written(batch->query_buf), otherwise
@@ -129,7 +127,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 	 * Figure out the buffers/features we need:
 	 */
 
-	mtx_lock(&ctx->screen->lock);
+	fd_screen_lock(ctx->screen);
 
 	if (ctx->dirty & (FD_DIRTY_FRAMEBUFFER | FD_DIRTY_ZSA)) {
 		if (fd_depth_enabled(ctx)) {
@@ -185,12 +183,15 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 			resource_written(batch, pfb->cbufs[i]->texture);
 	}
 
-	/* Mark SSBOs as being written.. we don't actually know which ones are
-	 * read vs written, so just assume the worst
-	 */
+	/* Mark SSBOs */
 	if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_SSBO) {
-		foreach_bit(i, ctx->shaderbuf[PIPE_SHADER_FRAGMENT].enabled_mask)
-				resource_written(batch, ctx->shaderbuf[PIPE_SHADER_FRAGMENT].sb[i].buffer);
+		const struct fd_shaderbuf_stateobj *so = &ctx->shaderbuf[PIPE_SHADER_FRAGMENT];
+
+		foreach_bit (i, so->enabled_mask & so->writable_mask)
+			resource_written(batch, so->sb[i].buffer);
+
+		foreach_bit (i, so->enabled_mask & ~so->writable_mask)
+			resource_read(batch, so->sb[i].buffer);
 	}
 
 	if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_IMAGE) {
@@ -252,7 +253,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 	list_for_each_entry(struct fd_acc_query, aq, &ctx->acc_active_queries, node)
 		resource_written(batch, aq->prsc);
 
-	mtx_unlock(&ctx->screen->lock);
+	fd_screen_unlock(ctx->screen);
 
 	batch->num_draws++;
 
@@ -282,6 +283,12 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 	/* and any buffers used, need to be resolved: */
 	batch->resolve |= buffers;
 
+	/* Clearing last_fence must come after the batch dependency tracking
+	 * (resource_read()/resource_written()), as that can trigger a flush,
+	 * re-populating last_fence
+	 */
+	fd_fence_ref(&ctx->last_fence, NULL);
+
 	DBG("%p: %x %ux%u num_draws=%u (%s/%s)", batch, buffers,
 		pfb->width, pfb->height, batch->num_draws,
 		util_format_short_name(pipe_surface_format(pfb->cbufs[0])),
@@ -305,7 +312,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info)
 }
 
 static void
-fd_clear(struct pipe_context *pctx, unsigned buffers,
+fd_clear(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor_state *scissor_state,
 		const union pipe_color_union *color, double depth, unsigned stencil)
 {
 	struct fd_context *ctx = fd_context(pctx);
@@ -318,9 +325,7 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 	if (!fd_render_condition_check(pctx))
 		return;
 
-	fd_fence_ref(&ctx->last_fence, NULL);
-
-	if (ctx->in_blit) {
+	if (ctx->in_discard_blit) {
 		fd_batch_reset(batch);
 		fd_context_all_dirty(ctx);
 	}
@@ -347,7 +352,7 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 	batch->resolve |= buffers;
 	batch->needs_flush = true;
 
-	mtx_lock(&ctx->screen->lock);
+	fd_screen_lock(ctx->screen);
 
 	if (buffers & PIPE_CLEAR_COLOR)
 		for (i = 0; i < pfb->nr_cbufs; i++)
@@ -364,7 +369,13 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 	list_for_each_entry(struct fd_acc_query, aq, &ctx->acc_active_queries, node)
 		resource_written(batch, aq->prsc);
 
-	mtx_unlock(&ctx->screen->lock);
+	fd_screen_unlock(ctx->screen);
+
+	/* Clearing last_fence must come after the batch dependency tracking
+	 * (resource_read()/resource_written()), as that can trigger a flush,
+	 * re-populating last_fence
+	 */
+	fd_fence_ref(&ctx->last_fence, NULL);
 
 	DBG("%p: %x %ux%u depth=%f, stencil=%u (%s/%s)", batch, buffers,
 		pfb->width, pfb->height, depth, stencil,
@@ -417,6 +428,7 @@ static void
 fd_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 {
 	struct fd_context *ctx = fd_context(pctx);
+	const struct fd_shaderbuf_stateobj *so = &ctx->shaderbuf[PIPE_SHADER_COMPUTE];
 	struct fd_batch *batch, *save_batch = NULL;
 	unsigned i;
 
@@ -425,13 +437,14 @@ fd_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 	fd_batch_reference(&ctx->batch, batch);
 	fd_context_all_dirty(ctx);
 
-	mtx_lock(&ctx->screen->lock);
+	fd_screen_lock(ctx->screen);
 
-	/* Mark SSBOs as being written.. we don't actually know which ones are
-	 * read vs written, so just assume the worst
-	 */
-	foreach_bit(i, ctx->shaderbuf[PIPE_SHADER_COMPUTE].enabled_mask)
-		resource_written(batch, ctx->shaderbuf[PIPE_SHADER_COMPUTE].sb[i].buffer);
+	/* Mark SSBOs */
+	foreach_bit (i, so->enabled_mask & so->writable_mask)
+		resource_written(batch, so->sb[i].buffer);
+
+	foreach_bit (i, so->enabled_mask & ~so->writable_mask)
+		resource_read(batch, so->sb[i].buffer);
 
 	foreach_bit(i, ctx->shaderimg[PIPE_SHADER_COMPUTE].enabled_mask) {
 		struct pipe_image_view *img =
@@ -459,7 +472,7 @@ fd_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
 	if (info->indirect)
 		resource_read(batch, info->indirect);
 
-	mtx_unlock(&ctx->screen->lock);
+	fd_screen_unlock(ctx->screen);
 
 	batch->needs_flush = true;
 	ctx->launch_grid(ctx, info);

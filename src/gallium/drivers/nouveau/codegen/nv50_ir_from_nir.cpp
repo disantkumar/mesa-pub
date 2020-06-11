@@ -571,6 +571,10 @@ Converter::getSubOp(nir_op op)
    case nir_op_imul_high:
    case nir_op_umul_high:
       return NV50_IR_SUBOP_MUL_HIGH;
+   case nir_op_ishl:
+   case nir_op_ishr:
+   case nir_op_ushr:
+      return NV50_IR_SUBOP_SHIFT_WRAP;
    default:
       return 0;
    }
@@ -1067,7 +1071,11 @@ bool Converter::assignSlots() {
          case TGSI_SEMANTIC_COLOR:
             if (!var->data.fb_fetch_output)
                info->prop.fp.numColourResults++;
-            info->prop.fp.separateFragData = true;
+
+            if (var->data.location == FRAG_RESULT_COLOR &&
+                nir->info.outputs_written & BITFIELD64_BIT(var->data.location))
+               info->prop.fp.separateFragData = true;
+
             // sometimes we get FRAG_RESULT_DATAX with data.index 0
             // sometimes we get FRAG_RESULT_DATA0 with data.index X
             index = index == 0 ? var->data.index : index;
@@ -1617,6 +1625,7 @@ Converter::visit(nir_intrinsic_instr *insn)
 {
    nir_intrinsic_op op = insn->intrinsic;
    const nir_intrinsic_info &opInfo = nir_intrinsic_infos[op];
+   unsigned dest_components = nir_intrinsic_dest_components(insn);
 
    switch (op) {
    case nir_intrinsic_load_uniform: {
@@ -1624,7 +1633,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       const DataType dType = getDType(insn);
       Value *indirect;
       uint32_t coffset = getIndirect(insn, 0, 0, indirect);
-      for (uint8_t i = 0; i < insn->num_components; ++i) {
+      for (uint8_t i = 0; i < dest_components; ++i) {
          loadFrom(FILE_MEMORY_CONST, 0, dType, newDefs[i], 16 * coffset, i, indirect);
       }
       break;
@@ -1635,7 +1644,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       DataType dType = getSType(insn->src[0], false, false);
       uint32_t idx = getIndirect(insn, op == nir_intrinsic_store_output ? 1 : 2, 0, indirect);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < nir_intrinsic_src_components(insn, 0); ++i) {
          if (!((1u << i) & nir_intrinsic_write_mask(insn)))
             continue;
 
@@ -1688,7 +1697,7 @@ Converter::visit(nir_intrinsic_instr *insn)
          srcs.push_back(mkOp1v(OP_RDSV, TYPE_U32, getSSA(), mkSysVal(SV_LAYER, 0)));
          srcs.push_back(mkOp1v(OP_RDSV, TYPE_U32, getSSA(), mkSysVal(SV_SAMPLE_INDEX, 0)));
 
-         for (uint8_t i = 0u; i < insn->num_components; ++i) {
+         for (uint8_t i = 0u; i < dest_components; ++i) {
             defs.push_back(newDefs[i]);
             mask |= 1 << i;
          }
@@ -1723,7 +1732,7 @@ Converter::visit(nir_intrinsic_instr *insn)
          }
       }
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < dest_components; ++i) {
          uint32_t address = getSlotAddress(insn, idx, i);
          Symbol *sym = mkSymbol(input ? FILE_SHADER_INPUT : FILE_SHADER_OUTPUT, 0, dType, address);
          if (prog->getType() == Program::TYPE_FRAGMENT) {
@@ -1858,7 +1867,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       SVSemantic sv = convert(op);
       LValues &newDefs = convert(&insn->dest);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < nir_intrinsic_dest_components(insn); ++i) {
          Value *def;
          if (typeSizeof(dType) == 8)
             def = getSSA();
@@ -1910,12 +1919,12 @@ Converter::visit(nir_intrinsic_instr *insn)
 
       if (op == nir_intrinsic_read_first_invocation) {
          mkOp1(OP_VOTE, TYPE_U32, tmp, mkImm(1))->subOp = NV50_IR_SUBOP_VOTE_ANY;
-         mkOp2(OP_EXTBF, TYPE_U32, tmp, tmp, mkImm(0x2000))->subOp = NV50_IR_SUBOP_EXTBF_REV;
+         mkOp1(OP_BREV, TYPE_U32, tmp, tmp);
          mkOp1(OP_BFIND, TYPE_U32, tmp, tmp)->subOp = NV50_IR_SUBOP_BFIND_SAMT;
       } else
          tmp = getSrc(&insn->src[1], 0);
 
-      for (uint8_t i = 0; i < insn->num_components; ++i) {
+      for (uint8_t i = 0; i < dest_components; ++i) {
          mkOp3(OP_SHFL, dType, newDefs[i], getSrc(&insn->src[0], i), tmp, mkImm(0x1f))
             ->subOp = NV50_IR_SUBOP_SHFL_IDX;
       }
@@ -1931,7 +1940,7 @@ Converter::visit(nir_intrinsic_instr *insn)
 
       Value *vtxBase = mkOp2v(OP_PFETCH, TYPE_U32, getSSA(4, FILE_ADDRESS),
                               mkImm(baseVertex), indirectVertex);
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < dest_components; ++i) {
          uint32_t address = getSlotAddress(insn, idx, i);
          loadFrom(FILE_SHADER_INPUT, 0, dType, newDefs[i], address, 0,
                   indirectOffset, vtxBase, info->in[idx].patch);
@@ -1954,7 +1963,7 @@ Converter::visit(nir_intrinsic_instr *insn)
 
       vtxBase = mkOp2v(OP_ADD, TYPE_U32, getSSA(4, FILE_ADDRESS), outBase, vtxBase);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < dest_components; ++i) {
          uint32_t address = getSlotAddress(insn, idx, i);
          loadFrom(FILE_SHADER_OUTPUT, 0, dType, newDefs[i], address, 0,
                   indirectOffset, vtxBase, info->in[idx].patch);
@@ -1978,7 +1987,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       uint32_t index = getIndirect(&insn->src[0], 0, indirectIndex) + 1;
       uint32_t offset = getIndirect(&insn->src[1], 0, indirectOffset);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < dest_components; ++i) {
          loadFrom(FILE_MEMORY_CONST, index, dType, newDefs[i], offset, i,
                   indirectOffset, indirectIndex);
       }
@@ -2001,7 +2010,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       uint32_t buffer = getIndirect(&insn->src[1], 0, indirectBuffer);
       uint32_t offset = getIndirect(&insn->src[2], 0, indirectOffset);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < nir_intrinsic_src_components(insn, 0); ++i) {
          if (!((1u << i) & nir_intrinsic_write_mask(insn)))
             continue;
          Symbol *sym = mkSymbol(FILE_MEMORY_BUFFER, buffer, sType,
@@ -2020,7 +2029,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       uint32_t buffer = getIndirect(&insn->src[0], 0, indirectBuffer);
       uint32_t offset = getIndirect(&insn->src[1], 0, indirectOffset);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i)
+      for (uint8_t i = 0u; i < dest_components; ++i)
          loadFrom(FILE_MEMORY_BUFFER, buffer, dType, newDefs[i], offset, i,
                   indirectOffset, indirectBuffer);
 
@@ -2314,7 +2323,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       Value *indirectOffset;
       uint32_t offset = getIndirect(&insn->src[1], 0, indirectOffset);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i) {
+      for (uint8_t i = 0u; i < nir_intrinsic_src_components(insn, 0); ++i) {
          if (!((1u << i) & nir_intrinsic_write_mask(insn)))
             continue;
          Symbol *sym = mkSymbol(FILE_MEMORY_SHARED, 0, sType, offset + i * typeSizeof(sType));
@@ -2328,7 +2337,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       Value *indirectOffset;
       uint32_t offset = getIndirect(&insn->src[0], 0, indirectOffset);
 
-      for (uint8_t i = 0u; i < insn->num_components; ++i)
+      for (uint8_t i = 0u; i < dest_components; ++i)
          loadFrom(FILE_MEMORY_SHARED, 0, dType, newDefs[i], offset, i, indirectOffset);
 
       break;
@@ -2367,7 +2376,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       Value *indirectOffset;
       uint32_t offset = getIndirect(&insn->src[0], 0, indirectOffset);
 
-      for (auto i = 0u; i < insn->num_components; ++i)
+      for (auto i = 0u; i < dest_components; ++i)
          loadFrom(FILE_MEMORY_GLOBAL, 0, dType, newDefs[i], offset, i, indirectOffset);
 
       info->io.globalAccess |= 0x1;
@@ -2376,7 +2385,7 @@ Converter::visit(nir_intrinsic_instr *insn)
    case nir_intrinsic_store_global: {
       DataType sType = getSType(insn->src[0], false, false);
 
-      for (auto i = 0u; i < insn->num_components; ++i) {
+      for (auto i = 0u; i < nir_intrinsic_src_components(insn, 0); ++i) {
          if (!((1u << i) & nir_intrinsic_write_mask(insn)))
             continue;
          if (typeSizeof(sType) == 8) {
@@ -2774,7 +2783,7 @@ Converter::visit(nir_alu_instr *insn)
    case nir_op_bfm: {
       DEFAULT_CHECKS;
       LValues &newDefs = convert(&insn->dest);
-      mkOp3(OP_INSBF, dType, newDefs[0], getSrc(&insn->src[0]), loadImm(NULL, 0x808), getSrc(&insn->src[1]));
+      mkOp2(OP_BMSK, dType, newDefs[0], getSrc(&insn->src[1]), getSrc(&insn->src[0]))->subOp = NV50_IR_SUBOP_BMSK_W;
       break;
    }
    case nir_op_bitfield_insert: {
@@ -2794,15 +2803,67 @@ Converter::visit(nir_alu_instr *insn)
    case nir_op_bitfield_reverse: {
       DEFAULT_CHECKS;
       LValues &newDefs = convert(&insn->dest);
-      mkOp2(OP_EXTBF, TYPE_U32, newDefs[0], getSrc(&insn->src[0]), mkImm(0x2000))->subOp = NV50_IR_SUBOP_EXTBF_REV;
+      mkOp1(OP_BREV, TYPE_U32, newDefs[0], getSrc(&insn->src[0]));
       break;
    }
    case nir_op_find_lsb: {
       DEFAULT_CHECKS;
       LValues &newDefs = convert(&insn->dest);
       Value *tmp = getSSA();
-      mkOp2(OP_EXTBF, TYPE_U32, tmp, getSrc(&insn->src[0]), mkImm(0x2000))->subOp = NV50_IR_SUBOP_EXTBF_REV;
+      mkOp1(OP_BREV, TYPE_U32, tmp, getSrc(&insn->src[0]));
       mkOp1(OP_BFIND, TYPE_U32, newDefs[0], tmp)->subOp = NV50_IR_SUBOP_BFIND_SAMT;
+      break;
+   }
+   case nir_op_extract_u8: {
+      DEFAULT_CHECKS;
+      LValues &newDefs = convert(&insn->dest);
+      Value *prmt = getSSA();
+      mkOp2(OP_OR, TYPE_U32, prmt, getSrc(&insn->src[1]), loadImm(NULL, 0x4440));
+      mkOp3(OP_PERMT, TYPE_U32, newDefs[0], getSrc(&insn->src[0]), prmt, loadImm(NULL, 0));
+      break;
+   }
+   case nir_op_extract_i8: {
+      DEFAULT_CHECKS;
+      LValues &newDefs = convert(&insn->dest);
+      Value *prmt = getSSA();
+      mkOp3(OP_MAD, TYPE_U32, prmt, getSrc(&insn->src[1]), loadImm(NULL, 0x1111), loadImm(NULL, 0x8880));
+      mkOp3(OP_PERMT, TYPE_U32, newDefs[0], getSrc(&insn->src[0]), prmt, loadImm(NULL, 0));
+      break;
+   }
+   case nir_op_extract_u16: {
+      DEFAULT_CHECKS;
+      LValues &newDefs = convert(&insn->dest);
+      Value *prmt = getSSA();
+      mkOp3(OP_MAD, TYPE_U32, prmt, getSrc(&insn->src[1]), loadImm(NULL, 0x22), loadImm(NULL, 0x4410));
+      mkOp3(OP_PERMT, TYPE_U32, newDefs[0], getSrc(&insn->src[0]), prmt, loadImm(NULL, 0));
+      break;
+   }
+   case nir_op_extract_i16: {
+      DEFAULT_CHECKS;
+      LValues &newDefs = convert(&insn->dest);
+      Value *prmt = getSSA();
+      mkOp3(OP_MAD, TYPE_U32, prmt, getSrc(&insn->src[1]), loadImm(NULL, 0x2222), loadImm(NULL, 0x9910));
+      mkOp3(OP_PERMT, TYPE_U32, newDefs[0], getSrc(&insn->src[0]), prmt, loadImm(NULL, 0));
+      break;
+   }
+   case nir_op_urol: {
+      DEFAULT_CHECKS;
+      LValues &newDefs = convert(&insn->dest);
+      mkOp3(OP_SHF, TYPE_U32, newDefs[0], getSrc(&insn->src[0]),
+            getSrc(&insn->src[1]), getSrc(&insn->src[0]))
+         ->subOp = NV50_IR_SUBOP_SHF_L |
+                   NV50_IR_SUBOP_SHF_W |
+                   NV50_IR_SUBOP_SHF_HI;
+      break;
+   }
+   case nir_op_uror: {
+      DEFAULT_CHECKS;
+      LValues &newDefs = convert(&insn->dest);
+      mkOp3(OP_SHF, TYPE_U32, newDefs[0], getSrc(&insn->src[0]),
+            getSrc(&insn->src[1]), getSrc(&insn->src[0]))
+         ->subOp = NV50_IR_SUBOP_SHF_R |
+                   NV50_IR_SUBOP_SHF_W |
+                   NV50_IR_SUBOP_SHF_LO;
       break;
    }
    // boolean conversions
@@ -3224,6 +3285,11 @@ Converter::run()
    NIR_PASS_V(nir, nir_lower_alu_to_scalar, NULL, NULL);
    NIR_PASS_V(nir, nir_lower_phis_to_scalar);
 
+   /*TODO: improve this lowering/optimisation loop so that we can use
+    *      nir_opt_idiv_const effectively before this.
+    */
+   NIR_PASS(progress, nir, nir_lower_idiv, nir_lower_idiv_precise);
+
    do {
       progress = false;
       NIR_PASS(progress, nir, nir_copy_prop);
@@ -3239,7 +3305,7 @@ Converter::run()
 
    NIR_PASS_V(nir, nir_lower_bool_to_int32);
    NIR_PASS_V(nir, nir_lower_locals_to_regs);
-   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp);
+   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
    NIR_PASS_V(nir, nir_convert_from_ssa, true);
 
    // Garbage collect dead instructions
@@ -3285,3 +3351,125 @@ Program::makeFromNIR(struct nv50_ir_prog_info *info)
 }
 
 } // namespace nv50_ir
+
+static nir_shader_compiler_options
+nvir_nir_shader_compiler_options(int chipset)
+{
+   return {
+      .lower_fdiv = (chipset >= NVISA_GV100_CHIPSET),
+      .lower_ffma = false,
+      .fuse_ffma = false, /* nir doesn't track mad vs fma */
+      .lower_flrp16 = (chipset >= NVISA_GV100_CHIPSET),
+      .lower_flrp32 = true,
+      .lower_flrp64 = true,
+      .lower_fpow = false, // TODO: nir's lowering is broken, or we could use it
+      .lower_fsat = false,
+      .lower_fsqrt = false, // TODO: only before gm200
+      .lower_sincos = false,
+      .lower_fmod = true,
+      .lower_bitfield_extract = false,
+      .lower_bitfield_extract_to_shifts = (chipset >= NVISA_GV100_CHIPSET),
+      .lower_bitfield_insert = false,
+      .lower_bitfield_insert_to_shifts = (chipset >= NVISA_GV100_CHIPSET),
+      .lower_bitfield_insert_to_bitfield_select = false,
+      .lower_bitfield_reverse = false,
+      .lower_bit_count = false,
+      .lower_ifind_msb = false,
+      .lower_find_lsb = false,
+      .lower_uadd_carry = true, // TODO
+      .lower_usub_borrow = true, // TODO
+      .lower_mul_high = false,
+      .lower_negate = false,
+      .lower_sub = true,
+      .lower_scmp = true, // TODO: not implemented yet
+      .lower_vector_cmp = false,
+      .lower_idiv = true,
+      .lower_bitops = false,
+      .lower_isign = (chipset >= NVISA_GV100_CHIPSET),
+      .lower_fsign = (chipset >= NVISA_GV100_CHIPSET),
+      .lower_fdph = false,
+      .lower_fdot = false,
+      .fdot_replicates = false, // TODO
+      .lower_ffloor = false, // TODO
+      .lower_ffract = true,
+      .lower_fceil = false, // TODO
+      .lower_ftrunc = false,
+      .lower_ldexp = true,
+      .lower_pack_half_2x16 = true,
+      .lower_pack_unorm_2x16 = true,
+      .lower_pack_snorm_2x16 = true,
+      .lower_pack_unorm_4x8 = true,
+      .lower_pack_snorm_4x8 = true,
+      .lower_unpack_half_2x16 = true,
+      .lower_unpack_unorm_2x16 = true,
+      .lower_unpack_snorm_2x16 = true,
+      .lower_unpack_unorm_4x8 = true,
+      .lower_unpack_snorm_4x8 = true,
+      .lower_pack_split = false,
+      .lower_extract_byte = (chipset < NVISA_GM107_CHIPSET),
+      .lower_extract_word = (chipset < NVISA_GM107_CHIPSET),
+      .lower_all_io_to_temps = false,
+      .lower_all_io_to_elements = false,
+      .vertex_id_zero_based = false,
+      .lower_base_vertex = false,
+      .lower_helper_invocation = false,
+      .optimize_sample_mask_in = false,
+      .lower_cs_local_index_from_id = true,
+      .lower_cs_local_id_from_index = false,
+      .lower_device_index_to_zero = false, // TODO
+      .lower_wpos_pntc = false, // TODO
+      .lower_hadd = true, // TODO
+      .lower_add_sat = true, // TODO
+      .vectorize_io = false,
+      .lower_to_scalar = true,
+      .unify_interfaces = false,
+      .use_interpolated_input_intrinsics = true,
+      .lower_mul_2x32_64 = true, // TODO
+      .lower_rotate = (chipset < NVISA_GV100_CHIPSET),
+      .has_imul24 = false,
+      .intel_vec4 = false,
+      .max_unroll_iterations = 32,
+      .lower_int64_options = (nir_lower_int64_options) (
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_imul64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_isign64 : 0) |
+            nir_lower_divmod64 |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_imul_high64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_mov64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_icmp64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_iabs64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_ineg64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_logic64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_minmax64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_shift64 : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_imul_2x32_64 : 0) |
+            ((chipset >= NVISA_GM107_CHIPSET) ? nir_lower_extract64 : 0) |
+            nir_lower_ufind_msb64
+      ),
+      .lower_doubles_options = (nir_lower_doubles_options) (
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_drcp : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_dsqrt : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_drsq : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_dfract : 0) |
+            nir_lower_dmod |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_dsub : 0) |
+            ((chipset >= NVISA_GV100_CHIPSET) ? nir_lower_ddiv : 0)
+      )
+   };
+}
+
+static const nir_shader_compiler_options gf100_nir_shader_compiler_options =
+nvir_nir_shader_compiler_options(NVISA_GF100_CHIPSET);
+static const nir_shader_compiler_options gm107_nir_shader_compiler_options =
+nvir_nir_shader_compiler_options(NVISA_GM107_CHIPSET);
+static const nir_shader_compiler_options gv100_nir_shader_compiler_options =
+nvir_nir_shader_compiler_options(NVISA_GV100_CHIPSET);
+
+const nir_shader_compiler_options *
+nv50_ir_nir_shader_compiler_options(int chipset)
+{
+   if (chipset >= NVISA_GV100_CHIPSET)
+      return &gv100_nir_shader_compiler_options;
+   if (chipset >= NVISA_GM107_CHIPSET)
+      return &gm107_nir_shader_compiler_options;
+   return &gf100_nir_shader_compiler_options;
+}

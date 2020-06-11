@@ -93,8 +93,10 @@ const char *operationStr[OP_LAST + 1] =
    "and",
    "or",
    "xor",
+   "lop3 lut",
    "shl",
    "shr",
+   "shf",
    "max",
    "min",
    "sat",
@@ -142,6 +144,7 @@ const char *operationStr[OP_LAST + 1] =
    "pinterp",
    "emit",
    "restart",
+   "final",
    "tex",
    "texbias",
    "texlod",
@@ -177,7 +180,10 @@ const char *operationStr[OP_LAST + 1] =
    "insbf",
    "extbf",
    "bfind",
+   "brev",
+   "bmsk",
    "permt",
+   "sgxt",
    "atom",
    "bar",
    "vadd",
@@ -193,6 +199,7 @@ const char *operationStr[OP_LAST + 1] =
    "shfl",
    "vote",
    "bufq",
+   "warpsync",
    "(invalid)"
 };
 

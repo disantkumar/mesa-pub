@@ -570,6 +570,47 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
       break;
    }
 
+   case nir_intrinsic_load_ubo:
+   case nir_intrinsic_load_ssbo:
+   case nir_intrinsic_load_shared:
+   case nir_intrinsic_load_global:
+   case nir_intrinsic_load_scratch:
+   case nir_intrinsic_load_constant:
+      /* These memory load operations must have alignments */
+      validate_assert(state,
+         util_is_power_of_two_nonzero(nir_intrinsic_align_mul(instr)));
+      validate_assert(state, nir_intrinsic_align_offset(instr) <
+                             nir_intrinsic_align_mul(instr));
+      /* Fall through */
+
+   case nir_intrinsic_load_uniform:
+   case nir_intrinsic_load_input:
+   case nir_intrinsic_load_per_vertex_input:
+   case nir_intrinsic_load_interpolated_input:
+   case nir_intrinsic_load_output:
+   case nir_intrinsic_load_per_vertex_output:
+   case nir_intrinsic_load_push_constant:
+      /* All memory load operations must load at least a byte */
+      validate_assert(state, nir_dest_bit_size(instr->dest) >= 8);
+      break;
+
+   case nir_intrinsic_store_ssbo:
+   case nir_intrinsic_store_shared:
+   case nir_intrinsic_store_global:
+   case nir_intrinsic_store_scratch:
+      /* These memory store operations must also have alignments */
+      validate_assert(state,
+         util_is_power_of_two_nonzero(nir_intrinsic_align_mul(instr)));
+      validate_assert(state, nir_intrinsic_align_offset(instr) <
+                             nir_intrinsic_align_mul(instr));
+      /* Fall through */
+
+   case nir_intrinsic_store_output:
+   case nir_intrinsic_store_per_vertex_output:
+      /* All memory store operations must store at least a byte */
+      validate_assert(state, nir_src_bit_size(instr->src[0]) >= 8);
+      break;
+
    default:
       break;
    }
@@ -709,6 +750,43 @@ validate_phi_instr(nir_phi_instr *instr, validate_state *state)
 }
 
 static void
+validate_jump_instr(nir_jump_instr *instr, validate_state *state)
+{
+   nir_block *block = state->block;
+   validate_assert(state, &instr->instr == nir_block_last_instr(block));
+
+   switch (instr->type) {
+   case nir_jump_return:
+      validate_assert(state, block->successors[0] == state->impl->end_block);
+      validate_assert(state, block->successors[1] == NULL);
+      break;
+
+   case nir_jump_break:
+      validate_assert(state, state->loop != NULL);
+      if (state->loop) {
+         nir_block *after =
+            nir_cf_node_as_block(nir_cf_node_next(&state->loop->cf_node));
+         validate_assert(state, block->successors[0] == after);
+      }
+      validate_assert(state, block->successors[1] == NULL);
+      break;
+
+   case nir_jump_continue:
+      validate_assert(state, state->loop != NULL);
+      if (state->loop) {
+         nir_block *first = nir_loop_first_block(state->loop);
+         validate_assert(state, block->successors[0] == first);
+      }
+      validate_assert(state, block->successors[1] == NULL);
+      break;
+
+   default:
+      validate_assert(state, !"Invalid jump instruction type");
+      break;
+   }
+}
+
+static void
 validate_instr(nir_instr *instr, validate_state *state)
 {
    validate_assert(state, instr->block == state->block);
@@ -749,6 +827,7 @@ validate_instr(nir_instr *instr, validate_state *state)
       break;
 
    case nir_instr_type_jump:
+      validate_jump_instr(nir_instr_as_jump(instr), state);
       break;
 
    default:
@@ -807,10 +886,6 @@ validate_block(nir_block *block, validate_state *state)
                 nir_instr_prev(instr)->type == nir_instr_type_phi);
       }
 
-      if (instr->type == nir_instr_type_jump) {
-         validate_assert(state, instr == nir_block_last_instr(block));
-      }
-
       validate_instr(instr, state);
    }
 
@@ -833,32 +908,7 @@ validate_block(nir_block *block, validate_state *state)
              pred->successors[1] == block);
    }
 
-   if (!exec_list_is_empty(&block->instr_list) &&
-       nir_block_last_instr(block)->type == nir_instr_type_jump) {
-      validate_assert(state, block->successors[1] == NULL);
-      nir_jump_instr *jump = nir_instr_as_jump(nir_block_last_instr(block));
-      switch (jump->type) {
-      case nir_jump_break: {
-         nir_block *after =
-            nir_cf_node_as_block(nir_cf_node_next(&state->loop->cf_node));
-         validate_assert(state, block->successors[0] == after);
-         break;
-      }
-
-      case nir_jump_continue: {
-         nir_block *first = nir_loop_first_block(state->loop);
-         validate_assert(state, block->successors[0] == first);
-         break;
-      }
-
-      case nir_jump_return:
-         validate_assert(state, block->successors[0] == state->impl->end_block);
-         break;
-
-      default:
-         unreachable("bad jump type");
-      }
-   } else {
+   if (!nir_block_ends_in_jump(block)) {
       nir_cf_node *next = nir_cf_node_next(&block->cf_node);
       if (next == NULL) {
          switch (state->parent_node->type) {
@@ -1092,6 +1142,9 @@ validate_var_decl(nir_variable *var, nir_variable_mode valid_modes,
       validate_assert(state, var->num_members == glsl_get_length(without_array));
       validate_assert(state, var->members != NULL);
    }
+
+   if (var->data.per_view)
+      validate_assert(state, glsl_type_is_array(var->type));
 
    /*
     * TODO validate some things ir_validate.cpp does (requires more GLSL type

@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 #encoding=utf-8
 #
 # Copyright © 2019 Intel Corporation
@@ -25,9 +26,9 @@
 from __future__ import print_function
 from collections import OrderedDict
 import os
+import pathlib
 import re
-import sys
-import xml.etree.cElementTree as et
+import xml.etree.ElementTree as et
 
 def get_filename(element):
     return element.attrib['filename']
@@ -65,7 +66,7 @@ def add_struct_refs(items, node):
         return
     if node.tag != 'struct' and node.tag != 'group':
         return
-    for c in node.getchildren():
+    for c in node:
         add_struct_refs(items, c)
 
 
@@ -115,7 +116,7 @@ def print_node(f, offset, node):
     for a in attribs:
         if a in node.attrib:
             f.write(' {0}="{1}"'.format(a, node.attrib[a]))
-    children = node.getchildren()
+    children = list(node)
     if len(children) > 0:
         f.write('>\n')
         for c in children:
@@ -125,12 +126,7 @@ def print_node(f, offset, node):
         f.write('/>\n')
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("No input xml file specified")
-        sys.exit(1)
-
-    filename = sys.argv[1]
+def process(filename):
     xml = et.parse(filename)
     genxml = xml.getroot()
 
@@ -138,7 +134,7 @@ def main():
     enum_dict = {}
     for e in enums:
         values = e.findall('./value')
-        e[:] = sorted(e.getchildren(), key=get_value)
+        e[:] = sorted(e, key=get_value)
         enum_dict[e.attrib['name']] = e
 
     # Structs are a bit annoying because they can refer to each other. We sort
@@ -147,7 +143,7 @@ def main():
     structs = sorted(xml.findall('./struct'), key=get_name)
     wrapped_struct_dict = {}
     for s in structs:
-        s[:] = sorted(s.getchildren(), key=get_start)
+        s[:] = sorted(s, key=get_start)
         ws = Struct(s)
         wrapped_struct_dict[ws.name] = ws
 
@@ -161,17 +157,22 @@ def main():
 
     instructions = sorted(xml.findall('./instruction'), key=get_name)
     for i in instructions:
-        i[:] = sorted(i.getchildren(), key=get_start)
+        i[:] = sorted(i, key=get_start)
 
     registers = sorted(xml.findall('./register'), key=get_name)
     for r in registers:
-        r[:] = sorted(r.getchildren(), key=get_start)
+        r[:] = sorted(r, key=get_start)
 
-    genxml[:] = enums + sorted_structs.values() + instructions + registers
+    genxml[:] = enums + list(sorted_structs.values()) + instructions + registers
 
-    print('<?xml version="1.0" ?>')
-    print_node(sys.stdout, 0, genxml)
+    with open(filename, 'w') as f:
+        f.write('<?xml version="1.0" ?>\n')
+        print_node(f, 0, genxml)
 
 
 if __name__ == '__main__':
-    main()
+    folder = pathlib.Path('.')
+    for f in folder.glob('*.xml'):
+        print('Processing {}... '.format(f), end='', flush=True)
+        process(f)
+        print('done.')

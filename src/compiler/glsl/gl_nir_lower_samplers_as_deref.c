@@ -61,7 +61,7 @@
 #include "gl_nir.h"
 #include "ir_uniform.h"
 
-#include "main/compiler.h"
+#include "util/compiler.h"
 #include "main/mtypes.h"
 
 struct lower_samplers_as_deref_state {
@@ -329,6 +329,13 @@ lower_impl(nir_function_impl *impl, struct lower_samplers_as_deref_state *state)
          else if (instr->type == nir_instr_type_intrinsic)
             progress |= lower_intrinsic(nir_instr_as_intrinsic(instr), state, &b);
       }
+   }
+
+   if (progress) {
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
+   } else {
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;

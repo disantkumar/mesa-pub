@@ -461,8 +461,10 @@ print_var_decl(nir_variable *var, print_state *state)
    const char *const samp = (var->data.sample) ? "sample " : "";
    const char *const patch = (var->data.patch) ? "patch " : "";
    const char *const inv = (var->data.invariant) ? "invariant " : "";
-   fprintf(fp, "%s%s%s%s%s %s ",
-           cent, samp, patch, inv, get_variable_mode_str(var->data.mode, false),
+   const char *const per_view = (var->data.per_view) ? "per_view " : "";
+   fprintf(fp, "%s%s%s%s%s%s %s ",
+           cent, samp, patch, inv, per_view,
+           get_variable_mode_str(var->data.mode, false),
            glsl_interp_mode_name(var->data.interpolation));
 
    enum gl_access_qualifier access = var->data.access;
@@ -784,6 +786,7 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
       [NIR_INTRINSIC_MEMORY_SEMANTICS] = "mem_semantics",
       [NIR_INTRINSIC_MEMORY_MODES] = "mem_modes",
       [NIR_INTRINSIC_MEMORY_SCOPE] = "mem_scope",
+      [NIR_INTRINSIC_EXECUTION_SCOPE] = "exec_scope",
    };
    for (unsigned idx = 1; idx < NIR_INTRINSIC_NUM_INDEX_FLAGS; idx++) {
       if (!info->index_map[idx])
@@ -894,9 +897,14 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
          break;
       }
 
+      case NIR_INTRINSIC_EXECUTION_SCOPE:
       case NIR_INTRINSIC_MEMORY_SCOPE: {
-         fprintf(fp, " mem_scope=");
-         switch (nir_intrinsic_memory_scope(instr)) {
+         fprintf(fp, " %s=", index_name[idx]);
+         nir_scope scope =
+            idx == NIR_INTRINSIC_MEMORY_SCOPE ? nir_intrinsic_memory_scope(instr)
+                                              : nir_intrinsic_execution_scope(instr);
+         switch (scope) {
+         case NIR_SCOPE_NONE:         fprintf(fp, "NONE");         break;
          case NIR_SCOPE_DEVICE:       fprintf(fp, "DEVICE");       break;
          case NIR_SCOPE_QUEUE_FAMILY: fprintf(fp, "QUEUE_FAMILY"); break;
          case NIR_SCOPE_WORKGROUP:    fprintf(fp, "WORKGROUP");    break;
@@ -1494,6 +1502,8 @@ nir_print_shader_annotated(nir_shader *shader, FILE *fp,
    fprintf(fp, "inputs: %u\n", shader->num_inputs);
    fprintf(fp, "outputs: %u\n", shader->num_outputs);
    fprintf(fp, "uniforms: %u\n", shader->num_uniforms);
+   if (shader->info.num_ubos)
+      fprintf(fp, "ubos: %u\n", shader->info.num_ubos);
    fprintf(fp, "shared: %u\n", shader->num_shared);
    if (shader->scratch_size)
       fprintf(fp, "scratch: %u\n", shader->scratch_size);

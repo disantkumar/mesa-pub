@@ -30,8 +30,9 @@ files_libintel_dev = files(
 libintel_dev = static_library(
   ['intel_dev'],
   files_libintel_dev,
-  include_directories : [inc_common, inc_intel, inc_include],
-  c_args : [c_vis_args, no_override_init_args],
+  include_directories : [inc_include, inc_src, inc_intel],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
 )
 
 if with_tests

@@ -1,0 +1,2 @@
+# CTS bug (list of extensions not up-to-date).
+dEQP-VK.info.device_extensions

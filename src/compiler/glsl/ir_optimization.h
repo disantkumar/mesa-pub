@@ -135,7 +135,6 @@ bool do_vec_index_to_swizzle(exec_list *instructions);
 bool lower_discard(exec_list *instructions);
 void lower_discard_flow(exec_list *instructions);
 bool lower_instructions(exec_list *instructions, unsigned what_to_lower);
-bool lower_noise(exec_list *instructions);
 bool lower_variable_index_to_cond_assign(gl_shader_stage stage,
     exec_list *instructions, bool lower_input, bool lower_output,
     bool lower_temp, bool lower_uniform);
@@ -176,6 +175,7 @@ bool lower_vertex_id(gl_linked_shader *shader);
 bool lower_cs_derived(gl_linked_shader *shader);
 bool lower_blend_equation_advanced(gl_linked_shader *shader, bool coherent);
 
+bool lower_builtins(exec_list *instructions);
 bool lower_subroutine(exec_list *instructions, struct _mesa_glsl_parse_state *state);
 void propagate_invariance(exec_list *instructions);
 
@@ -187,5 +187,8 @@ ir_variable *compare_index_block(ir_builder::ir_factory &body,
 
 bool lower_64bit_integer_instructions(exec_list *instructions,
                                       unsigned what_to_lower);
+
+bool lower_precision(const struct gl_shader_compiler_options *options,
+                     exec_list *instructions);
 
 #endif /* GLSL_IR_OPTIMIZATION_H */

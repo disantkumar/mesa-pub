@@ -219,6 +219,12 @@ emit_vertex_input(struct anv_graphics_pipeline *pipeline,
 #endif
       };
       GENX(VERTEX_ELEMENT_STATE_pack)(NULL, &p[1 + id_slot * 2], &element);
+
+#if GEN_GEN >= 8
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_VF_INSTANCING), vfi) {
+         vfi.VertexElementIndex = id_slot;
+      }
+#endif
    }
 
 #if GEN_GEN >= 8
@@ -284,7 +290,7 @@ genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
    anv_batch_emit(batch, GEN7_PIPE_CONTROL, pc) {
       pc.DepthStallEnable  = true;
       pc.PostSyncOperation = WriteImmediateData;
-      pc.Address           = (struct anv_address) { device->workaround_bo, 0 };
+      pc.Address           = device->workaround_address;
    }
 #endif
 
@@ -355,18 +361,19 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
 #  define swiz sbe
 #endif
 
-   /* Skip the VUE header and position slots by default */
-   unsigned urb_entry_read_offset = 1;
+   int first_slot = brw_compute_first_urb_slot_required(wm_prog_data->inputs,
+                                                        fs_input_map);
+   assert(first_slot % 2 == 0);
+   unsigned urb_entry_read_offset = first_slot / 2;
    int max_source_attr = 0;
-   for (int attr = 0; attr < VARYING_SLOT_MAX; attr++) {
+   for (uint8_t idx = 0; idx < wm_prog_data->urb_setup_attribs_count; idx++) {
+      uint8_t attr = wm_prog_data->urb_setup_attribs[idx];
       int input_index = wm_prog_data->urb_setup[attr];
 
-      if (input_index < 0)
-         continue;
+      assert(0 <= input_index);
 
       /* gl_Viewport and gl_Layer are stored in the VUE header */
       if (attr == VARYING_SLOT_VIEWPORT || attr == VARYING_SLOT_LAYER) {
-         urb_entry_read_offset = 0;
          continue;
       }
 
@@ -376,9 +383,6 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
       }
 
       const int slot = fs_input_map->varying_to_slot[attr];
-
-      if (input_index >= 16)
-         continue;
 
       if (slot == -1) {
          /* This attribute does not exist in the VUE--that means that the
@@ -393,15 +397,24 @@ emit_3dstate_sbe(struct anv_graphics_pipeline *pipeline)
          swiz.Attribute[input_index].ComponentOverrideY = true;
          swiz.Attribute[input_index].ComponentOverrideZ = true;
          swiz.Attribute[input_index].ComponentOverrideW = true;
-      } else {
-         /* We have to subtract two slots to accout for the URB entry output
-          * read offset in the VS and GS stages.
-          */
-         const int source_attr = slot - 2 * urb_entry_read_offset;
-         assert(source_attr >= 0 && source_attr < 32);
-         max_source_attr = MAX2(max_source_attr, source_attr);
-         swiz.Attribute[input_index].SourceAttribute = source_attr;
+         continue;
       }
+
+      /* We have to subtract two slots to accout for the URB entry output
+       * read offset in the VS and GS stages.
+       */
+      const int source_attr = slot - 2 * urb_entry_read_offset;
+      assert(source_attr >= 0 && source_attr < 32);
+      max_source_attr = MAX2(max_source_attr, source_attr);
+      /* The hardware can only do overrides on 16 overrides at a time, and the
+       * other up to 16 have to be lined up so that the input index = the
+       * output index. We'll need to do some tweaking to make sure that's the
+       * case.
+       */
+      if (input_index < 16)
+         swiz.Attribute[input_index].SourceAttribute = source_attr;
+      else
+         assert(source_attr == input_index);
    }
 
    sbe.VertexURBEntryReadOffset = urb_entry_read_offset;
@@ -1617,7 +1630,12 @@ emit_3dstate_hs_te_ds(struct anv_graphics_pipeline *pipeline,
       hs.VertexURBEntryReadLength = 0;
       hs.VertexURBEntryReadOffset = 0;
       hs.DispatchGRFStartRegisterForURBData =
-         tcs_prog_data->base.base.dispatch_grf_start_reg;
+         tcs_prog_data->base.base.dispatch_grf_start_reg & 0x1f;
+#if GEN_GEN >= 12
+      hs.DispatchGRFStartRegisterForURBData5 =
+         tcs_prog_data->base.base.dispatch_grf_start_reg >> 5;
+#endif
+
 
       hs.PerThreadScratchSpace = get_scratch_space(tcs_bin);
       hs.ScratchSpaceBasePointer =
@@ -2099,6 +2117,32 @@ compute_kill_pixel(struct anv_graphics_pipeline *pipeline,
       (ms_info && ms_info->alphaToCoverageEnable);
 }
 
+#if GEN_GEN == 12
+static void
+emit_3dstate_primitive_replication(struct anv_graphics_pipeline *pipeline)
+{
+   if (!pipeline->use_primitive_replication) {
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr);
+      return;
+   }
+
+   uint32_t view_mask = pipeline->subpass->view_mask;
+   int view_count = util_bitcount(view_mask);
+   assert(view_count > 1 && view_count <= MAX_VIEWS_FOR_PRIMITIVE_REPLICATION);
+
+   anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr) {
+      pr.ReplicaMask = (1 << view_count) - 1;
+      pr.ReplicationCount = view_count - 1;
+
+      int i = 0, view_index;
+      for_each_bit(view_index, view_mask) {
+         pr.RTAIOffset[i] = view_index;
+         i++;
+      }
+   }
+}
+#endif
+
 static VkResult
 genX(graphics_pipeline_create)(
     VkDevice                                    _device,
@@ -2119,7 +2163,7 @@ genX(graphics_pipeline_create)(
    if (cache == NULL && device->physical->instance->pipeline_cache_enabled)
       cache = &device->default_pipeline_cache;
 
-   pipeline = vk_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
+   pipeline = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -2127,7 +2171,7 @@ genX(graphics_pipeline_create)(
    result = anv_pipeline_init(pipeline, device, cache,
                               pCreateInfo, pAllocator);
    if (result != VK_SUCCESS) {
-      vk_free2(&device->alloc, pAllocator, pipeline);
+      vk_free2(&device->vk.alloc, pAllocator, pipeline);
       return result;
    }
 
@@ -2173,6 +2217,10 @@ genX(graphics_pipeline_create)(
                      vp_info,
                      pCreateInfo->pRasterizationState);
    emit_3dstate_streamout(pipeline, pCreateInfo->pRasterizationState);
+
+#if GEN_GEN == 12
+   emit_3dstate_primitive_replication(pipeline);
+#endif
 
 #if 0
    /* From gen7_vs_state.c */
@@ -2232,20 +2280,22 @@ compute_pipeline_create(
    if (cache == NULL && device->physical->instance->pipeline_cache_enabled)
       cache = &device->default_pipeline_cache;
 
-   pipeline = vk_alloc2(&device->alloc, pAllocator, sizeof(*pipeline), 8,
+   pipeline = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*pipeline), 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   vk_object_base_init(&device->vk, &pipeline->base.base,
+                       VK_OBJECT_TYPE_PIPELINE);
    pipeline->base.device = device;
    pipeline->base.type = ANV_PIPELINE_COMPUTE;
 
    const VkAllocationCallbacks *alloc =
-      pAllocator ? pAllocator : &device->alloc;
+      pAllocator ? pAllocator : &device->vk.alloc;
 
    result = anv_reloc_list_init(&pipeline->base.batch_relocs, alloc);
    if (result != VK_SUCCESS) {
-      vk_free2(&device->alloc, pAllocator, pipeline);
+      vk_free2(&device->vk.alloc, pAllocator, pipeline);
       return result;
    }
    pipeline->base.batch.alloc = alloc;
@@ -2267,7 +2317,7 @@ compute_pipeline_create(
                                     pCreateInfo->stage.pSpecializationInfo);
    if (result != VK_SUCCESS) {
       ralloc_free(pipeline->base.mem_ctx);
-      vk_free2(&device->alloc, pAllocator, pipeline);
+      vk_free2(&device->vk.alloc, pAllocator, pipeline);
       return result;
    }
 
@@ -2275,17 +2325,12 @@ compute_pipeline_create(
 
    anv_pipeline_setup_l3_config(&pipeline->base, cs_prog_data->base.total_shared > 0);
 
-   uint32_t group_size = cs_prog_data->local_size[0] *
-      cs_prog_data->local_size[1] * cs_prog_data->local_size[2];
-   uint32_t remainder = group_size & (cs_prog_data->simd_size - 1);
+   const struct anv_cs_parameters cs_params = anv_cs_parameters(pipeline);
 
-   if (remainder > 0)
-      pipeline->cs_right_mask = ~0u >> (32 - remainder);
-   else
-      pipeline->cs_right_mask = ~0u >> (32 - cs_prog_data->simd_size);
+   pipeline->cs_right_mask = brw_cs_right_mask(cs_params.group_size, cs_params.simd_size);
 
    const uint32_t vfe_curbe_allocation =
-      ALIGN(cs_prog_data->push.per_thread.regs * cs_prog_data->threads +
+      ALIGN(cs_prog_data->push.per_thread.regs * cs_params.threads +
             cs_prog_data->push.cross_thread.regs, 2);
 
    const uint32_t subslices = MAX2(device->physical->subslice_total, 1);
@@ -2336,7 +2381,10 @@ compute_pipeline_create(
    }
 
    struct GENX(INTERFACE_DESCRIPTOR_DATA) desc = {
-      .KernelStartPointer     = cs_bin->kernel.offset,
+      .KernelStartPointer     =
+         cs_bin->kernel.offset +
+         brw_cs_prog_data_prog_offset(cs_prog_data, cs_params.simd_size),
+
       /* WA_1606682166 */
       .SamplerCount           = GEN_GEN == 11 ? 0 : get_sampler_count(cs_bin),
       /* We add 1 because the CS indirect parameters buffer isn't accounted
@@ -2368,7 +2416,7 @@ compute_pipeline_create(
       .ThreadPreemptionDisable = true,
 #endif
 
-      .NumberofThreadsinGPGPUThreadGroup = cs_prog_data->threads,
+      .NumberofThreadsinGPGPUThreadGroup = cs_params.threads,
    };
    GENX(INTERFACE_DESCRIPTOR_DATA_pack)(NULL,
                                         pipeline->interface_descriptor_data,

@@ -480,6 +480,8 @@ static const struct fma_op_info FMAOpInfos[] = {
         { false, 0xd8000, "ADD.v2f16", FMA_FADD16 },
         { false, 0xdc000, "CSEL4.v16", FMA_CSEL4 },
         { false, 0xdd000, "F32_TO_F16", FMA_TWO_SRC },
+
+        /* TODO: Combine to bifrost_fma_f2i_i2f16 */
         { true,  0x00046, "F16_TO_I16.XX", FMA_ONE_SRC },
         { true,  0x00047, "F16_TO_U16.XX", FMA_ONE_SRC },
         { true,  0x0004e, "F16_TO_I16.YX", FMA_ONE_SRC },
@@ -496,10 +498,13 @@ static const struct fma_op_info FMAOpInfos[] = {
         { true,  0x000d1, "U16_TO_F16.XY", FMA_ONE_SRC },
         { true,  0x000d8, "I16_TO_F16.YY", FMA_ONE_SRC },
         { true,  0x000d9, "U16_TO_F16.YY", FMA_ONE_SRC },
+
         { true,  0x00136, "F32_TO_I32", FMA_ONE_SRC },
         { true,  0x00137, "F32_TO_U32", FMA_ONE_SRC },
         { true,  0x00178, "I32_TO_F32", FMA_ONE_SRC },
         { true,  0x00179, "U32_TO_F32", FMA_ONE_SRC },
+
+        /* TODO: cleanup to use bifrost_fma_int16_to_32 */
         { true,  0x00198, "I16_TO_I32.X", FMA_ONE_SRC },
         { true,  0x00199, "U16_TO_U32.X", FMA_ONE_SRC },
         { true,  0x0019a, "I16_TO_I32.Y", FMA_ONE_SRC },
@@ -508,8 +513,10 @@ static const struct fma_op_info FMAOpInfos[] = {
         { true,  0x0019d, "U16_TO_F32.X", FMA_ONE_SRC },
         { true,  0x0019e, "I16_TO_F32.Y", FMA_ONE_SRC },
         { true,  0x0019f, "U16_TO_F32.Y", FMA_ONE_SRC },
+
         { true,  0x001a2, "F16_TO_F32.X", FMA_ONE_SRC },
         { true,  0x001a3, "F16_TO_F32.Y", FMA_ONE_SRC },
+
         { true,  0x0032c, "NOP",  FMA_ONE_SRC },
         { true,  0x0032d, "MOV",  FMA_ONE_SRC },
         { true,  0x0032f, "SWZ.YY.v2i16",  FMA_ONE_SRC },
@@ -525,13 +532,18 @@ static const struct fma_op_info FMAOpInfos[] = {
         { true,  0x00bc0, "UMAX3", FMA_THREE_SRC },
         { true,  0x00c00, "IMIN3", FMA_THREE_SRC },
         { true,  0x00c40, "UMIN3", FMA_THREE_SRC },
-        { true,  0x00ec5, "ROUND", FMA_ONE_SRC },
+        { true,  0x00ec2, "ROUND.v2f16", FMA_ONE_SRC },
+        { true,  0x00ec5, "ROUND.f32", FMA_ONE_SRC },
         { true,  0x00f40, "CSEL", FMA_THREE_SRC }, // src2 != 0 ? src1 : src0
         { true,  0x00fc0, "MUX.i32", FMA_THREE_SRC }, // see ADD comment
-        { true,  0x01805, "ROUNDEVEN", FMA_ONE_SRC },
-        { true,  0x01845, "CEIL", FMA_ONE_SRC },
-        { true,  0x01885, "FLOOR", FMA_ONE_SRC },
-        { true,  0x018c5, "TRUNC", FMA_ONE_SRC },
+        { true,  0x01802, "ROUNDEVEN.v2f16", FMA_ONE_SRC },
+        { true,  0x01805, "ROUNDEVEN.f32", FMA_ONE_SRC },
+        { true,  0x01842, "CEIL.v2f16", FMA_ONE_SRC },
+        { true,  0x01845, "CEIL.f32", FMA_ONE_SRC },
+        { true,  0x01882, "FLOOR.v2f16", FMA_ONE_SRC },
+        { true,  0x01885, "FLOOR.f32", FMA_ONE_SRC },
+        { true,  0x018c2, "TRUNC.v2f16", FMA_ONE_SRC },
+        { true,  0x018c5, "TRUNC.f32", FMA_ONE_SRC },
         { true,  0x019b0, "ATAN_LDEXP.Y.f32", FMA_TWO_SRC },
         { true,  0x019b8, "ATAN_LDEXP.X.f32", FMA_TWO_SRC },
         { true,  0x01c80, "LSHIFT_ADD_LOW32.u32", FMA_SHIFT_ADD64 },
@@ -541,7 +553,11 @@ static const struct fma_op_info FMAOpInfos[] = {
         { true,  0x01e08, "SEL.YX.i16", FMA_TWO_SRC },
         { true,  0x01e10, "SEL.XY.i16", FMA_TWO_SRC },
         { true,  0x01e18, "SEL.YY.i16", FMA_TWO_SRC },
+        { true,  0x01e80, "ADD_FREXPM.f32", FMA_TWO_SRC },
+        { true,  0x02000, "SWZ.XXXX.v4i8", FMA_ONE_SRC },
+        { true,  0x03e00, "SWZ.ZZZZ.v4i8", FMA_ONE_SRC },
         { true,  0x00800, "IMAD", FMA_THREE_SRC },
+        { true,  0x07818, "MUL.i32", FMA_TWO_SRC },
         { true,  0x078db, "POPCNT", FMA_ONE_SRC },
 };
 
@@ -598,6 +614,7 @@ static struct fma_op_info find_fma_op_info(unsigned op, bool extended)
 
         struct fma_op_info info;
         snprintf(info.name, sizeof(info.name), "op%04x", op);
+        info.extended = extended;
         info.op = op;
         info.src_type = FMA_THREE_SRC;
         return info;
@@ -969,8 +986,10 @@ static const struct add_op_info add_op_infos[] = {
         { 0x078d1, "U16_TO_F16.XY", ADD_ONE_SRC },
         { 0x078d8, "I16_TO_F16.YY", ADD_ONE_SRC },
         { 0x078d9, "U16_TO_F16.YY", ADD_ONE_SRC },
+        { 0x07909, "B1_TO_F16", ADD_ONE_SRC },
         { 0x07936, "F32_TO_I32", ADD_ONE_SRC },
         { 0x07937, "F32_TO_U32", ADD_ONE_SRC },
+        { 0x07971, "B1_TO_F32", ADD_ONE_SRC },
         { 0x07978, "I32_TO_F32", ADD_ONE_SRC },
         { 0x07979, "U32_TO_F32", ADD_ONE_SRC },
         { 0x07998, "I16_TO_I32.X", ADD_ONE_SRC },
@@ -994,13 +1013,17 @@ static const struct add_op_info add_op_infos[] = {
         { 0x07ba5, "FSQRT_FREXPE", ADD_ONE_SRC },
         { 0x07bad, "FRSQ_FREXPE", ADD_ONE_SRC },
         { 0x07bc5, "FLOG_FREXPE", ADD_ONE_SRC },
-        { 0x07d45, "CEIL", ADD_ONE_SRC },
-        { 0x07d85, "FLOOR", ADD_ONE_SRC },
-        { 0x07dc5, "TRUNC", ADD_ONE_SRC },
+        { 0x07d42, "CEIL.v2f16", ADD_ONE_SRC },
+        { 0x07d45, "CEIL.f32", ADD_ONE_SRC },
+        { 0x07d82, "FLOOR.v2f16", ADD_ONE_SRC },
+        { 0x07d85, "FLOOR.f32", ADD_ONE_SRC },
+        { 0x07dc2, "TRUNC.v2f16", ADD_ONE_SRC },
+        { 0x07dc5, "TRUNC.f32", ADD_ONE_SRC },
         { 0x07f18, "LSHIFT_ADD_HIGH32.i32", ADD_TWO_SRC },
         { 0x08000, "LD_ATTR", ADD_LOAD_ATTR, true },
         { 0x0a000, "LD_VAR.32", ADD_VARYING_INTERP, true },
-        { 0x0b000, "TEX", ADD_TEX_COMPACT, true },
+        { 0x0b000, "TEXC", ADD_TEX_COMPACT, true },
+        { 0x0b400, "TEXC.vtx", ADD_TEX_COMPACT, true },
         { 0x0c188, "LOAD.i32", ADD_TWO_SRC, true },
         { 0x0c1a0, "LD_UBO.i32", ADD_TWO_SRC, true },
         { 0x0c1b8, "LD_SCRATCH.v2i32", ADD_TWO_SRC, true },
@@ -1024,6 +1047,8 @@ static const struct add_op_info add_op_infos[] = {
         { 0x0cbb8, "ST_SCRATCH.v3i32", ADD_TWO_SRC, true },
         { 0x0cc00, "FRCP_FAST.f32", ADD_ONE_SRC },
         { 0x0cc20, "FRSQ_FAST.f32", ADD_ONE_SRC },
+        { 0x0cc68, "FLOG2_U.f32", ADD_ONE_SRC },
+        { 0x0cd58, "FEXP2_FAST.f32", ADD_ONE_SRC },
         { 0x0ce00, "FRCP_TABLE", ADD_ONE_SRC },
         { 0x0ce10, "FRCP_FAST.f16.X", ADD_ONE_SRC },
         { 0x0ce20, "FRSQ_TABLE", ADD_ONE_SRC },
@@ -1047,36 +1072,55 @@ static const struct add_op_info add_op_infos[] = {
         { 0x0ea68, "SEL.YX.i16", ADD_TWO_SRC },
         { 0x0ea78, "SEL.YY.i16", ADD_TWO_SRC },
         { 0x0ec00, "F32_TO_F16", ADD_TWO_SRC },
+        { 0x0e840, "CSEL.64",    ADD_THREE_SRC }, // u2u32(src2) ? src0 : src1
+        { 0x0e940, "CSEL.8",    ADD_THREE_SRC }, // (src2 != 0) ? src0 : src1
         { 0x0f640, "ICMP.GL.GT", ADD_TWO_SRC }, // src0 > src1 ? 1 : 0
         { 0x0f648, "ICMP.GL.GE", ADD_TWO_SRC },
         { 0x0f650, "UCMP.GL.GT", ADD_TWO_SRC },
         { 0x0f658, "UCMP.GL.GE", ADD_TWO_SRC },
         { 0x0f660, "ICMP.GL.EQ", ADD_TWO_SRC },
         { 0x0f669, "ICMP.GL.NEQ", ADD_TWO_SRC },
+        { 0x0f690, "UCMP.8.GT", ADD_TWO_SRC },
+        { 0x0f698, "UCMP.8.GE", ADD_TWO_SRC },
+        { 0x0f6a8, "ICMP.8.NE", ADD_TWO_SRC },
         { 0x0f6c0, "ICMP.D3D.GT", ADD_TWO_SRC }, // src0 > src1 ? ~0 : 0
         { 0x0f6c8, "ICMP.D3D.GE", ADD_TWO_SRC },
         { 0x0f6d0, "UCMP.D3D.GT", ADD_TWO_SRC },
         { 0x0f6d8, "UCMP.D3D.GE", ADD_TWO_SRC },
         { 0x0f6e0, "ICMP.D3D.EQ", ADD_TWO_SRC },
+        { 0x0f700, "ICMP.64.GT.PT1", ADD_TWO_SRC },
+        { 0x0f708, "ICMP.64.GE.PT1", ADD_TWO_SRC },
+        { 0x0f710, "UCMP.64.GT.PT1", ADD_TWO_SRC },
+        { 0x0f718, "UCMP.64.GE.PT1", ADD_TWO_SRC },
+        { 0x0f720, "ICMP.64.EQ.PT1", ADD_TWO_SRC },
+        { 0x0f728, "ICMP.64.NE.PT1", ADD_TWO_SRC },
+        { 0x0f7c0, "ICMP.64.PT2", ADD_THREE_SRC }, // src3 = result of PT1
         { 0x10000, "MAX.v2f16", ADD_FMINMAX16 },
         { 0x11000, "ADD_MSCALE.f32", ADD_FADDMscale },
         { 0x12000, "MIN.v2f16", ADD_FMINMAX16 },
         { 0x14000, "ADD.v2f16", ADD_FADD16 },
+        { 0x16000, "FCMP.GL", ADD_FCMP16 },
         { 0x17000, "FCMP.D3D", ADD_FCMP16 },
+        { 0x17880, "ADD.v4i8", ADD_TWO_SRC },
         { 0x178c0, "ADD.i32",  ADD_TWO_SRC },
         { 0x17900, "ADD.v2i16", ADD_TWO_SRC },
+        { 0x17a80, "SUB.v4i8", ADD_TWO_SRC },
         { 0x17ac0, "SUB.i32",  ADD_TWO_SRC },
+        { 0x17b00, "SUB.v2i16",  ADD_TWO_SRC },
         { 0x17c10, "ADDC.i32", ADD_TWO_SRC }, // adds src0 to the bottom bit of src1
         { 0x17d80, "ADD.i32.i16.X", ADD_TWO_SRC },
         { 0x17d90, "ADD.i32.u16.X", ADD_TWO_SRC },
         { 0x17dc0, "ADD.i32.i16.Y", ADD_TWO_SRC },
         { 0x17dd0, "ADD.i32.u16.Y", ADD_TWO_SRC },
-        { 0x18000, "LD_VAR_ADDR", ADD_VARYING_ADDRESS, true },
-        { 0x19181, "DISCARD.FEQ.f32", ADD_TWO_SRC, true },
-        { 0x19189, "DISCARD.FNE.f32", ADD_TWO_SRC, true },
-        { 0x1918C, "DISCARD.GL.f32", ADD_TWO_SRC, true }, /* Consumes ICMP.GL/etc with fixed 0 argument */
-        { 0x19190, "DISCARD.FLE.f32", ADD_TWO_SRC, true },
-        { 0x19198, "DISCARD.FLT.f32", ADD_TWO_SRC, true },
+        { 0x18000, "LD_VAR_ADDR", ADD_VARYING_ADDRESS, false },
+        { 0x19100, "DISCARD.FEQ.f16", ADD_TWO_SRC, false },
+        { 0x19108, "DISCARD.FNE.f16", ADD_TWO_SRC, false },
+        { 0x19110, "DISCARD.FLE.f16", ADD_TWO_SRC, false },
+        { 0x19118, "DISCARD.FLT.f16", ADD_TWO_SRC, false },
+        { 0x19180, "DISCARD.FEQ.f32", ADD_TWO_SRC, false },
+        { 0x19188, "DISCARD.FNE.f32", ADD_TWO_SRC, false },
+        { 0x19190, "DISCARD.FLE.f32", ADD_TWO_SRC, false },
+        { 0x19198, "DISCARD.FLT.f32", ADD_TWO_SRC, false },
         { 0x191e8, "ATEST.f32", ADD_TWO_SRC, true },
         { 0x191f0, "ATEST.X.f16", ADD_TWO_SRC, true },
         { 0x191f8, "ATEST.Y.f16", ADD_TWO_SRC, true },
@@ -1086,7 +1130,10 @@ static const struct add_op_info add_op_infos[] = {
         { 0x193c0, "ST_VAR.v4", ADD_THREE_SRC, true },
         { 0x1952c, "BLEND", ADD_BLENDING, true },
         { 0x1a000, "LD_VAR.16", ADD_VARYING_INTERP, true },
+        { 0x1ae20, "TEX.vtx", ADD_TEX, true },
         { 0x1ae60, "TEX", ADD_TEX, true },
+        { 0x1b000, "TEXC.f16", ADD_TEX_COMPACT, true },
+        { 0x1b400, "TEXC.vtx.f16", ADD_TEX_COMPACT, true },
         { 0x1c000, "RSHIFT_NAND.i32", ADD_SHIFT },
         { 0x1c400, "RSHIFT_AND.i32", ADD_SHIFT },
         { 0x1c800, "LSHIFT_NAND.i32", ADD_SHIFT },
@@ -1376,26 +1423,39 @@ static void dump_add(FILE *fp, uint64_t word, struct bifrost_regs regs,
                 int tex_index;
                 int sampler_index;
                 bool dualTex = false;
+
+                fprintf(fp, "coords <");
+                dump_src(fp, ADD.src0, regs, consts, false);
+                fprintf(fp, ", ");
+                dump_src(fp, ADD.op & 0x7, regs, consts, false);
+                fprintf(fp, ">, ");
+
                 if (info.src_type == ADD_TEX_COMPACT) {
                         tex_index = (ADD.op >> 3) & 0x7;
                         sampler_index = (ADD.op >> 7) & 0x7;
-                        bool unknown = (ADD.op & 0x40);
-                        // TODO: figure out if the unknown bit is ever 0
-                        if (!unknown)
-                                fprintf(fp, "unknown ");
+                        bool compute_lod = (ADD.op & 0x40);
+                        if (!compute_lod)
+                                fprintf(fp, "vtx lod 0 ");
                 } else {
                         uint64_t constVal = get_const(consts, regs);
                         uint32_t controlBits = (ADD.op & 0x8) ? (constVal >> 32) : constVal;
                         struct bifrost_tex_ctrl ctrl;
                         memcpy((char *) &ctrl, (char *) &controlBits, sizeof(ctrl));
 
-                        // TODO: figure out what actually triggers dual-tex
-                        if (ctrl.result_type == 9) {
+                        /* Dual-tex triggered for adjacent texturing
+                         * instructions with the same coordinates to different
+                         * textures/samplers. Observed for the compact
+                         * (2D/normal) case. */
+
+                        if ((ctrl.result_type & 7) == 1) {
+                                bool f32 = ctrl.result_type & 8;
+
                                 struct bifrost_dual_tex_ctrl dualCtrl;
                                 memcpy((char *) &dualCtrl, (char *) &controlBits, sizeof(ctrl));
-                                fprintf(fp, "(dualtex) tex0:%d samp0:%d tex1:%d samp1:%d ",
+                                fprintf(fp, "(dualtex) tex0:%d samp0:%d tex1:%d samp1:%d %s",
                                        dualCtrl.tex_index0, dualCtrl.sampler_index0,
-                                       dualCtrl.tex_index1, dualCtrl.sampler_index1);
+                                       dualCtrl.tex_index1, dualCtrl.sampler_index1,
+                                       f32 ? "f32" : "f16");
                                 if (dualCtrl.unk0 != 3)
                                         fprintf(fp, "unk:%d ", dualCtrl.unk0);
                                 dualTex = true;
@@ -1498,7 +1558,9 @@ static void dump_add(FILE *fp, uint64_t word, struct bifrost_regs regs,
                         // direct addr
                         fprintf(fp, "%d", addr);
                 } else if (addr < 0b11000) {
-                        if (addr == 22)
+                        if (addr == 20)
+                                fprintf(fp, "pointcoord");
+                        else if (addr == 22)
                                 fprintf(fp, "fragw");
                         else if (addr == 23)
                                 fprintf(fp, "fragz");
@@ -1630,6 +1692,7 @@ static void dump_add(FILE *fp, uint64_t word, struct bifrost_regs regs,
                 dump_16swizzle(fp, (ADD.op >> 8) & 0x3);
                 if (abs1 && abs2)
                         fprintf(fp, ")");
+                fprintf(fp, "/* %X */\n", (ADD.op >> 10) & 0x3); /* mode */
                 break;
         }
         case ADD_FADDMscale: {
@@ -1963,6 +2026,9 @@ bool dump_clause(FILE *fp, uint32_t *words, unsigned *size, unsigned offset, boo
                                         break;
                                 case 0xd:
                                         const_idx = 4;
+                                        break;
+                                case 0xe:
+                                        const_idx = 5;
                                         break;
                                 default:
                                         fprintf(fp, "# unknown pos 0x%x\n", pos);

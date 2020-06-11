@@ -1572,17 +1572,6 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
       emit_asm(ir, TGSI_OPCODE_DFRACEXP, undef_dst, result_dst, op[0]);
       break;
 
-   case ir_unop_noise: {
-      /* At some point, a motivated person could add a better
-       * implementation of noise.  Currently not even the nvidia
-       * binary drivers do anything more than this.  In any case, the
-       * place to do this is in the GL state tracker, not the poor
-       * driver.
-       */
-      emit_asm(ir, TGSI_OPCODE_MOV, result_dst, st_src_reg_for_float(0.5));
-      break;
-   }
-
    case ir_binop_add:
       emit_asm(ir, TGSI_OPCODE_ADD, result_dst, op[0], op[1]);
       break;
@@ -1949,11 +1938,13 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
          emit_asm(ir, TGSI_OPCODE_NOT, result_dst, op[0]);
          break;
       }
+      /* fallthrough */
    case ir_unop_u2f:
       if (native_integers) {
          emit_asm(ir, TGSI_OPCODE_U2F, result_dst, op[0]);
          break;
       }
+      /* fallthrough */
    case ir_binop_lshift:
    case ir_binop_rshift:
       if (native_integers) {
@@ -1975,16 +1966,19 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
          emit_asm(ir, opcode, result_dst, op[0], count);
          break;
       }
+      /* fallthrough */
    case ir_binop_bit_and:
       if (native_integers) {
          emit_asm(ir, TGSI_OPCODE_AND, result_dst, op[0], op[1]);
          break;
       }
+      /* fallthrough */
    case ir_binop_bit_xor:
       if (native_integers) {
          emit_asm(ir, TGSI_OPCODE_XOR, result_dst, op[0], op[1]);
          break;
       }
+      /* fallthrough */
    case ir_binop_bit_or:
       if (native_integers) {
          emit_asm(ir, TGSI_OPCODE_OR, result_dst, op[0], op[1]);
@@ -2400,6 +2394,10 @@ glsl_to_tgsi_visitor::visit_expression(ir_expression* ir, st_src_reg *op)
    case ir_unop_f2fmp:
    case ir_unop_f162b:
    case ir_unop_b2f16:
+   case ir_unop_i2i:
+   case ir_unop_i2imp:
+   case ir_unop_u2u:
+   case ir_unop_u2ump:
       /* This operation is not supported, or should have already been handled.
        */
       assert(!"Invalid ir opcode in glsl_to_tgsi_visitor::visit()");
@@ -6832,6 +6830,9 @@ st_translate_program(
       emit_compute_block_size(proginfo, ureg);
    }
 
+   if (program->shader->Program->info.layer_viewport_relative)
+      ureg_property(ureg, TGSI_PROPERTY_LAYER_VIEWPORT_RELATIVE, 1);
+
    /* Declare address register.
     */
    if (program->num_address_regs > 0) {
@@ -7344,6 +7345,14 @@ st_link_tgsi(struct gl_context *ctx, struct gl_shader_program *prog)
       st_set_prog_affected_state_flags(linked_prog);
 
       if (linked_prog) {
+         /* This is really conservative: */
+         linked_prog->info.writes_memory =
+            linked_prog->info.num_ssbos ||
+            linked_prog->info.num_images ||
+            ctx->Extensions.ARB_bindless_texture ||
+            (linked_prog->sh.LinkedTransformFeedback &&
+             linked_prog->sh.LinkedTransformFeedback->NumVarying);
+
          if (!ctx->Driver.ProgramStringNotify(ctx,
                                               _mesa_shader_stage_to_program(i),
                                               linked_prog)) {

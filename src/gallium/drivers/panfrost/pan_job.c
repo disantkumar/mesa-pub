@@ -33,6 +33,7 @@
 #include "util/ralloc.h"
 #include "util/format/u_format.h"
 #include "util/u_pack_color.h"
+#include "util/rounding.h"
 #include "pan_util.h"
 #include "pandecode/decode.h"
 #include "panfrost-quirks.h"
@@ -71,7 +72,7 @@ panfrost_create_batch_fence(struct panfrost_batch *batch)
         pipe_reference_init(&fence->reference, 1);
         fence->ctx = batch->ctx;
         fence->batch = batch;
-        ret = drmSyncobjCreate(pan_screen(batch->ctx->base.screen)->fd, 0,
+        ret = drmSyncobjCreate(pan_device(batch->ctx->base.screen)->fd, 0,
                                &fence->syncobj);
         assert(!ret);
 
@@ -81,7 +82,7 @@ panfrost_create_batch_fence(struct panfrost_batch *batch)
 static void
 panfrost_free_batch_fence(struct panfrost_batch_fence *fence)
 {
-        drmSyncobjDestroy(pan_screen(fence->ctx->base.screen)->fd,
+        drmSyncobjDestroy(pan_device(fence->ctx->base.screen)->fd,
                           fence->syncobj);
         ralloc_free(fence);
 }
@@ -145,7 +146,7 @@ panfrost_freeze_batch(struct panfrost_batch *batch)
         }
 }
 
-#ifndef NDEBUG
+#ifdef PAN_BATCH_DEBUG
 static bool panfrost_batch_is_frozen(struct panfrost_batch *batch)
 {
         struct panfrost_context *ctx = batch->ctx;
@@ -168,7 +169,9 @@ panfrost_free_batch(struct panfrost_batch *batch)
         if (!batch)
                 return;
 
+#ifdef PAN_BATCH_DEBUG
         assert(panfrost_batch_is_frozen(batch));
+#endif
 
         hash_table_foreach(batch->bos, entry)
                 panfrost_bo_unreference((struct panfrost_bo *)entry->key);
@@ -191,7 +194,7 @@ panfrost_free_batch(struct panfrost_batch *batch)
         ralloc_free(batch);
 }
 
-#ifndef NDEBUG
+#ifdef PAN_BATCH_DEBUG
 static bool
 panfrost_dep_graph_contains_batch(struct panfrost_batch *root,
                                   struct panfrost_batch *batch)
@@ -227,8 +230,10 @@ panfrost_batch_add_dep(struct panfrost_batch *batch,
                         return;
         }
 
+#ifdef PAN_BATCH_DEBUG
         /* Make sure the dependency graph is acyclic. */
         assert(!panfrost_dep_graph_contains_batch(newdep->batch, batch));
+#endif
 
         panfrost_batch_fence_reference(newdep);
         util_dynarray_append(&batch->dependencies,
@@ -322,7 +327,7 @@ panfrost_batch_fence_is_signaled(struct panfrost_batch_fence *fence)
         if (fence->batch)
                 return false;
 
-        int ret = drmSyncobjWait(pan_screen(fence->ctx->base.screen)->fd,
+        int ret = drmSyncobjWait(pan_device(fence->ctx->base.screen)->fd,
                                  &fence->syncobj, 1, 0, 0, NULL);
 
         /* Cache whether the fence was signaled */
@@ -389,7 +394,7 @@ panfrost_gc_fences(struct panfrost_context *ctx)
         }
 }
 
-#ifndef NDEBUG
+#ifdef PAN_BATCH_DEBUG
 static bool
 panfrost_batch_in_readers(struct panfrost_batch *batch,
                           struct panfrost_bo_access *access)
@@ -510,10 +515,12 @@ panfrost_batch_update_bo_access(struct panfrost_batch *batch,
                 /* We already accessed this BO before, so we should already be
                  * in the reader array.
                  */
+#ifdef PAN_BATCH_DEBUG
                 if (already_accessed) {
                         assert(panfrost_batch_in_readers(batch, access));
                         return;
                 }
+#endif
 
                 /* Previous access was a read and we want to read this BO.
                  * Add ourselves to the readers array and add a dependency on
@@ -580,6 +587,21 @@ panfrost_batch_add_bo(struct panfrost_batch *batch, struct panfrost_bo *bo,
         panfrost_batch_update_bo_access(batch, bo, flags, old_flags != 0);
 }
 
+static void
+panfrost_batch_add_resource_bos(struct panfrost_batch *batch,
+                                struct panfrost_resource *rsrc,
+                                uint32_t flags)
+{
+        panfrost_batch_add_bo(batch, rsrc->bo, flags);
+
+        for (unsigned i = 0; i < MAX_MIP_LEVELS; i++)
+                if (rsrc->slices[i].checksum_bo)
+                        panfrost_batch_add_bo(batch, rsrc->slices[i].checksum_bo, flags);
+
+        if (rsrc->separate_stencil)
+                panfrost_batch_add_bo(batch, rsrc->separate_stencil->bo, flags);
+}
+
 void panfrost_batch_add_fbo_bos(struct panfrost_batch *batch)
 {
         uint32_t flags = PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_WRITE |
@@ -588,12 +610,12 @@ void panfrost_batch_add_fbo_bos(struct panfrost_batch *batch)
 
         for (unsigned i = 0; i < batch->key.nr_cbufs; ++i) {
                 struct panfrost_resource *rsrc = pan_resource(batch->key.cbufs[i]->texture);
-                panfrost_batch_add_bo(batch, rsrc->bo, flags);
+                panfrost_batch_add_resource_bos(batch, rsrc, flags);
         }
 
         if (batch->key.zsbuf) {
                 struct panfrost_resource *rsrc = pan_resource(batch->key.zsbuf->texture);
-                panfrost_batch_add_bo(batch, rsrc->bo, flags);
+                panfrost_batch_add_resource_bos(batch, rsrc, flags);
         }
 }
 
@@ -603,12 +625,12 @@ panfrost_batch_create_bo(struct panfrost_batch *batch, size_t size,
 {
         struct panfrost_bo *bo;
 
-        bo = panfrost_bo_create(pan_screen(batch->ctx->base.screen), size,
+        bo = pan_bo_create(pan_device(batch->ctx->base.screen), size,
                                 create_flags);
         panfrost_batch_add_bo(batch, bo, access_flags);
 
         /* panfrost_batch_add_bo() has retained a reference and
-         * panfrost_bo_create() initialize the refcnt to 1, so let's
+         * pan_bo_create() initialize the refcnt to 1, so let's
          * unreference the BO here so it gets released when the batch is
          * destroyed (unless it's retained by someone else in the meantime).
          */
@@ -699,17 +721,50 @@ panfrost_batch_get_tiler_heap(struct panfrost_batch *batch)
         return batch->tiler_heap;
 }
 
+mali_ptr
+panfrost_batch_get_tiler_meta(struct panfrost_batch *batch, unsigned vertex_count)
+{
+        if (!vertex_count)
+                return 0;
+
+        if (batch->tiler_meta)
+                return batch->tiler_meta;
+
+        struct panfrost_bo *tiler_heap;
+        tiler_heap = panfrost_batch_get_tiler_heap(batch);
+
+        struct bifrost_tiler_heap_meta tiler_heap_meta = {
+            .heap_size = tiler_heap->size,
+            .tiler_heap_start = tiler_heap->gpu,
+            .tiler_heap_free = tiler_heap->gpu,
+            .tiler_heap_end = tiler_heap->gpu + tiler_heap->size,
+            .unk1 = 0x1,
+            .unk7e007e = 0x7e007e,
+        };
+
+        struct bifrost_tiler_meta tiler_meta = {
+            .hierarchy_mask = 0x28,
+            .flags = 0x0,
+            .width = MALI_POSITIVE(batch->key.width),
+            .height = MALI_POSITIVE(batch->key.height),
+            .tiler_heap_meta = panfrost_upload_transient(batch, &tiler_heap_meta, sizeof(tiler_heap_meta)),
+        };
+
+        batch->tiler_meta = panfrost_upload_transient(batch, &tiler_meta, sizeof(tiler_meta));
+        return batch->tiler_meta;
+}
+
 struct panfrost_bo *
 panfrost_batch_get_tiler_dummy(struct panfrost_batch *batch)
 {
-        struct panfrost_screen *screen = pan_screen(batch->ctx->base.screen);
+        struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
 
         uint32_t create_flags = 0;
 
         if (batch->tiler_dummy)
                 return batch->tiler_dummy;
 
-        if (!(screen->quirks & MIDGARD_NO_HIER_TILING))
+        if (!(dev->quirks & MIDGARD_NO_HIER_TILING))
                 create_flags = PAN_BO_INVISIBLE;
 
         batch->tiler_dummy = panfrost_batch_create_bo(batch, 4096,
@@ -844,7 +899,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
 {
         struct panfrost_context *ctx = batch->ctx;
         struct pipe_context *gallium = (struct pipe_context *) ctx;
-        struct panfrost_screen *screen = pan_screen(gallium->screen);
+        struct panfrost_device *dev = pan_device(gallium->screen);
         struct drm_panfrost_submit submit = {0,};
         uint32_t *bo_handles, *in_syncs = NULL;
         bool is_fragment_shader;
@@ -901,7 +956,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         }
 
         submit.bo_handles = (u64) (uintptr_t) bo_handles;
-        ret = drmIoctl(screen->fd, DRM_IOCTL_PANFROST_SUBMIT, &submit);
+        ret = drmIoctl(dev->fd, DRM_IOCTL_PANFROST_SUBMIT, &submit);
         free(bo_handles);
         free(in_syncs);
 
@@ -913,12 +968,12 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         /* Trace the job if we're doing that */
         if (pan_debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
                 /* Wait so we can get errors reported back */
-                drmSyncobjWait(screen->fd, &batch->out_sync->syncobj, 1,
+                drmSyncobjWait(dev->fd, &batch->out_sync->syncobj, 1,
                                INT64_MAX, 0, NULL);
 
                 /* Trace gets priority over sync */
                 bool minimal = !(pan_debug & PAN_DBG_TRACE);
-                pandecode_jc(submit.jc, FALSE, screen->gpu_id, minimal);
+                pandecode_jc(submit.jc, dev->quirks & IS_BIFROST, dev->gpu_id, minimal);
         }
 
         return 0;
@@ -975,9 +1030,9 @@ panfrost_batch_submit(struct panfrost_batch *batch)
         if (batch->framebuffer.gpu && batch->first_job) {
                 struct panfrost_context *ctx = batch->ctx;
                 struct pipe_context *gallium = (struct pipe_context *) ctx;
-                struct panfrost_screen *screen = pan_screen(gallium->screen);
+                struct panfrost_device *dev = pan_device(gallium->screen);
 
-                if (screen->quirks & MIDGARD_SFBD)
+                if (dev->quirks & MIDGARD_SFBD)
                         panfrost_attach_sfbd(batch, ~0);
                 else
                         panfrost_attach_mfbd(batch, ~0);
@@ -1048,7 +1103,7 @@ panfrost_flush_all_batches(struct panfrost_context *ctx, bool wait)
         if (!wait)
                 return;
 
-        drmSyncobjWait(pan_screen(ctx->base.screen)->fd,
+        drmSyncobjWait(pan_device(ctx->base.screen)->fd,
                        util_dynarray_begin(&syncobjs),
                        util_dynarray_num_elements(&syncobjs, uint32_t),
                        INT64_MAX, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, NULL);
@@ -1182,42 +1237,36 @@ pan_pack_color(uint32_t *packed, const union pipe_color_union *color, enum pipe_
                                   ((uint32_t) float_to_ubyte(color->f[0]) <<  0));
         } else if (format == PIPE_FORMAT_B5G6R5_UNORM) {
                 /* First, we convert the components to R5, G6, B5 separately */
-                unsigned r5 = CLAMP(color->f[0], 0.0, 1.0) * 31.0;
-                unsigned g6 = CLAMP(color->f[1], 0.0, 1.0) * 63.0;
-                unsigned b5 = CLAMP(color->f[2], 0.0, 1.0) * 31.0;
+                unsigned r5 = _mesa_roundevenf(SATURATE(color->f[0]) * 31.0);
+                unsigned g6 = _mesa_roundevenf(SATURATE(color->f[1]) * 63.0);
+                unsigned b5 = _mesa_roundevenf(SATURATE(color->f[2]) * 31.0);
 
                 /* Then we pack into a sparse u32. TODO: Why these shifts? */
                 pan_pack_color_32(packed, (b5 << 25) | (g6 << 14) | (r5 << 5));
         } else if (format == PIPE_FORMAT_B4G4R4A4_UNORM) {
-                /* We scale the components against 0xF0 (=240.0), rather than 0xFF */
-                unsigned r4 = CLAMP(color->f[0], 0.0, 1.0) * 240.0;
-                unsigned g4 = CLAMP(color->f[1], 0.0, 1.0) * 240.0;
-                unsigned b4 = CLAMP(color->f[2], 0.0, 1.0) * 240.0;
-                unsigned a4 = CLAMP(clear_alpha, 0.0, 1.0) * 240.0;
+                /* Convert to 4-bits */
+                unsigned r4 = _mesa_roundevenf(SATURATE(color->f[0]) * 15.0);
+                unsigned g4 = _mesa_roundevenf(SATURATE(color->f[1]) * 15.0);
+                unsigned b4 = _mesa_roundevenf(SATURATE(color->f[2]) * 15.0);
+                unsigned a4 = _mesa_roundevenf(SATURATE(clear_alpha) * 15.0);
 
                 /* Pack on *byte* intervals */
-                pan_pack_color_32(packed, (a4 << 24) | (b4 << 16) | (g4 << 8) | r4);
+                pan_pack_color_32(packed, (a4 << 28) | (b4 << 20) | (g4 << 12) | (r4 << 4));
         } else if (format == PIPE_FORMAT_B5G5R5A1_UNORM) {
                 /* Scale as expected but shift oddly */
-                unsigned r5 = round(CLAMP(color->f[0], 0.0, 1.0)) * 31.0;
-                unsigned g5 = round(CLAMP(color->f[1], 0.0, 1.0)) * 31.0;
-                unsigned b5 = round(CLAMP(color->f[2], 0.0, 1.0)) * 31.0;
-                unsigned a1 = round(CLAMP(clear_alpha, 0.0, 1.0)) * 1.0;
+                unsigned r5 = _mesa_roundevenf(SATURATE(color->f[0]) * 31.0);
+                unsigned g5 = _mesa_roundevenf(SATURATE(color->f[1]) * 31.0);
+                unsigned b5 = _mesa_roundevenf(SATURATE(color->f[2]) * 31.0);
+                unsigned a1 = _mesa_roundevenf(SATURATE(clear_alpha) * 1.0);
 
                 pan_pack_color_32(packed, (a1 << 31) | (b5 << 25) | (g5 << 15) | (r5 << 5));
         } else {
-                /* Try Gallium's generic default path. Doesn't work for all
-                 * formats but it's a good guess. */
+                /* Otherwise, it's generic subject to replication */
 
-                union util_color out;
-
-                if (util_format_is_pure_integer(format)) {
-                        memcpy(out.ui, color->ui, 16);
-                } else {
-                        util_pack_color(color->f, format, &out);
-                }
-
+                union util_color out = { 0 };
                 unsigned size = util_format_get_blocksize(format);
+
+                util_pack_color(color->f, format, &out);
 
                 if (size == 1) {
                         unsigned b = out.ui[0];
@@ -1268,7 +1317,7 @@ panfrost_batch_clear(struct panfrost_batch *batch,
 
         /* Clearing affects the entire framebuffer (by definition -- this is
          * the Gallium clear callback, which clears the whole framebuffer. If
-         * the scissor test were enabled from the GL side, the state tracker
+         * the scissor test were enabled from the GL side, the gallium frontend
          * would emit a quad instead and we wouldn't go down this code path) */
 
         panfrost_batch_union_scissor(batch, 0, 0,
@@ -1313,7 +1362,7 @@ panfrost_batch_intersection_scissor(struct panfrost_batch *batch,
         batch->maxy = MIN2(batch->maxy, maxy);
 }
 
-/* Are we currently rendering to the screen (rather than an FBO)? */
+/* Are we currently rendering to the dev (rather than an FBO)? */
 
 bool
 panfrost_batch_is_scanout(struct panfrost_batch *batch)

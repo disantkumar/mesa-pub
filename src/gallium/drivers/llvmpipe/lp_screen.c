@@ -38,7 +38,7 @@
 #include "draw/draw_context.h"
 #include "gallivm/lp_bld_type.h"
 #include "gallivm/lp_bld_nir.h"
-
+#include "util/disk_cache.h"
 #include "util/os_misc.h"
 #include "util/os_time.h"
 #include "lp_texture.h"
@@ -52,7 +52,7 @@
 #include "lp_rast.h"
 #include "lp_cs_tpool.h"
 
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 
 #include "nir.h"
 
@@ -75,6 +75,7 @@ static const struct debug_named_value lp_debug_flags[] = {
    { "cs", DEBUG_CS, NULL },
    { "tgsi_ir", DEBUG_TGSI_IR, NULL },
    { "cl", DEBUG_CL, NULL },
+   { "cache_stats", DEBUG_CACHE_STATS, NULL },
    DEBUG_NAMED_VALUE_END
 };
 #endif
@@ -194,9 +195,8 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXEL_OFFSET:
       return 31;
    case PIPE_CAP_CONDITIONAL_RENDER:
-      return 1;
    case PIPE_CAP_TEXTURE_BARRIER:
-      return 0;
+      return 1;
    case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return 16*4;
@@ -239,8 +239,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 16;
-   case PIPE_CAP_TEXTURE_MULTISAMPLE:
-      return 0;
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return 64;
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
@@ -262,7 +260,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
       return 4;
    case PIPE_CAP_TEXTURE_GATHER_SM5:
-   case PIPE_CAP_SAMPLE_SHADING:
    case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
       return 0;
    case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
@@ -272,8 +269,10 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TEX_TXF_LZ:
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
       return 1;
-   case PIPE_CAP_FAKE_SW_MSAA:
-      return 1;
+   case PIPE_CAP_FAKE_SW_MSAA: {
+      struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
+      return lscreen->use_tgsi ? 1 : 0;
+   }
    case PIPE_CAP_TEXTURE_QUERY_LOD:
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
    case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
@@ -324,7 +323,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_VARYINGS:
       return 32;
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
-      return 1;
+      return 16;
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
       return 1;
    case PIPE_CAP_DRAW_PARAMETERS:
@@ -334,11 +333,12 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
       return 32;
+   case PIPE_CAP_RASTERIZER_SUBPIXEL_BITS:
+      return 8;
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
    case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
-   case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
@@ -398,8 +398,11 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TG4_COMPONENT_IN_SWIZZLE:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
       return 1;
+   case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_TGSI_VOTE:
    case PIPE_CAP_LOAD_CONSTBUF:
+   case PIPE_CAP_TEXTURE_MULTISAMPLE:
+   case PIPE_CAP_SAMPLE_SHADING:
    case PIPE_CAP_PACKED_UNIFORMS: {
       struct llvmpipe_screen *lscreen = llvmpipe_screen(screen);
       return !lscreen->use_tgsi;
@@ -433,7 +436,8 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
       }
    case PIPE_SHADER_TESS_CTRL:
    case PIPE_SHADER_TESS_EVAL:
-      if (lscreen->use_tgsi)
+      /* Tessellation shader needs llvm coroutines support */
+      if (!GALLIVM_HAVE_CORO || lscreen->use_tgsi)
          return 0;
    case PIPE_SHADER_VERTEX:
    case PIPE_SHADER_GEOMETRY:
@@ -478,7 +482,7 @@ llvmpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
    case PIPE_CAPF_MAX_POINT_WIDTH:
       /* fall-through */
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
-      return 255.0; /* arbitrary */
+      return LP_MAX_POINT_WIDTH; /* arbitrary */
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0; /* not actually signficant at this time */
    case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
@@ -622,7 +626,6 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_extract_word = true,
    .lower_rotate = true,
    .lower_ifind_msb = true,
-   .optimize_sample_mask_in = true,
    .max_unroll_iterations = 32,
    .use_interpolated_input_intrinsics = true,
    .lower_to_scalar = true,
@@ -677,7 +680,7 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
           target == PIPE_TEXTURE_CUBE ||
           target == PIPE_TEXTURE_CUBE_ARRAY);
 
-   if (sample_count > 1)
+   if (sample_count != 0 && sample_count != 1 && sample_count != 4)
       return false;
 
    if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
@@ -733,11 +736,6 @@ llvmpipe_is_format_supported( struct pipe_screen *_screen,
 
       if (format_desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
          return false;
-
-      /* TODO: Support stencil-only formats */
-      if (format_desc->swizzle[0] == PIPE_SWIZZLE_NONE) {
-         return false;
-      }
    }
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC ||
@@ -792,6 +790,10 @@ llvmpipe_destroy_screen( struct pipe_screen *_screen )
 
    lp_jit_screen_cleanup(screen);
 
+   if (LP_DEBUG & DEBUG_CACHE_STATS)
+      printf("disk shader cache:   hits = %u, misses = %u\n", screen->num_disk_shader_cache_hits,
+             screen->num_disk_shader_cache_misses);
+   disk_cache_destroy(screen->disk_shader_cache);
    if(winsys->destroy)
       winsys->destroy(winsys);
 
@@ -849,6 +851,63 @@ llvmpipe_get_timestamp(struct pipe_screen *_screen)
    return os_time_get_nano();
 }
 
+static void lp_disk_cache_create(struct llvmpipe_screen *screen)
+{
+   struct mesa_sha1 ctx;
+   unsigned char sha1[20];
+   char cache_id[20 * 2 + 1];
+   _mesa_sha1_init(&ctx);
+
+   if (!disk_cache_get_function_identifier(lp_disk_cache_create, &ctx) ||
+       !disk_cache_get_function_identifier(LLVMLinkInMCJIT, &ctx))
+      return;
+
+   _mesa_sha1_final(&ctx, sha1);
+   disk_cache_format_hex_id(cache_id, sha1, 20 * 2);
+
+   screen->disk_shader_cache = disk_cache_create("llvmpipe", cache_id, 0);
+}
+
+static struct disk_cache *lp_get_disk_shader_cache(struct pipe_screen *_screen)
+{
+   struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
+
+   return screen->disk_shader_cache;
+}
+
+void lp_disk_cache_find_shader(struct llvmpipe_screen *screen,
+                               struct lp_cached_code *cache,
+                               unsigned char ir_sha1_cache_key[20])
+{
+   unsigned char sha1[CACHE_KEY_SIZE];
+
+   if (!screen->disk_shader_cache)
+      return;
+   disk_cache_compute_key(screen->disk_shader_cache, ir_sha1_cache_key, 20, sha1);
+
+   size_t binary_size;
+   uint8_t *buffer = disk_cache_get(screen->disk_shader_cache, sha1, &binary_size);
+   if (!buffer) {
+      cache->data_size = 0;
+      p_atomic_inc(&screen->num_disk_shader_cache_misses);
+      return;
+   }
+   cache->data_size = binary_size;
+   cache->data = buffer;
+   p_atomic_inc(&screen->num_disk_shader_cache_hits);
+}
+
+void lp_disk_cache_insert_shader(struct llvmpipe_screen *screen,
+                                 struct lp_cached_code *cache,
+                                 unsigned char ir_sha1_cache_key[20])
+{
+   unsigned char sha1[CACHE_KEY_SIZE];
+
+   if (!screen->disk_shader_cache || !cache->data_size || cache->dont_cache)
+      return;
+   disk_cache_compute_key(screen->disk_shader_cache, ir_sha1_cache_key, 20, sha1);
+   disk_cache_put(screen->disk_shader_cache, sha1, cache->data, cache->data_size, NULL);
+}
 /**
  * Create a new pipe_screen object
  * Note: we're not presently subclassing pipe_screen (no llvmpipe_screen).
@@ -899,6 +958,8 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->base.get_timestamp = llvmpipe_get_timestamp;
 
    screen->base.finalize_nir = llvmpipe_finalize_nir;
+
+   screen->base.get_disk_shader_cache = lp_get_disk_shader_cache;
    llvmpipe_init_screen_resource_funcs(&screen->base);
 
    screen->use_tgsi = (LP_DEBUG & DEBUG_TGSI_IR);
@@ -926,5 +987,6 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    }
    (void) mtx_init(&screen->cs_mutex, mtx_plain);
 
+   lp_disk_cache_create(screen);
    return &screen->base;
 }

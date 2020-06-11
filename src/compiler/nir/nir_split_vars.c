@@ -331,6 +331,8 @@ nir_split_struct_vars(nir_shader *shader, nir_variable_mode modes)
          nir_metadata_preserve(function->impl, nir_metadata_block_index |
                                                nir_metadata_dominance);
          progress = true;
+      } else {
+         nir_metadata_preserve(function->impl, nir_metadata_all);
       }
    }
 
@@ -885,6 +887,7 @@ nir_split_array_vars(nir_shader *shader, nir_variable_mode modes)
    /* If we failed to find any arrays of arrays, bail early. */
    if (!has_any_array) {
       ralloc_free(mem_ctx);
+      nir_shader_preserve_all_metadata(shader);
       return false;
    }
 
@@ -914,6 +917,8 @@ nir_split_array_vars(nir_shader *shader, nir_variable_mode modes)
          nir_metadata_preserve(function->impl, nir_metadata_block_index |
                                                nir_metadata_dominance);
          progress = true;
+      } else {
+         nir_metadata_preserve(function->impl, nir_metadata_all);
       }
    }
 
@@ -1166,9 +1171,7 @@ get_non_self_referential_store_comps(nir_intrinsic_instr *store)
                comps &= ~(1u << i);
          }
       }
-   } else if (src_alu->op == nir_op_vec2 ||
-              src_alu->op == nir_op_vec3 ||
-              src_alu->op == nir_op_vec4) {
+   } else if (nir_op_is_vec(src_alu->op)) {
       /* If it's a vec, discount any channels that are just loads from the
        * same deref put in the same spot.
        */
@@ -1632,6 +1635,7 @@ nir_shrink_vec_array_vars(nir_shader *shader, nir_variable_mode modes)
    }
    if (!has_vars_to_shrink) {
       ralloc_free(mem_ctx);
+      nir_shader_preserve_all_metadata(shader);
       return false;
    }
 
@@ -1656,6 +1660,8 @@ nir_shrink_vec_array_vars(nir_shader *shader, nir_variable_mode modes)
          nir_metadata_preserve(function->impl, nir_metadata_block_index |
                                                nir_metadata_dominance);
          progress = true;
+      } else {
+         nir_metadata_preserve(function->impl, nir_metadata_all);
       }
    }
 

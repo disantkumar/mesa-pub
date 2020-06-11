@@ -85,6 +85,7 @@ struct spirv_supported_capabilities {
    bool amd_trinary_minmax;
    bool amd_image_read_write_lod;
    bool amd_shader_explicit_vertex_parameter;
+   bool amd_image_gather_bias_lod;
 };
 
 typedef struct shader_info {
@@ -115,8 +116,6 @@ typedef struct shader_info {
    uint8_t num_ssbos;
    /* Number of images used by this shader */
    uint8_t num_images;
-   /* Index of the last MSAA image. */
-   int8_t last_msaa_image;
 
    /* Which inputs are actually read */
    uint64_t inputs_read;
@@ -134,6 +133,15 @@ typedef struct shader_info {
    /* Which patch outputs are read */
    uint32_t patch_outputs_read;
 
+   /* Which inputs are read indirectly (subset of inputs_read) */
+   uint64_t inputs_read_indirectly;
+   /* Which outputs are read or written indirectly */
+   uint64_t outputs_accessed_indirectly;
+   /* Which patch inputs are read indirectly (subset of patch_inputs_read) */
+   uint64_t patch_inputs_read_indirectly;
+   /* Which patch outputs are read or written indirectly */
+   uint64_t patch_outputs_accessed_indirectly;
+
    /** Bitfield of which textures are used */
    uint32_t textures_used;
 
@@ -142,6 +150,10 @@ typedef struct shader_info {
 
    /** Bitfield of which images are used */
    uint32_t images_used;
+   /** Bitfield of which images are buffers. */
+   uint32_t image_buffers;
+   /** Bitfield of which images are MSAA. */
+   uint32_t msaa_images;
 
    /* SPV_KHR_float_controls: execution mode for floating point ops */
    uint16_t float_controls_execution_mode;
@@ -178,6 +190,12 @@ typedef struct shader_info {
 
    /* Whether flrp has been lowered. */
    bool flrp_lowered:1;
+
+   /* Whether the shader writes memory, including transform feedback. */
+   bool writes_memory:1;
+
+   /* Whether gl_Layer is viewport-relative */
+   bool layer_viewport_relative:1;
 
    union {
       struct {
@@ -321,6 +339,16 @@ typedef struct shader_info {
          /** Is the vertex order counterclockwise? */
          bool ccw:1;
          bool point_mode:1;
+
+         /* Bit mask of TCS per-vertex inputs (VS outputs) that are used
+          * with a vertex index that is NOT the invocation id
+          */
+         uint64_t tcs_cross_invocation_inputs_read;
+
+         /* Bit mask of TCS per-vertex outputs that are used
+          * with a vertex index that is NOT the invocation id
+          */
+         uint64_t tcs_cross_invocation_outputs_read;
       } tess;
    };
 } shader_info;

@@ -86,12 +86,13 @@ foreach g : [['70', ['gen7_cmd_buffer.c']], ['75', ['gen7_cmd_buffer.c']],
     'anv_gen@0@'.format(_gen),
     [anv_gen_files, g[1], anv_entrypoints[0], anv_extensions_h],
     include_directories : [
-      inc_common, inc_compiler, inc_include, inc_intel, inc_vulkan_wsi,
+      inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_compiler, inc_intel, inc_vulkan_wsi,
     ],
     c_args : [
-      c_vis_args, no_override_init_args, c_sse2_args,
+      no_override_init_args, c_sse2_args,
       '-DGEN_VERSIONx10=@0@'.format(_gen),
     ],
+    gnu_symbol_visibility : 'hidden',
     dependencies : [
       dep_libdrm, dep_valgrind, idep_nir_headers, idep_genxml, idep_vulkan_util_headers,
     ],
@@ -136,7 +137,6 @@ anv_deps = [
   idep_xmlconfig_headers,
 ]
 anv_flags = [
-  c_vis_args,
   no_override_init_args,
   c_sse2_args,
 ]
@@ -180,10 +180,11 @@ libanv_common = static_library(
     gen_xml_pack,
   ],
   include_directories : [
-    inc_common, inc_intel, inc_compiler, inc_include,
+    inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel, inc_compiler,
     inc_vulkan_wsi, inc_util,
   ],
   c_args : anv_flags,
+  gnu_symbol_visibility : 'hidden',
   dependencies : anv_deps,
 )
 
@@ -191,7 +192,7 @@ libvulkan_intel = shared_library(
   'vulkan_intel',
   [files('anv_gem.c'), anv_entrypoints[0], anv_extensions_h],
   include_directories : [
-    inc_common, inc_intel, inc_compiler, inc_include, inc_vulkan_wsi,
+    inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel, inc_compiler, inc_vulkan_wsi,
   ],
   link_whole : [libanv_common, libanv_gen_libs],
   link_with : [
@@ -203,6 +204,7 @@ libvulkan_intel = shared_library(
     idep_nir, idep_genxml, idep_vulkan_util, idep_mesautil, idep_xmlconfig,
   ],
   c_args : anv_flags,
+  gnu_symbol_visibility : 'hidden',
   link_args : ['-Wl,--build-id=sha1', ld_args_bsymbolic, ld_args_gc_sections],
   install : true,
 )
@@ -225,7 +227,7 @@ if with_tests
     'vulkan_intel_test',
     [files('anv_gem_stubs.c'), anv_entrypoints[0], anv_extensions_h],
     include_directories : [
-      inc_common, inc_intel, inc_compiler, inc_include, inc_vulkan_wsi,
+      inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel, inc_compiler, inc_vulkan_wsi,
     ],
     link_whole : libanv_common,
     link_with : [
@@ -237,6 +239,7 @@ if with_tests
       idep_nir, idep_vulkan_util, idep_mesautil,
     ],
     c_args : anv_flags,
+    gnu_symbol_visibility : 'hidden',
   )
 
   foreach t : ['block_pool_no_free', 'block_pool_grow_first',
@@ -251,7 +254,7 @@ if with_tests
         link_with : libvulkan_intel_test,
         dependencies : [dep_libdrm, dep_thread, dep_m, dep_valgrind, idep_vulkan_util, ],
         include_directories : [
-          inc_common, inc_intel, inc_compiler, inc_vulkan_wsi,
+          inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel, inc_compiler, inc_vulkan_wsi,
         ],
       ),
       suite : ['intel'],

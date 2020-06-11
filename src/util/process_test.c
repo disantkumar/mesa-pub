@@ -31,6 +31,11 @@
 #include <limits.h>
 #include <stdlib.h>
 
+#if DETECT_OS_WINDOWS && !defined(PATH_MAX)
+#include <windows.h>
+#define PATH_MAX MAX_PATH
+#endif
+
 bool error = false;
 
 static void
@@ -70,6 +75,11 @@ test_util_get_process_exec_path (void)
       error = true;
       return;
    }
+#ifdef __CYGWIN__
+   int i = strlen(build_path) - 4;
+   if ((i > 0) && (strcmp(&build_path[i], ".exe") == 0))
+      build_path[i] = 0;
+#endif
    expect_equal_str(build_path, path, "util_get_process_name");
 }
 

@@ -192,9 +192,16 @@ struct panfrost_shader_state {
         bool reads_point_coord;
         bool reads_face;
         bool reads_frag_coord;
+        bool writes_global;
         unsigned stack_size;
         unsigned shared_size;
 
+        /* Does the fragment shader have side effects? In particular, if output
+         * is masked out, is it legal to skip shader execution? */
+        bool fs_sidefx;
+
+        /* For Bifrost - output type for each RT */
+        enum bifrost_shader_type blend_types[BIFROST_MAX_RENDER_TARGET_COUNT];
 
         unsigned int varying_count;
         struct mali_attr_meta varyings[PIPE_MAX_ATTRIBS];
@@ -248,14 +255,17 @@ struct panfrost_vertex_state {
 
 struct panfrost_sampler_state {
         struct pipe_sampler_state base;
-        struct mali_sampler_descriptor hw;
+        struct mali_sampler_descriptor midgard_hw;
+        struct bifrost_sampler_descriptor bifrost_hw;
 };
 
 /* Misnomer: Sampler view corresponds to textures, not samplers */
 
 struct panfrost_sampler_view {
         struct pipe_sampler_view base;
-        struct panfrost_bo *bo;
+        struct panfrost_bo *midgard_bo;
+        struct panfrost_bo *bifrost_bo;
+        struct bifrost_texture_descriptor *bifrost_descriptor;
 };
 
 static inline struct panfrost_context *
@@ -287,7 +297,7 @@ panfrost_writes_point_size(struct panfrost_context *ctx);
 
 void
 panfrost_vertex_state_upd_attr_offs(struct panfrost_context *ctx,
-                                    struct midgard_payload_vertex_tiler *vp);
+                                    struct mali_vertex_tiler_postfix *vertex_postfix);
 
 struct panfrost_transfer
 panfrost_vertex_tiler_job(struct panfrost_context *ctx, bool is_tiler);

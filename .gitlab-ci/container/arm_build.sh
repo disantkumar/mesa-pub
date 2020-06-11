@@ -41,16 +41,19 @@ apt-get -y install \
 	libvulkan-dev:armhf \
 	llvm-7-dev:armhf \
 	llvm-8-dev \
-	meson \
 	pkg-config \
 	python \
 	python3-distutils \
+	python3-setuptools \
 	python3-mako \
 	python3-serial \
 	unzip \
 	wget \
 	xz-utils \
 	zlib1g-dev
+
+apt install -y --no-remove -t buster-backports \
+    meson
 
 . .gitlab-ci/container/container_pre_build.sh
 
@@ -59,17 +62,12 @@ export LIBDRM_VERSION=libdrm-2.4.100
 
 wget https://dri.freedesktop.org/libdrm/$LIBDRM_VERSION.tar.bz2
 tar -xvf $LIBDRM_VERSION.tar.bz2 && rm $LIBDRM_VERSION.tar.bz2
-cd $LIBDRM_VERSION; meson build -D vc4=true -D freedreno=true -D etnaviv=true; ninja -j4 -C build install; cd ..
+cd $LIBDRM_VERSION; meson build -D vc4=true -D freedreno=true -D etnaviv=true; ninja -C build install; cd ..
 rm -rf $LIBDRM_VERSION
 
 ############### Generate cross build file for Meson
 
-cross_file="/cross_file-armhf.txt"
-/usr/share/meson/debcrossgen --arch armhf -o "$cross_file"
-# Explicitly set ccache path for cross compilers
-sed -i "s|/usr/bin/\([^-]*\)-linux-gnu\([^-]*\)-g|/usr/lib/ccache/\\1-linux-gnu\\2-g|g" "$cross_file"
-# Don't need wrapper for armhf executables
-sed -i -e '/\[properties\]/a\' -e "needs_exe_wrapper = False" "$cross_file"
+. .gitlab-ci/create-cross-file.sh armhf
 
 ############### Generate kernel, ramdisk, test suites, etc for LAVA jobs
 
@@ -77,7 +75,6 @@ DEBIAN_ARCH=arm64 . .gitlab-ci/container/lava_arm.sh
 DEBIAN_ARCH=armhf . .gitlab-ci/container/lava_arm.sh
 
 apt-get purge -y \
-        python3-distutils \
         wget
 
 . .gitlab-ci/container/container_post_build.sh

@@ -759,6 +759,11 @@ public:
       unsigned has_initializer:1;
 
       /**
+       * Is the initializer created by the compiler (glsl_zero_init)
+       */
+      unsigned is_implicit_initializer:1;
+
+      /**
        * Is this variable a generic output or input that has not yet been matched
        * up to a variable in another stage of the pipeline?
        *
@@ -2047,6 +2052,12 @@ public:
     */
    virtual ir_variable *variable_referenced() const = 0;
 
+   /**
+    * Get the precision. This can either come from the eventual variable that
+    * is dereferenced, or from a record member.
+    */
+   virtual int precision() const = 0;
+
 protected:
    ir_dereference(enum ir_node_type t)
       : ir_rvalue(t)
@@ -2074,6 +2085,11 @@ public:
    virtual ir_variable *variable_referenced() const
    {
       return this->var;
+   }
+
+   virtual int precision() const
+   {
+      return this->var->data.precision;
    }
 
    virtual ir_variable *whole_variable_referenced()
@@ -2124,6 +2140,16 @@ public:
       return this->array->variable_referenced();
    }
 
+   virtual int precision() const
+   {
+      ir_dereference *deref = this->array->as_dereference();
+
+      if (deref == NULL)
+         return GLSL_PRECISION_NONE;
+      else
+         return deref->precision();
+   }
+
    virtual void accept(ir_visitor *v)
    {
       v->visit(this);
@@ -2159,6 +2185,13 @@ public:
       return this->record->variable_referenced();
    }
 
+   virtual int precision() const
+   {
+      glsl_struct_field *field = record->type->fields.structure + field_idx;
+
+      return field->precision;
+   }
+
    virtual void accept(ir_visitor *v)
    {
       v->visit(this);
@@ -2181,6 +2214,8 @@ union ir_constant_data {
       bool b[16];
       double d[16];
       uint16_t f16[16];
+      int16_t u16[16];
+      int16_t i16[16];
       uint64_t u64[16];
       int64_t i64[16];
 };
@@ -2190,6 +2225,8 @@ class ir_constant : public ir_rvalue {
 public:
    ir_constant(const struct glsl_type *type, const ir_constant_data *data);
    ir_constant(bool b, unsigned vector_elements=1);
+   ir_constant(int16_t i16, unsigned vector_elements=1);
+   ir_constant(uint16_t u16, unsigned vector_elements=1);
    ir_constant(unsigned int u, unsigned vector_elements=1);
    ir_constant(int i, unsigned vector_elements=1);
    ir_constant(float16_t f16, unsigned vector_elements=1);
@@ -2247,6 +2284,8 @@ public:
    float get_float_component(unsigned i) const;
    uint16_t get_float16_component(unsigned i) const;
    double get_double_component(unsigned i) const;
+   int16_t get_int16_component(unsigned i) const;
+   uint16_t get_uint16_component(unsigned i) const;
    int get_int_component(unsigned i) const;
    unsigned get_uint_component(unsigned i) const;
    int64_t get_int64_component(unsigned i) const;

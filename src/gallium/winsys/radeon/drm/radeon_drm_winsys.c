@@ -32,6 +32,7 @@
 #include "util/u_cpu_detect.h"
 #include "util/u_memory.h"
 #include "util/u_hash_table.h"
+#include "util/u_pointer.h"
 
 #include <xf86drm.h>
 #include <stdio.h>
@@ -531,7 +532,8 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
    radeon_get_drm_value(ws->fd, RADEON_INFO_MAX_SH_PER_SE, NULL,
                         &ws->info.max_sh_per_se);
    if (ws->gen == DRV_SI) {
-      ws->info.num_good_cu_per_sh = ws->info.num_good_compute_units /
+      ws->info.max_good_cu_per_sa =
+      ws->info.min_good_cu_per_sa = ws->info.num_good_compute_units /
                                     (ws->info.max_se * ws->info.max_sh_per_se);
    }
 
@@ -568,7 +570,7 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
                                     (ws->info.family == CHIP_HAWAII &&
                                      ws->accel_working2 < 3);
    ws->info.tcc_cache_line_size = 64; /* TC L2 line size on GCN */
-   ws->info.ib_start_alignment = 4096;
+   ws->info.ib_alignment = 4096;
    ws->info.kernel_flushes_hdp_before_ib = ws->info.drm_minor >= 40;
    /* HTILE is broken with 1D tiling on old kernels and GFX7. */
    ws->info.htile_cmask_support_1d_tiling = ws->info.chip_class != GFX7 ||
@@ -626,7 +628,7 @@ static void radeon_winsys_destroy(struct radeon_winsys *rws)
 
    _mesa_hash_table_destroy(ws->bo_names, NULL);
    _mesa_hash_table_destroy(ws->bo_handles, NULL);
-   _mesa_hash_table_destroy(ws->bo_vas, NULL);
+   _mesa_hash_table_u64_destroy(ws->bo_vas, NULL);
    mtx_destroy(&ws->bo_handles_mutex);
    mtx_destroy(&ws->vm32.mutex);
    mtx_destroy(&ws->vm64.mutex);
@@ -800,6 +802,20 @@ static void radeon_pin_threads_to_L3_cache(struct radeon_winsys *ws,
    }
 }
 
+static bool radeon_ws_is_secure(struct radeon_winsys* ws)
+{
+    return false;
+}
+
+static bool radeon_cs_is_secure(struct radeon_cmdbuf* cs)
+{
+    return false;
+}
+
+static void radeon_cs_set_secure(struct radeon_cmdbuf* cs, bool enable)
+{
+}
+
 PUBLIC struct radeon_winsys *
 radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
                          radeon_screen_create_t screen_create)
@@ -871,6 +887,9 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
    ws->base.cs_request_feature = radeon_cs_request_feature;
    ws->base.query_value = radeon_query_value;
    ws->base.read_registers = radeon_read_registers;
+    ws->base.ws_is_secure = radeon_ws_is_secure;
+    ws->base.cs_is_secure = radeon_cs_is_secure;
+    ws->base.cs_set_secure = radeon_cs_set_secure;
 
    radeon_drm_bo_init_functions(ws);
    radeon_drm_cs_init_functions(ws);
@@ -881,7 +900,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
 
    ws->bo_names = util_hash_table_create_ptr_keys();
    ws->bo_handles = util_hash_table_create_ptr_keys();
-   ws->bo_vas = util_hash_table_create_ptr_keys();
+   ws->bo_vas = _mesa_hash_table_u64_create(NULL);
    (void) mtx_init(&ws->bo_handles_mutex, mtx_plain);
    (void) mtx_init(&ws->vm32.mutex, mtx_plain);
    (void) mtx_init(&ws->vm64.mutex, mtx_plain);

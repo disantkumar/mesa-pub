@@ -39,10 +39,12 @@ static const struct debug_named_value shader_debug_options[] = {
 	{"optmsgs",    IR3_DBG_OPTMSGS,    "Enable optimizer debug messages"},
 	{"forces2en",  IR3_DBG_FORCES2EN,  "Force s2en mode for tex sampler instructions"},
 	{"nouboopt",   IR3_DBG_NOUBOOPT,   "Disable lowering UBO to uniform"},
-#ifdef DEBUG
-	{"schedmsgs",  IR3_DBG_SCHEDMSGS,  "Enable scheduler debug messages"},
-#endif
 	{"nofp16",     IR3_DBG_NOFP16,     "Don't lower mediump to fp16"},
+#ifdef DEBUG
+	/* DEBUG-only options: */
+	{"schedmsgs",  IR3_DBG_SCHEDMSGS,  "Enable scheduler debug messages"},
+	{"ramsgs",     IR3_DBG_RAMSGS,     "Enable register-allocation debug messages"},
+#endif
 	DEBUG_NAMED_VALUE_END
 };
 
@@ -71,6 +73,11 @@ struct ir3_compiler * ir3_compiler_create(struct fd_device *dev, uint32_t gpu_id
 		compiler->unminify_coords = false;
 		compiler->txf_ms_with_isaml = false;
 		compiler->array_index_add_half = true;
+		/* Some a6xxs can apparently do 640 consts, but not all.  Need to
+		 * characterize this better across GPUs
+		 */
+		compiler->max_const = 512;
+		compiler->const_upload_unit = 4;
 	} else {
 		/* no special handling for "flat" */
 		compiler->flat_bypass = false;
@@ -78,6 +85,8 @@ struct ir3_compiler * ir3_compiler_create(struct fd_device *dev, uint32_t gpu_id
 		compiler->unminify_coords = true;
 		compiler->txf_ms_with_isaml = true;
 		compiler->array_index_add_half = false;
+		compiler->max_const = 512;
+		compiler->const_upload_unit = 8;
 	}
 
 	return compiler;

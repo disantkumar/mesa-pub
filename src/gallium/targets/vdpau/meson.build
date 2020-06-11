@@ -39,11 +39,10 @@ endif
 libvdpau_gallium = shared_library(
   'vdpau_gallium',
   'target.c',
-  c_args : c_vis_args,
-  cpp_args : cpp_vis_args,
+  gnu_symbol_visibility : 'hidden',
   link_args : [vdpau_link_args, ld_args_gc_sections],
   include_directories : [
-    inc_common, inc_util, inc_gallium_winsys, inc_gallium_drivers,
+    inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_util, inc_gallium_winsys, inc_gallium_drivers,
   ],
   link_whole : [libvdpau_st],
   link_with : [

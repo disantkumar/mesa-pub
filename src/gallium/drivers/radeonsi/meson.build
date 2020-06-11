@@ -103,27 +103,15 @@ si_driinfo_h = custom_target(
   capture : true,
 )
 
-gfx10_format_table_h = custom_target(
-  'gfx10_format_table.h',
-  input : files(
-    'gfx10_format_table.py',
-    '../../../util/format/u_format.csv', '../../../amd/registers/gfx10-rsrc.json'
-  ),
-  output : 'gfx10_format_table.h',
-  command : [prog_python, '@INPUT@'],
-  capture : true,
-  depend_files : ['../../../amd/registers/regdb.py']
-)
-
 libradeonsi = static_library(
   'radeonsi',
-  [files_libradeonsi, si_driinfo_h, sid_tables_h, gfx10_format_table_h],
+  [files_libradeonsi, si_driinfo_h, sid_tables_h],
   include_directories : [
     inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_amd_common, inc_amd_common_llvm,
     inc_gallium_drivers,
   ],
-  c_args : ['-Wstrict-overflow=0', c_vis_args],
-  cpp_args : [cpp_vis_args],
+  c_args : ['-Wstrict-overflow=0'],
+  gnu_symbol_visibility : 'hidden',
   dependencies : [dep_llvm, dep_clock, dep_libdrm_radeon, idep_nir_headers, idep_amdgfxregs_h],
 )
 

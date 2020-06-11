@@ -692,8 +692,12 @@ nir_lower_int64_op_to_options_mask(nir_op opcode)
       return nir_lower_divmod64;
    case nir_op_b2i64:
    case nir_op_i2b1:
+   case nir_op_i2i8:
+   case nir_op_i2i16:
    case nir_op_i2i32:
    case nir_op_i2i64:
+   case nir_op_u2u8:
+   case nir_op_u2u16:
    case nir_op_u2u32:
    case nir_op_u2u64:
    case nir_op_bcsel:
@@ -712,6 +716,12 @@ nir_lower_int64_op_to_options_mask(nir_op opcode)
    case nir_op_imax:
    case nir_op_umin:
    case nir_op_umax:
+   case nir_op_imin3:
+   case nir_op_imax3:
+   case nir_op_umin3:
+   case nir_op_umax3:
+   case nir_op_imed3:
+   case nir_op_umed3:
       return nir_lower_minmax64;
    case nir_op_iabs:
       return nir_lower_iabs64;
@@ -811,6 +821,18 @@ lower_int64_alu_instr(nir_builder *b, nir_instr *instr, void *_state)
       return lower_umin64(b, src[0], src[1]);
    case nir_op_umax:
       return lower_umax64(b, src[0], src[1]);
+   case nir_op_imin3:
+      return lower_imin64(b, src[0], lower_imin64(b, src[1], src[2]));
+   case nir_op_imax3:
+      return lower_imax64(b, src[0], lower_imax64(b, src[1], src[2]));
+   case nir_op_umin3:
+      return lower_umin64(b, src[0], lower_umin64(b, src[1], src[2]));
+   case nir_op_umax3:
+      return lower_umax64(b, src[0], lower_umax64(b, src[1], src[2]));
+   case nir_op_imed3:
+      return lower_imax64(b, lower_imin64(b, lower_imax64(b, src[0], src[1]), src[2]), lower_imin64(b, src[0], src[1]));
+   case nir_op_umed3:
+      return lower_umax64(b, lower_umin64(b, lower_umax64(b, src[0], src[1]), src[2]), lower_umin64(b, src[0], src[1]));
    case nir_op_iabs:
       return lower_iabs64(b, src[0]);
    case nir_op_ineg:
@@ -855,7 +877,11 @@ should_lower_int64_alu_instr(const nir_instr *instr, const void *_options)
 
    switch (alu->op) {
    case nir_op_i2b1:
+   case nir_op_i2i8:
+   case nir_op_i2i16:
    case nir_op_i2i32:
+   case nir_op_u2u8:
+   case nir_op_u2u16:
    case nir_op_u2u32:
       assert(alu->src[0].src.is_ssa);
       if (alu->src[0].src.ssa->bit_size != 64)

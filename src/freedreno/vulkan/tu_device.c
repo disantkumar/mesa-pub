@@ -39,10 +39,14 @@
 #include "compiler/glsl_types.h"
 #include "util/debug.h"
 #include "util/disk_cache.h"
+#include "util/u_atomic.h"
 #include "vk_format.h"
 #include "vk_util.h"
 
 #include "drm-uapi/msm_drm.h"
+
+/* for fd_get_driver/device_uuid() */
+#include "freedreno/common/freedreno_uuid.h"
 
 static int
 tu_device_get_cache_uuid(uint16_t family, void *uuid)
@@ -58,19 +62,6 @@ tu_device_get_cache_uuid(uint16_t family, void *uuid)
    memcpy((char *) uuid + 4, &f, 2);
    snprintf((char *) uuid + 6, VK_UUID_SIZE - 10, "tu");
    return 0;
-}
-
-static void
-tu_get_driver_uuid(void *uuid)
-{
-   memset(uuid, 0, VK_UUID_SIZE);
-   snprintf(uuid, VK_UUID_SIZE, "freedreno");
-}
-
-static void
-tu_get_device_uuid(void *uuid)
-{
-   memset(uuid, 0, VK_UUID_SIZE);
 }
 
 static VkResult
@@ -265,21 +256,26 @@ tu_physical_device_init(struct tu_physical_device *device,
 
    switch (device->gpu_id) {
    case 618:
+      device->ccu_offset_gmem = 0x7c000; /* 0x7e000 in some cases? */
+      device->ccu_offset_bypass = 0x10000;
       device->tile_align_w = 64;
-      device->tile_align_h = 16;
-      device->magic.RB_UNKNOWN_8E04_blit = 0x00100000;
-      device->magic.RB_CCU_CNTL_gmem     = 0x3e400004;
       device->magic.PC_UNKNOWN_9805 = 0x0;
       device->magic.SP_UNKNOWN_A0F8 = 0x0;
       break;
    case 630:
    case 640:
+      device->ccu_offset_gmem = 0xf8000;
+      device->ccu_offset_bypass = 0x20000;
       device->tile_align_w = 64;
-      device->tile_align_h = 16;
-      device->magic.RB_UNKNOWN_8E04_blit = 0x01000000;
-      device->magic.RB_CCU_CNTL_gmem     = 0x7c400004;
       device->magic.PC_UNKNOWN_9805 = 0x1;
       device->magic.SP_UNKNOWN_A0F8 = 0x1;
+      break;
+   case 650:
+      device->ccu_offset_gmem = 0x114000;
+      device->ccu_offset_bypass = 0x30000;
+      device->tile_align_w = 96;
+      device->magic.PC_UNKNOWN_9805 = 0x2;
+      device->magic.SP_UNKNOWN_A0F8 = 0x2;
       break;
    default:
       result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
@@ -302,10 +298,10 @@ tu_physical_device_init(struct tu_physical_device *device,
    fprintf(stderr, "WARNING: tu is not a conformant vulkan implementation, "
                    "testing use only.\n");
 
-   tu_get_driver_uuid(&device->device_uuid);
-   tu_get_device_uuid(&device->device_uuid);
+   fd_get_driver_uuid(device->driver_uuid);
+   fd_get_device_uuid(device->device_uuid, device->gpu_id);
 
-   tu_fill_device_extension_table(device, &device->supported_extensions);
+   tu_physical_device_get_supported_extensions(device, &device->supported_extensions);
 
    if (result != VK_SUCCESS) {
       vk_error(instance, result);
@@ -338,7 +334,7 @@ tu_physical_device_finish(struct tu_physical_device *device)
       close(device->master_fd);
 }
 
-static void *
+static VKAPI_ATTR void *
 default_alloc_func(void *pUserData,
                    size_t size,
                    size_t align,
@@ -347,7 +343,7 @@ default_alloc_func(void *pUserData,
    return malloc(size);
 }
 
-static void *
+static VKAPI_ATTR void *
 default_realloc_func(void *pUserData,
                      void *pOriginal,
                      size_t size,
@@ -357,7 +353,7 @@ default_realloc_func(void *pUserData,
    return realloc(pOriginal, size);
 }
 
-static void
+static VKAPI_ATTR void
 default_free_func(void *pUserData, void *pMemory)
 {
    free(pMemory);
@@ -377,6 +373,7 @@ static const struct debug_control tu_debug_options[] = {
    { "nobin", TU_DEBUG_NOBIN },
    { "sysmem", TU_DEBUG_SYSMEM },
    { "forcebin", TU_DEBUG_FORCEBIN },
+   { "noubwc", TU_DEBUG_NOUBWC },
    { NULL, 0 }
 };
 
@@ -440,7 +437,7 @@ tu_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       const char *ext_name = pCreateInfo->ppEnabledExtensionNames[i];
       int index = tu_get_instance_extension_index(ext_name);
 
-      if (index < 0 || !tu_supported_instance_extensions.extensions[index]) {
+      if (index < 0 || !tu_instance_extensions_supported.extensions[index]) {
          vk_free2(&default_alloc, pAllocator, instance);
          return vk_error(instance, VK_ERROR_EXTENSION_NOT_PRESENT);
       }
@@ -584,11 +581,11 @@ tu_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
    memset(pFeatures, 0, sizeof(*pFeatures));
 
    *pFeatures = (VkPhysicalDeviceFeatures) {
-      .robustBufferAccess = false,
+      .robustBufferAccess = true,
       .fullDrawIndexUint32 = true,
-      .imageCubeArray = false,
+      .imageCubeArray = true,
       .independentBlend = true,
-      .geometryShader = false,
+      .geometryShader = true,
       .tessellationShader = false,
       .sampleRateShading = true,
       .dualSrcBlend = true,
@@ -601,7 +598,7 @@ tu_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice,
       .depthBounds = false,
       .wideLines = false,
       .largePoints = false,
-      .alphaToOne = false,
+      .alphaToOne = true,
       .multiViewport = false,
       .samplerAnisotropy = true,
       .textureCompressionETC2 = true,
@@ -677,7 +674,7 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
          VkPhysicalDeviceSamplerYcbcrConversionFeatures *features =
             (VkPhysicalDeviceSamplerYcbcrConversionFeatures *) ext;
-         features->samplerYcbcrConversion = false;
+         features->samplerYcbcrConversion = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT: {
@@ -731,21 +728,16 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
                                VkPhysicalDeviceProperties *pProperties)
 {
    TU_FROM_HANDLE(tu_physical_device, pdevice, physicalDevice);
-   VkSampleCountFlags sample_counts = VK_SAMPLE_COUNT_1_BIT |
-      VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT;
+   VkSampleCountFlags sample_counts =
+      VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
 
-   /* make sure that the entire descriptor set is addressable with a signed
-    * 32-bit int. So the sum of all limits scaled by descriptor size has to
-    * be at most 2 GiB. the combined image & samples object count as one of
-    * both. This limit is for the pipeline layout, not for the set layout, but
-    * there is no set limit, so we just set a pipeline limit. I don't think
-    * any app is going to hit this soon. */
-   size_t max_descriptor_set_size =
-      ((1ull << 31) - 16 * MAX_DYNAMIC_BUFFERS) /
-      (32 /* uniform buffer, 32 due to potential space wasted on alignment */ +
-       32 /* storage buffer, 32 due to potential space wasted on alignment */ +
-       32 /* sampler, largest when combined with image */ +
-       64 /* sampled image */ + 64 /* storage image */);
+   /* I have no idea what the maximum size is, but the hardware supports very
+    * large numbers of descriptors (at least 2^16). This limit is based on
+    * CP_LOAD_STATE6, which has a 28-bit field for the DWORD offset, so that
+    * we don't have to think about what to do if that overflows, but really
+    * nothing is likely to get close to this.
+    */
+   const size_t max_descriptor_set_size = (1 << 28) / A6XX_TEX_CONST_DWORDS;
 
    VkPhysicalDeviceLimits limits = {
       .maxImageDimension1D = (1 << 14),
@@ -754,7 +746,7 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxImageDimensionCube = (1 << 14),
       .maxImageArrayLayers = (1 << 11),
       .maxTexelBufferElements = 128 * 1024 * 1024,
-      .maxUniformBufferRange = UINT32_MAX,
+      .maxUniformBufferRange = MAX_UNIFORM_BUFFER_RANGE,
       .maxStorageBufferRange = MAX_STORAGE_BUFFER_RANGE,
       .maxPushConstantsSize = MAX_PUSH_CONSTANTS_SIZE,
       .maxMemoryAllocationCount = UINT32_MAX,
@@ -767,7 +759,7 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxPerStageDescriptorStorageBuffers = max_descriptor_set_size,
       .maxPerStageDescriptorSampledImages = max_descriptor_set_size,
       .maxPerStageDescriptorStorageImages = max_descriptor_set_size,
-      .maxPerStageDescriptorInputAttachments = max_descriptor_set_size,
+      .maxPerStageDescriptorInputAttachments = MAX_RTS,
       .maxPerStageResources = max_descriptor_set_size,
       .maxDescriptorSetSamplers = max_descriptor_set_size,
       .maxDescriptorSetUniformBuffers = max_descriptor_set_size,
@@ -776,10 +768,10 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxDescriptorSetStorageBuffersDynamic = MAX_DYNAMIC_STORAGE_BUFFERS,
       .maxDescriptorSetSampledImages = max_descriptor_set_size,
       .maxDescriptorSetStorageImages = max_descriptor_set_size,
-      .maxDescriptorSetInputAttachments = max_descriptor_set_size,
+      .maxDescriptorSetInputAttachments = MAX_RTS,
       .maxVertexInputAttributes = 32,
       .maxVertexInputBindings = 32,
-      .maxVertexInputAttributeOffset = 2047,
+      .maxVertexInputAttributeOffset = 4095,
       .maxVertexInputBindingStride = 2048,
       .maxVertexOutputComponents = 128,
       .maxTessellationGenerationLevel = 64,
@@ -790,12 +782,12 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxTessellationControlTotalOutputComponents = 4096,
       .maxTessellationEvaluationInputComponents = 128,
       .maxTessellationEvaluationOutputComponents = 128,
-      .maxGeometryShaderInvocations = 127,
+      .maxGeometryShaderInvocations = 32,
       .maxGeometryInputComponents = 64,
       .maxGeometryOutputComponents = 128,
       .maxGeometryOutputVertices = 256,
       .maxGeometryTotalOutputComponents = 1024,
-      .maxFragmentInputComponents = 128,
+      .maxFragmentInputComponents = 124,
       .maxFragmentOutputAttachments = 8,
       .maxFragmentDualSrcAttachments = 1,
       .maxFragmentCombinedOutputResources = 8,
@@ -803,12 +795,12 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .maxComputeWorkGroupCount = { 65535, 65535, 65535 },
       .maxComputeWorkGroupInvocations = 2048,
       .maxComputeWorkGroupSize = { 2048, 2048, 2048 },
-      .subPixelPrecisionBits = 4 /* FIXME */,
-      .subTexelPrecisionBits = 4 /* FIXME */,
-      .mipmapPrecisionBits = 4 /* FIXME */,
+      .subPixelPrecisionBits = 8,
+      .subTexelPrecisionBits = 8,
+      .mipmapPrecisionBits = 8,
       .maxDrawIndexedIndexValue = UINT32_MAX,
       .maxDrawIndirectCount = UINT32_MAX,
-      .maxSamplerLodBias = 16,
+      .maxSamplerLodBias = 4095.0 / 256.0, /* [-16, 15.99609375] */
       .maxSamplerAnisotropy = 16,
       .maxViewports = MAX_VIEWPORTS,
       .maxViewportDimensions = { (1 << 14), (1 << 14) },
@@ -816,15 +808,15 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .viewportSubPixelBits = 8,
       .minMemoryMapAlignment = 4096, /* A page */
       .minTexelBufferOffsetAlignment = 64,
-      .minUniformBufferOffsetAlignment = 4,
-      .minStorageBufferOffsetAlignment = 4,
-      .minTexelOffset = -32,
-      .maxTexelOffset = 31,
+      .minUniformBufferOffsetAlignment = 64,
+      .minStorageBufferOffsetAlignment = 64,
+      .minTexelOffset = -16,
+      .maxTexelOffset = 15,
       .minTexelGatherOffset = -32,
       .maxTexelGatherOffset = 31,
-      .minInterpolationOffset = -2,
-      .maxInterpolationOffset = 2,
-      .subPixelInterpolationOffsetBits = 8,
+      .minInterpolationOffset = -0.5,
+      .maxInterpolationOffset = 0.4375,
+      .subPixelInterpolationOffsetBits = 4,
       .maxFramebufferWidth = (1 << 14),
       .maxFramebufferHeight = (1 << 14),
       .maxFramebufferLayers = (1 << 10),
@@ -839,8 +831,8 @@ tu_GetPhysicalDeviceProperties(VkPhysicalDevice physicalDevice,
       .sampledImageStencilSampleCounts = sample_counts,
       .storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxSampleMaskWords = 1,
-      .timestampComputeAndGraphics = false, /* FINISHME */
-      .timestampPeriod = 1,
+      .timestampComputeAndGraphics = true,
+      .timestampPeriod = 1000000000.0 / 19200000.0, /* CP_ALWAYS_ON_COUNTER is fixed 19.2MHz */
       .maxClipDistances = 8,
       .maxCullDistances = 8,
       .maxCombinedClipAndCullDistances = 8,
@@ -928,13 +920,35 @@ tu_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          properties->maxTransformFeedbackStreamDataSize = 512;
          properties->maxTransformFeedbackBufferDataSize = 512;
          properties->maxTransformFeedbackBufferDataStride = 512;
-         /* TODO: enable xfb query */
-         properties->transformFeedbackQueries = false;
+         properties->transformFeedbackQueries = true;
          properties->transformFeedbackStreamsLinesTriangles = false;
          properties->transformFeedbackRasterizationStreamSelect = false;
          properties->transformFeedbackDraw = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT: {
+         VkPhysicalDeviceSampleLocationsPropertiesEXT *properties =
+            (VkPhysicalDeviceSampleLocationsPropertiesEXT *)ext;
+         properties->sampleLocationSampleCounts = 0;
+         if (pdevice->supported_extensions.EXT_sample_locations) {
+            properties->sampleLocationSampleCounts =
+               VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
+         }
+         properties->maxSampleLocationGridSize = (VkExtent2D) { 1 , 1 };
+         properties->sampleLocationCoordinateRange[0] = 0.0f;
+         properties->sampleLocationCoordinateRange[1] = 0.9375f;
+         properties->sampleLocationSubPixelBits = 4;
+         properties->variableSampleLocations = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_FILTER_MINMAX_PROPERTIES: {
+         VkPhysicalDeviceSamplerFilterMinmaxProperties *properties =
+            (VkPhysicalDeviceSamplerFilterMinmaxProperties *)ext;
+         properties->filterMinmaxImageComponentMapping = true;
+         properties->filterMinmaxSingleComponentFormats = true;
+         break;
+      }
+
       default:
          break;
       }
@@ -945,7 +959,7 @@ static const VkQueueFamilyProperties tu_queue_family_properties = {
    .queueFlags =
       VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
    .queueCount = 1,
-   .timestampValidBits = 0, /* FINISHME */
+   .timestampValidBits = 48,
    .minImageTransferGranularity = { 1, 1, 1 },
 };
 
@@ -1195,17 +1209,17 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!device->compiler)
       goto fail_queues;
 
-#define VSC_DATA_SIZE(pitch)  ((pitch) * 32 + 0x100)  /* extra size to store VSC_SIZE */
-#define VSC_DATA2_SIZE(pitch) ((pitch) * 32)
+#define VSC_DRAW_STRM_SIZE(pitch)  ((pitch) * 32 + 0x100)  /* extra size to store VSC_SIZE */
+#define VSC_PRIM_STRM_SIZE(pitch) ((pitch) * 32)
 
-   device->vsc_data_pitch = 0x440 * 4;
-   device->vsc_data2_pitch = 0x1040 * 4;
+   device->vsc_draw_strm_pitch = 0x440 * 4;
+   device->vsc_prim_strm_pitch = 0x1040 * 4;
 
-   result = tu_bo_init_new(device, &device->vsc_data, VSC_DATA_SIZE(device->vsc_data_pitch));
+   result = tu_bo_init_new(device, &device->vsc_draw_strm, VSC_DRAW_STRM_SIZE(device->vsc_draw_strm_pitch));
    if (result != VK_SUCCESS)
       goto fail_vsc_data;
 
-   result = tu_bo_init_new(device, &device->vsc_data2, VSC_DATA2_SIZE(device->vsc_data2_pitch));
+   result = tu_bo_init_new(device, &device->vsc_prim_strm, VSC_PRIM_STRM_SIZE(device->vsc_prim_strm_pitch));
    if (result != VK_SUCCESS)
       goto fail_vsc_data2;
 
@@ -1234,6 +1248,9 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
 
    device->mem_cache = tu_pipeline_cache_from_handle(pc);
 
+   for (unsigned i = 0; i < ARRAY_SIZE(device->scratch_bos); i++)
+      mtx_init(&device->scratch_bos[i].construct_mtx, mtx_plain);
+
    *pDevice = tu_device_to_handle(device);
    return VK_SUCCESS;
 
@@ -1242,10 +1259,10 @@ fail_border_color_map:
    tu_bo_finish(device, &device->border_color);
 
 fail_border_color:
-   tu_bo_finish(device, &device->vsc_data2);
+   tu_bo_finish(device, &device->vsc_prim_strm);
 
 fail_vsc_data2:
-   tu_bo_finish(device, &device->vsc_data);
+   tu_bo_finish(device, &device->vsc_draw_strm);
 
 fail_vsc_data:
    ralloc_free(device->compiler);
@@ -1270,14 +1287,19 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    if (!device)
       return;
 
-   tu_bo_finish(device, &device->vsc_data);
-   tu_bo_finish(device, &device->vsc_data2);
+   tu_bo_finish(device, &device->vsc_draw_strm);
+   tu_bo_finish(device, &device->vsc_prim_strm);
 
    for (unsigned i = 0; i < TU_MAX_QUEUE_FAMILIES; i++) {
       for (unsigned q = 0; q < device->queue_count[i]; q++)
          tu_queue_finish(&device->queues[i][q]);
       if (device->queue_count[i])
          vk_free(&device->alloc, device->queues[i]);
+   }
+
+   for (unsigned i = 0; i < ARRAY_SIZE(device->scratch_bos); i++) {
+      if (device->scratch_bos[i].initialized)
+         tu_bo_finish(device, &device->scratch_bos[i].bo);
    }
 
    /* the compiler does not use pAllocator */
@@ -1287,6 +1309,51 @@ tu_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    tu_DestroyPipelineCache(tu_device_to_handle(device), pc, NULL);
 
    vk_free(&device->alloc, device);
+}
+
+VkResult
+tu_get_scratch_bo(struct tu_device *dev, uint64_t size, struct tu_bo **bo)
+{
+   unsigned size_log2 = MAX2(util_logbase2_ceil64(size), MIN_SCRATCH_BO_SIZE_LOG2);
+   unsigned index = size_log2 - MIN_SCRATCH_BO_SIZE_LOG2;
+   assert(index < ARRAY_SIZE(dev->scratch_bos));
+
+   for (unsigned i = index; i < ARRAY_SIZE(dev->scratch_bos); i++) {
+      if (p_atomic_read(&dev->scratch_bos[i].initialized)) {
+         /* Fast path: just return the already-allocated BO. */
+         *bo = &dev->scratch_bos[i].bo;
+         return VK_SUCCESS;
+      }
+   }
+
+   /* Slow path: actually allocate the BO. We take a lock because the process
+    * of allocating it is slow, and we don't want to block the CPU while it
+    * finishes.
+   */
+   mtx_lock(&dev->scratch_bos[index].construct_mtx);
+
+   /* Another thread may have allocated it already while we were waiting on
+    * the lock. We need to check this in order to avoid double-allocating.
+    */
+   if (dev->scratch_bos[index].initialized) {
+      mtx_unlock(&dev->scratch_bos[index].construct_mtx);
+      *bo = &dev->scratch_bos[index].bo;
+      return VK_SUCCESS;
+   }
+
+   unsigned bo_size = 1ull << size_log2;
+   VkResult result = tu_bo_init_new(dev, &dev->scratch_bos[index].bo, bo_size);
+   if (result != VK_SUCCESS) {
+      mtx_unlock(&dev->scratch_bos[index].construct_mtx);
+      return result;
+   }
+
+   p_atomic_set(&dev->scratch_bos[index].initialized, true);
+
+   mtx_unlock(&dev->scratch_bos[index].construct_mtx);
+
+   *bo = &dev->scratch_bos[index].bo;
+   return VK_SUCCESS;
 }
 
 VkResult
@@ -1448,6 +1515,44 @@ tu_DeviceWaitIdle(VkDevice _device)
 }
 
 VkResult
+tu_ImportSemaphoreFdKHR(VkDevice _device,
+                        const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo)
+{
+   tu_stub();
+
+   return VK_SUCCESS;
+}
+
+VkResult
+tu_GetSemaphoreFdKHR(VkDevice _device,
+                     const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
+                     int *pFd)
+{
+   tu_stub();
+
+   return VK_SUCCESS; 
+}
+
+VkResult
+tu_ImportFenceFdKHR(VkDevice _device,
+                    const VkImportFenceFdInfoKHR *pImportFenceFdInfo)
+{
+   tu_stub();
+
+   return VK_SUCCESS;
+}
+
+VkResult
+tu_GetFenceFdKHR(VkDevice _device,
+                 const VkFenceGetFdInfoKHR *pGetFdInfo,
+                 int *pFd)
+{
+   tu_stub();
+
+   return VK_SUCCESS;
+}
+
+VkResult
 tu_EnumerateInstanceExtensionProperties(const char *pLayerName,
                                         uint32_t *pPropertyCount,
                                         VkExtensionProperties *pProperties)
@@ -1459,7 +1564,7 @@ tu_EnumerateInstanceExtensionProperties(const char *pLayerName,
       return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
 
    for (int i = 0; i < TU_INSTANCE_EXTENSION_COUNT; i++) {
-      if (tu_supported_instance_extensions.extensions[i]) {
+      if (tu_instance_extensions_supported.extensions[i]) {
          vk_outarray_append(&out, prop) { *prop = tu_instance_extensions[i]; }
       }
    }
@@ -1679,7 +1784,7 @@ tu_GetBufferMemoryRequirements(VkDevice _device,
    TU_FROM_HANDLE(tu_buffer, buffer, _buffer);
 
    pMemoryRequirements->memoryTypeBits = 1;
-   pMemoryRequirements->alignment = 16;
+   pMemoryRequirements->alignment = 64;
    pMemoryRequirements->size =
       align64(buffer->size, pMemoryRequirements->alignment);
 }
@@ -1703,7 +1808,7 @@ tu_GetImageMemoryRequirements(VkDevice _device,
 
    pMemoryRequirements->memoryTypeBits = 1;
    pMemoryRequirements->size = image->layout.size;
-   pMemoryRequirements->alignment = image->alignment;
+   pMemoryRequirements->alignment = image->layout.base_align;
 }
 
 void
@@ -1972,14 +2077,6 @@ tu_DestroyBuffer(VkDevice _device,
    vk_free2(&device->alloc, pAllocator, buffer);
 }
 
-static uint32_t
-tu_surface_max_layer_count(struct tu_image_view *iview)
-{
-   return iview->type == VK_IMAGE_VIEW_TYPE_3D
-             ? iview->extent.depth
-             : (iview->base_layer + iview->layer_count);
-}
-
 VkResult
 tu_CreateFramebuffer(VkDevice _device,
                      const VkFramebufferCreateInfo *pCreateInfo,
@@ -2006,11 +2103,6 @@ tu_CreateFramebuffer(VkDevice _device,
       VkImageView _iview = pCreateInfo->pAttachments[i];
       struct tu_image_view *iview = tu_image_view_from_handle(_iview);
       framebuffer->attachments[i].attachment = iview;
-
-      framebuffer->width = MIN2(framebuffer->width, iview->extent.width);
-      framebuffer->height = MIN2(framebuffer->height, iview->extent.height);
-      framebuffer->layers =
-         MIN2(framebuffer->layers, tu_surface_max_layer_count(iview));
    }
 
    *pFramebuffer = tu_framebuffer_to_handle(framebuffer);
@@ -2059,7 +2151,8 @@ tu6_tex_filter(VkFilter filter, unsigned aniso)
       return A6XX_TEX_NEAREST;
    case VK_FILTER_LINEAR:
       return aniso ? A6XX_TEX_ANISO : A6XX_TEX_LINEAR;
-   case VK_FILTER_CUBIC_IMG:
+   case VK_FILTER_CUBIC_EXT:
+      return A6XX_TEX_CUBIC;
    default:
       unreachable("illegal texture filter");
       break;
@@ -2072,14 +2165,29 @@ tu6_compare_func(VkCompareOp op)
    return (enum adreno_compare_func) op;
 }
 
+static inline enum a6xx_reduction_mode
+tu6_reduction_mode(VkSamplerReductionMode reduction_mode)
+{
+   /* note: vulkan enum matches hw */
+
+   return (enum a6xx_reduction_mode) reduction_mode;
+}
+
 static void
 tu_init_sampler(struct tu_device *device,
                 struct tu_sampler *sampler,
                 const VkSamplerCreateInfo *pCreateInfo)
 {
+   const struct VkSamplerReductionModeCreateInfo *reduction =
+      vk_find_struct_const(pCreateInfo->pNext, SAMPLER_REDUCTION_MODE_CREATE_INFO);
+   const struct VkSamplerYcbcrConversionInfo *ycbcr_conversion =
+      vk_find_struct_const(pCreateInfo->pNext,  SAMPLER_YCBCR_CONVERSION_INFO);
+
    unsigned aniso = pCreateInfo->anisotropyEnable ?
       util_last_bit(MIN2((uint32_t)pCreateInfo->maxAnisotropy >> 1, 8)) : 0;
    bool miplinear = (pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR);
+   float min_lod = CLAMP(pCreateInfo->minLod, 0.0f, 4095.0f / 256.0f);
+   float max_lod = CLAMP(pCreateInfo->maxLod, 0.0f, 4095.0f / 256.0f);
 
    sampler->descriptor[0] =
       COND(miplinear, A6XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR) |
@@ -2093,8 +2201,8 @@ tu_init_sampler(struct tu_device *device,
    sampler->descriptor[1] =
       /* COND(!cso->seamless_cube_map, A6XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF) | */
       COND(pCreateInfo->unnormalizedCoordinates, A6XX_TEX_SAMP_1_UNNORM_COORDS) |
-      A6XX_TEX_SAMP_1_MIN_LOD(pCreateInfo->minLod) |
-      A6XX_TEX_SAMP_1_MAX_LOD(pCreateInfo->maxLod) |
+      A6XX_TEX_SAMP_1_MIN_LOD(min_lod) |
+      A6XX_TEX_SAMP_1_MAX_LOD(max_lod) |
       COND(pCreateInfo->compareEnable,
            A6XX_TEX_SAMP_1_COMPARE_FUNC(tu6_compare_func(pCreateInfo->compareOp)));
    /* This is an offset into the border_color BO, which we fill with all the
@@ -2105,6 +2213,19 @@ tu_init_sampler(struct tu_device *device,
       A6XX_TEX_SAMP_2_BCOLOR_OFFSET((unsigned) pCreateInfo->borderColor *
                                     sizeof(struct bcolor_entry));
    sampler->descriptor[3] = 0;
+
+   if (reduction) {
+      sampler->descriptor[2] |= A6XX_TEX_SAMP_2_REDUCTION_MODE(
+         tu6_reduction_mode(reduction->reductionMode));
+   }
+
+   sampler->ycbcr_sampler = ycbcr_conversion ?
+      tu_sampler_ycbcr_conversion_from_handle(ycbcr_conversion->conversion) : NULL;
+
+   if (sampler->ycbcr_sampler &&
+       sampler->ycbcr_sampler->chroma_filter == VK_FILTER_LINEAR) {
+      sampler->descriptor[2] |= A6XX_TEX_SAMP_2_CHROMA_LINEAR;
+   }
 
    /* TODO:
     * A6XX_TEX_SAMP_1_MIPFILTER_LINEAR_FAR disables mipmapping, but vk has no NONE mipfilter?
@@ -2300,4 +2421,17 @@ tu_GetDeviceGroupPeerMemoryFeatures(
                           VK_PEER_MEMORY_FEATURE_COPY_DST_BIT |
                           VK_PEER_MEMORY_FEATURE_GENERIC_SRC_BIT |
                           VK_PEER_MEMORY_FEATURE_GENERIC_DST_BIT;
+}
+
+void tu_GetPhysicalDeviceMultisamplePropertiesEXT(
+   VkPhysicalDevice                            physicalDevice,
+   VkSampleCountFlagBits                       samples,
+   VkMultisamplePropertiesEXT*                 pMultisampleProperties)
+{
+   TU_FROM_HANDLE(tu_physical_device, pdevice, physicalDevice);
+
+   if (samples <= VK_SAMPLE_COUNT_4_BIT && pdevice->supported_extensions.EXT_sample_locations)
+      pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 1, 1 };
+   else
+      pMultisampleProperties->maxSampleLocationGridSize = (VkExtent2D){ 0, 0 };
 }

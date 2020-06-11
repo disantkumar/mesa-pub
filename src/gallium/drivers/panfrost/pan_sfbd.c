@@ -173,16 +173,12 @@ panfrost_sfbd_set_zsbuf(
                 return;
 
         if (panfrost_is_z24s8_variant(surf->format)) {
-
                 /* Stencil data is interleaved with depth */
                 fb->stencil_buffer = fb->depth_buffer;
                 fb->stencil_stride = fb->depth_stride;
-        } else if (surf->format == PIPE_FORMAT_Z32_UNORM ||
-                   surf->format == PIPE_FORMAT_Z32_FLOAT) {
-
+        } else if (surf->format == PIPE_FORMAT_Z32_FLOAT) {
                 /* No stencil, nothing to do */
         } else if (surf->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) {
-
                 /* Stencil data in separate buffer */
                 struct panfrost_resource *stencil = rsrc->separate_stencil;
                 struct panfrost_slice stencil_slice = stencil->slices[level];
@@ -199,7 +195,7 @@ panfrost_emit_sfbd(struct panfrost_batch *batch, unsigned vertex_count)
 {
         struct panfrost_context *ctx = batch->ctx;
         struct pipe_context *gallium = (struct pipe_context *) ctx;
-        struct panfrost_screen *screen = pan_screen(gallium->screen);
+        struct panfrost_device *dev = pan_device(gallium->screen);
 
         unsigned width = batch->key.width;
         unsigned height = batch->key.height;
@@ -214,7 +210,7 @@ panfrost_emit_sfbd(struct panfrost_batch *batch, unsigned vertex_count)
                 .height = MALI_POSITIVE(height),
                 .shared_memory = {
                         .shared_workgroup_count = ~0,
-                        .scratchpad = panfrost_batch_get_scratchpad(batch, shift, screen->thread_tls_alloc, screen->core_count)->gpu,
+                        .scratchpad = panfrost_batch_get_scratchpad(batch, shift, dev->thread_tls_alloc, dev->core_count)->gpu,
                 },
                 .format = {
                         .unk3 = 0x3,

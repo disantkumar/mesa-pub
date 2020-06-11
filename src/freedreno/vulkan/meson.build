@@ -40,8 +40,7 @@ tu_extensions_c = custom_target(
 )
 
 libtu_files = files(
-  'tu_blit.c',
-  'tu_blit.h',
+  'tu_clear_blit.c',
   'tu_cmd_buffer.c',
   'tu_cs.c',
   'tu_cs.h',
@@ -52,11 +51,6 @@ libtu_files = files(
   'tu_fence.c',
   'tu_formats.c',
   'tu_image.c',
-  'tu_meta_blit.c',
-  'tu_meta_buffer.c',
-  'tu_meta_clear.c',
-  'tu_meta_copy.c',
-  'tu_meta_resolve.c',
   'tu_pass.c',
   'tu_pipeline.c',
   'tu_pipeline_cache.c',
@@ -92,6 +86,12 @@ if with_platform_drm
   libtu_files += files('tu_wsi_display.c')
 endif
 
+if with_platform_android
+  tu_flags += '-DVK_USE_PLATFORM_ANDROID_KHR'
+  libtu_files += files('tu_android.c')
+  tu_deps += [dep_android]
+endif
+
 if with_xlib_lease
   tu_deps += [dep_xcb_xrandr, dep_xlib_xrandr]
   tu_flags += '-DVK_USE_PLATFORM_XLIB_XRANDR_EXT'
@@ -101,7 +101,12 @@ libvulkan_freedreno = shared_library(
   'vulkan_freedreno',
   [libtu_files, tu_entrypoints, tu_extensions_c, freedreno_xml_header_files],
   include_directories : [
-    inc_common,
+    inc_include,
+    inc_src,
+    inc_mapi,
+    inc_mesa,
+    inc_gallium,
+    inc_gallium_aux,
     inc_compiler,
     inc_vulkan_wsi,
     inc_freedreno,
@@ -113,10 +118,10 @@ libvulkan_freedreno = shared_library(
     libfreedreno_layout,
   ],
   dependencies : [
+    idep_libfreedreno_common,
     dep_dl,
     dep_elf,
     dep_libdrm,
-    dep_llvm,
     dep_m,
     dep_thread,
     dep_valgrind,
@@ -125,7 +130,8 @@ libvulkan_freedreno = shared_library(
     idep_vulkan_util,
     idep_mesautil,
   ],
-  c_args : [c_vis_args, no_override_init_args, tu_flags],
+  c_args : [no_override_init_args, tu_flags],
+  gnu_symbol_visibility : 'hidden',
   link_args : [ld_args_bsymbolic, ld_args_gc_sections],
   install : true,
 )

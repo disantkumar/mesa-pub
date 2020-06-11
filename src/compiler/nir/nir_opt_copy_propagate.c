@@ -26,7 +26,6 @@
  */
 
 #include "nir.h"
-#include <main/imports.h>
 
 /**
  * SSA-based copy propagation
@@ -61,9 +60,8 @@ static bool is_vec(nir_alu_instr *instr)
          return false;
    }
 
-   return instr->op == nir_op_vec2 ||
-          instr->op == nir_op_vec3 ||
-          instr->op == nir_op_vec4;
+   assert(instr->dest.dest.is_ssa);
+   return nir_op_is_vec(instr->op);
 }
 
 static bool
@@ -275,9 +273,7 @@ nir_copy_prop_impl(nir_function_impl *impl)
       nir_metadata_preserve(impl, nir_metadata_block_index |
                                   nir_metadata_dominance);
    } else {
-#ifndef NDEBUG
-      impl->valid_metadata &= ~nir_metadata_not_properly_reset;
-#endif
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;
