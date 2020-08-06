@@ -59,7 +59,7 @@ fs_visitor::nir_setup_outputs()
     * allocating them.  With ARB_enhanced_layouts, multiple output variables
     * may occupy the same slot, but have different type sizes.
     */
-   nir_foreach_variable(var, &nir->outputs) {
+   nir_foreach_shader_out_variable(var, nir) {
       const int loc = var->data.driver_location;
       const unsigned var_vec4s =
          var->data.compact ? DIV_ROUND_UP(glsl_get_length(var->type), 4)
@@ -5477,7 +5477,7 @@ fs_visitor::nir_emit_global_atomic_float(const fs_builder &bld,
       data = tmp;
    }
 
-   bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL,
+   bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT_LOGICAL,
             dest, addr, data, brw_imm_ud(op));
 }
 

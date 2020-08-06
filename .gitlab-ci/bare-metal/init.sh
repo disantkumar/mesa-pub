@@ -7,20 +7,41 @@ mount -t sysfs none /sys
 mount -t devtmpfs none /dev || echo possibly already mounted
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /tmp
 
 . /set-job-env-vars.sh
 
+# Store Mesa's disk cache under /tmp, rather than sending it out over NFS.
+export XDG_CACHE_HOME=/tmp
+
 echo "nameserver 8.8.8.8" > /etc/resolv.conf
 
-export DEQP_SKIPS=deqp-skips.txt
-if [ -e /install/deqp-expected-fails.txt ]; then
-  export DEQP_EXPECTED_FAILS=deqp-expected-fails.txt
+# Not all DUTs have network
+sntp -sS pool.ntp.org || true
+
+# Overwrite traces.yml file with the baremetal version
+cp /install/traces-baremetal.yml /install/traces.yml
+
+# Start a little daemon to capture the first devcoredump we encounter.  (They
+# expire after 5 minutes, so we poll for them).
+./capture-devcoredump.sh &
+
+if sh $BARE_METAL_TEST_SCRIPT; then
+  OK=1
+else
+  OK=0
 fi
 
-if sh /deqp/deqp-runner.sh; then
-    echo "DEQP RESULT: pass"
+# upload artifacts via webdav
+WEBDAV=$(cat /proc/cmdline | tr " " "\n" | grep webdav | cut -d '=' -f 2 || true)
+if [ -n "$WEBDAV" ]; then
+  find /results -type f -exec curl -T {} $WEBDAV/{} \;
+fi
+
+if [ $OK -eq 1 ]; then
+    echo "bare-metal result: pass"
 else
-    echo "DEQP RESULT: fail"
+    echo "bare-metal result: fail"
 fi
 
 # Wait until the job would have timed out anyway, so we don't spew a "init

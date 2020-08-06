@@ -53,6 +53,8 @@
 struct ir3_postsched_ctx {
 	struct ir3 *ir;
 
+	struct ir3_shader_variant *v;
+
 	void *mem_ctx;
 	struct ir3_block *block;           /* the current block */
 	struct dag *dag;
@@ -460,7 +462,7 @@ calculate_forward_deps(struct ir3_postsched_ctx *ctx)
 	struct ir3_postsched_deps_state state = {
 			.ctx = ctx,
 			.direction = F,
-			.merged = ctx->ir->compiler->gpu_id >= 600,
+			.merged = ctx->v->mergedregs,
 	};
 
 	foreach_instr (instr, &ctx->unscheduled_list) {
@@ -474,7 +476,7 @@ calculate_reverse_deps(struct ir3_postsched_ctx *ctx)
 	struct ir3_postsched_deps_state state = {
 			.ctx = ctx,
 			.direction = R,
-			.merged = ctx->ir->compiler->gpu_id >= 600,
+			.merged = ctx->v->mergedregs,
 	};
 
 	foreach_instr_rev (instr, &ctx->unscheduled_list) {
@@ -581,6 +583,8 @@ static void
 sched_block(struct ir3_postsched_ctx *ctx, struct ir3_block *block)
 {
 	ctx->block = block;
+	ctx->tex_delay = 0;
+	ctx->sfu_delay = 0;
 
 	/* move all instructions to the unscheduled list, and
 	 * empty the block's instruction list (to which we will
@@ -699,10 +703,11 @@ cleanup_self_movs(struct ir3 *ir)
 }
 
 bool
-ir3_postsched(struct ir3 *ir)
+ir3_postsched(struct ir3 *ir, struct ir3_shader_variant *v)
 {
 	struct ir3_postsched_ctx ctx = {
 			.ir = ir,
+			.v  = v,
 	};
 
 	ir3_remove_nops(ir);

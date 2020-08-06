@@ -54,7 +54,8 @@ disable_rb_aux_buffer(struct iris_context *ice,
 
    /* We only need to worry about color compression and fast clears. */
    if (tex_res->aux.usage != ISL_AUX_USAGE_CCS_D &&
-       tex_res->aux.usage != ISL_AUX_USAGE_CCS_E)
+       tex_res->aux.usage != ISL_AUX_USAGE_CCS_E &&
+       tex_res->aux.usage != ISL_AUX_USAGE_GEN12_CCS_E)
       return false;
 
    for (unsigned i = 0; i < cso_fb->nr_cbufs; i++) {
@@ -229,8 +230,7 @@ iris_predraw_resolve_framebuffer(struct iris_context *ice,
       }
    }
 
-   if ((ice->state.dirty & IRIS_DIRTY_BLEND_STATE) ||
-       (ice->state.stage_dirty & IRIS_STAGE_DIRTY_BINDINGS_FS)) {
+   if (ice->state.stage_dirty & IRIS_STAGE_DIRTY_BINDINGS_FS) {
       for (unsigned i = 0; i < cso_fb->nr_cbufs; i++) {
          struct iris_surface *surf = (void *) cso_fb->cbufs[i];
          if (!surf)
@@ -240,7 +240,6 @@ iris_predraw_resolve_framebuffer(struct iris_context *ice,
 
          enum isl_aux_usage aux_usage =
             iris_resource_render_aux_usage(ice, res, surf->view.format,
-                                           ice->state.blend_enables & (1u << i),
                                            draw_aux_buffer_disabled[i]);
 
          if (ice->state.draw_aux_usage[i] != aux_usage) {
@@ -310,8 +309,7 @@ iris_postdraw_update_resolve_tracking(struct iris_context *ice,
    }
 
    bool may_have_resolved_color =
-      (ice->state.dirty & IRIS_DIRTY_BLEND_STATE) ||
-      (ice->state.stage_dirty & IRIS_STAGE_DIRTY_BINDINGS_FS);
+      ice->state.stage_dirty & IRIS_STAGE_DIRTY_BINDINGS_FS;
 
    for (unsigned i = 0; i < cso_fb->nr_cbufs; i++) {
       struct iris_surface *surf = (void *) cso_fb->cbufs[i];
@@ -424,8 +422,7 @@ iris_resolve_color(struct iris_context *ice,
                            1, resolve_op);
    } else {
       blorp_ccs_resolve(&blorp_batch, &surf, level, layer, 1,
-                        isl_format_srgb_to_linear(res->surf.format),
-                        resolve_op);
+                        res->surf.format, resolve_op);
    }
    blorp_batch_finish(&blorp_batch);
 
@@ -455,32 +452,10 @@ iris_mcs_partial_resolve(struct iris_context *ice,
    struct blorp_batch blorp_batch;
    iris_batch_sync_region_start(batch);
    blorp_batch_init(&ice->blorp, &blorp_batch, batch, 0);
-   blorp_mcs_partial_resolve(&blorp_batch, &surf,
-                             isl_format_srgb_to_linear(res->surf.format),
+   blorp_mcs_partial_resolve(&blorp_batch, &surf, res->surf.format,
                              start_layer, num_layers);
    blorp_batch_finish(&blorp_batch);
    iris_batch_sync_region_end(batch);
-}
-
-
-/**
- * Return true if the format that will be used to access the resource is
- * CCS_E-compatible with the resource's linear/non-sRGB format.
- *
- * Why use the linear format?  Well, although the resourcemay be specified
- * with an sRGB format, the usage of that color space/format can be toggled.
- * Since our HW tends to support more linear formats than sRGB ones, we use
- * this format variant for check for CCS_E compatibility.
- */
-static bool
-format_ccs_e_compat_with_resource(const struct gen_device_info *devinfo,
-                                  const struct iris_resource *res,
-                                  enum isl_format access_format)
-{
-   assert(res->aux.usage == ISL_AUX_USAGE_CCS_E);
-
-   enum isl_format isl_format = isl_format_srgb_to_linear(res->surf.format);
-   return isl_formats_are_ccs_e_compatible(devinfo, isl_format, access_format);
 }
 
 bool
@@ -835,41 +810,6 @@ iris_resource_set_aux_state(struct iris_context *ice,
    }
 }
 
-/* On Gen9 color buffers may be compressed by the hardware (lossless
- * compression). There are, however, format restrictions and care needs to be
- * taken that the sampler engine is capable for re-interpreting a buffer with
- * format different the buffer was originally written with.
- *
- * For example, SRGB formats are not compressible and the sampler engine isn't
- * capable of treating RGBA_UNORM as SRGB_ALPHA. In such a case the underlying
- * color buffer needs to be resolved so that the sampling surface can be
- * sampled as non-compressed (i.e., without the auxiliary MCS buffer being
- * set).
- */
-static bool
-can_texture_with_ccs(const struct gen_device_info *devinfo,
-                     struct pipe_debug_callback *dbg,
-                     const struct iris_resource *res,
-                     enum isl_format view_format)
-{
-   if (res->aux.usage != ISL_AUX_USAGE_CCS_E)
-      return false;
-
-   if (!format_ccs_e_compat_with_resource(devinfo, res, view_format)) {
-      const struct isl_format_layout *res_fmtl =
-         isl_format_get_layout(res->surf.format);
-      const struct isl_format_layout *view_fmtl =
-         isl_format_get_layout(view_format);
-
-      perf_debug(dbg, "Incompatible sampling format (%s) for CCS (%s)\n",
-                 view_fmtl->name, res_fmtl->name);
-
-      return false;
-   }
-
-   return true;
-}
-
 enum isl_aux_usage
 iris_resource_texture_aux_usage(struct iris_context *ice,
                                 const struct iris_resource *res,
@@ -898,8 +838,8 @@ iris_resource_texture_aux_usage(struct iris_context *ice,
    case ISL_AUX_USAGE_STC_CCS:
       return res->aux.usage;
 
-   case ISL_AUX_USAGE_CCS_D:
    case ISL_AUX_USAGE_CCS_E:
+   case ISL_AUX_USAGE_GEN12_CCS_E:
       /* If we don't have any unresolved color, report an aux usage of
        * ISL_AUX_USAGE_NONE.  This way, texturing won't even look at the
        * aux surface and we can save some bandwidth.
@@ -908,8 +848,20 @@ iris_resource_texture_aux_usage(struct iris_context *ice,
                                      0, INTEL_REMAINING_LAYERS))
          return ISL_AUX_USAGE_NONE;
 
-      if (can_texture_with_ccs(devinfo, &ice->dbg, res, view_format))
-         return ISL_AUX_USAGE_CCS_E;
+      /* On Gen9 color buffers may be compressed by the hardware (lossless
+       * compression). There are, however, format restrictions and care needs
+       * to be taken that the sampler engine is capable for re-interpreting a
+       * buffer with format different the buffer was originally written with.
+       *
+       * For example, SRGB formats are not compressible and the sampler engine
+       * isn't capable of treating RGBA_UNORM as SRGB_ALPHA. In such a case
+       * the underlying color buffer needs to be resolved so that the sampling
+       * surface can be sampled as non-compressed (i.e., without the auxiliary
+       * MCS buffer being set).
+       */
+      if (isl_formats_are_ccs_e_compatible(devinfo, res->surf.format,
+                                           view_format))
+         return res->aux.usage;
       break;
 
    default:
@@ -927,8 +879,6 @@ iris_image_view_aux_usage(struct iris_context *ice,
    if (!info)
       return ISL_AUX_USAGE_NONE;
 
-   struct iris_screen *screen = (void *) ice->ctx.screen;
-   const struct gen_device_info *devinfo = &screen->devinfo;
    struct iris_resource *res = (void *) pview->resource;
 
    enum isl_format view_format = iris_image_view_get_format(ice, pview);
@@ -938,9 +888,8 @@ iris_image_view_aux_usage(struct iris_context *ice,
    bool uses_atomic_load_store =
       ice->shaders.uncompiled[info->stage]->uses_atomic_load_store;
 
-   if ((devinfo->gen == 12 && aux_usage == ISL_AUX_USAGE_CCS_E) &&
-       !uses_atomic_load_store)
-      return ISL_AUX_USAGE_CCS_E;
+   if (aux_usage == ISL_AUX_USAGE_GEN12_CCS_E && !uses_atomic_load_store)
+      return ISL_AUX_USAGE_GEN12_CCS_E;
 
    return ISL_AUX_USAGE_NONE;
 }
@@ -986,11 +935,29 @@ iris_resource_prepare_texture(struct iris_context *ice,
                                 aux_usage, clear_supported);
 }
 
+/* Whether or not rendering a color value with either format results in the
+ * same pixel. This can return false negatives.
+ */
+bool
+iris_render_formats_color_compatible(enum isl_format a, enum isl_format b,
+                                     union isl_color_value color)
+{
+   if (a == b)
+      return true;
+
+   /* A difference in color space doesn't matter for 0/1 values. */
+   if (isl_format_srgb_to_linear(a) == isl_format_srgb_to_linear(b) &&
+       isl_color_value_is_zero_one(color, a)) {
+      return true;
+   }
+
+   return false;
+}
+
 enum isl_aux_usage
 iris_resource_render_aux_usage(struct iris_context *ice,
                                struct iris_resource *res,
                                enum isl_format render_format,
-                               bool blend_enabled,
                                bool draw_aux_disabled)
 {
    struct iris_screen *screen = (void *) ice->ctx.screen;
@@ -1006,22 +973,31 @@ iris_resource_render_aux_usage(struct iris_context *ice,
 
    case ISL_AUX_USAGE_CCS_D:
    case ISL_AUX_USAGE_CCS_E:
-      /* Gen9+ hardware technically supports non-0/1 clear colors with sRGB
-       * formats.  However, there are issues with blending where it doesn't
-       * properly apply the sRGB curve to the clear color when blending.
+   case ISL_AUX_USAGE_GEN12_CCS_E:
+      /* Disable CCS for some cases of texture-view rendering. On gen12, HW
+       * may convert some subregions of shader output to fast-cleared blocks
+       * if CCS is enabled and the shader output matches the clear color.
+       * Existing fast-cleared blocks are correctly interpreted by the clear
+       * color and the resource format (see can_fast_clear_color). To avoid
+       * gaining new fast-cleared blocks that can't be interpreted by the
+       * resource format (and to avoid misinterpreting existing ones), shut
+       * off CCS when the interpretation of the clear color differs between
+       * the render_format and the resource format.
        */
-      if (devinfo->gen >= 9 && blend_enabled &&
-          isl_format_is_srgb(render_format) &&
-          !isl_color_value_is_zero_one(res->aux.clear_color, render_format))
+      if (!iris_render_formats_color_compatible(render_format,
+                                                res->surf.format,
+                                                res->aux.clear_color)) {
          return ISL_AUX_USAGE_NONE;
+      }
 
-      if (res->aux.usage == ISL_AUX_USAGE_CCS_E &&
-          format_ccs_e_compat_with_resource(devinfo, res, render_format))
-         return ISL_AUX_USAGE_CCS_E;
-
-      /* Otherwise, we try to fall back to CCS_D */
-      if (isl_format_supports_ccs_d(devinfo, render_format))
+      if (res->aux.usage == ISL_AUX_USAGE_CCS_D)
          return ISL_AUX_USAGE_CCS_D;
+
+      if (isl_formats_are_ccs_e_compatible(devinfo, res->surf.format,
+                                           render_format)) {
+         return res->aux.usage;
+      }
+      /* fallthrough */
 
    default:
       return ISL_AUX_USAGE_NONE;

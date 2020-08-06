@@ -41,6 +41,37 @@ struct lower_context {
    std::vector<aco_ptr<Instruction>> instructions;
 };
 
+/* used by handle_operands() indirectly through Builder::copy */
+uint8_t int8_mul_table[512] = {
+    0, 20, 1, 1, 1, 2, 1, 3, 1, 4, 1, 5, 1, 6, 1, 7, 1, 8, 1, 9, 1, 10, 1, 11,
+    1, 12, 1, 13, 1, 14, 1, 15, 1, 16, 1, 17, 1, 18, 1, 19, 1, 20, 1, 21,
+    1, 22, 1, 23, 1, 24, 1, 25, 1, 26, 1, 27, 1, 28, 1, 29, 1, 30, 1, 31,
+    1, 32, 1, 33, 1, 34, 1, 35, 1, 36, 1, 37, 1, 38, 1, 39, 1, 40, 1, 41,
+    1, 42, 1, 43, 1, 44, 1, 45, 1, 46, 1, 47, 1, 48, 1, 49, 1, 50, 1, 51,
+    1, 52, 1, 53, 1, 54, 1, 55, 1, 56, 1, 57, 1, 58, 1, 59, 1, 60, 1, 61,
+    1, 62, 1, 63, 1, 64, 5, 13, 2, 33, 17, 19, 2, 34, 3, 23, 2, 35, 11, 53,
+    2, 36, 7, 47, 2, 37, 3, 25, 2, 38, 7, 11, 2, 39, 53, 243, 2, 40, 3, 27,
+    2, 41, 17, 35, 2, 42, 5, 17, 2, 43, 3, 29, 2, 44, 15, 23, 2, 45, 7, 13,
+    2, 46, 3, 31, 2, 47, 5, 19, 2, 48, 19, 59, 2, 49, 3, 33, 2, 50, 7, 51,
+    2, 51, 15, 41, 2, 52, 3, 35, 2, 53, 11, 33, 2, 54, 23, 27, 2, 55, 3, 37,
+    2, 56, 9, 41, 2, 57, 5, 23, 2, 58, 3, 39, 2, 59, 7, 17, 2, 60, 9, 241,
+    2, 61, 3, 41, 2, 62, 5, 25, 2, 63, 35, 245, 2, 64, 3, 43, 5, 26, 9, 43,
+    3, 44, 7, 19, 10, 39, 3, 45, 4, 34, 11, 59, 3, 46, 9, 243, 4, 35, 3, 47,
+    22, 53, 7, 57, 3, 48, 5, 29, 10, 245, 3, 49, 4, 37, 9, 45, 3, 50, 7, 241,
+    4, 38, 3, 51, 7, 22, 5, 31, 3, 52, 7, 59, 7, 242, 3, 53, 4, 40, 7, 23,
+    3, 54, 15, 45, 4, 41, 3, 55, 6, 241, 9, 47, 3, 56, 13, 13, 5, 34, 3, 57,
+    4, 43, 11, 39, 3, 58, 5, 35, 4, 44, 3, 59, 6, 243, 7, 245, 3, 60, 5, 241,
+    7, 26, 3, 61, 4, 46, 5, 37, 3, 62, 11, 17, 4, 47, 3, 63, 5, 38, 5, 243,
+    3, 64, 7, 247, 9, 50, 5, 39, 4, 241, 33, 37, 6, 33, 13, 35, 4, 242, 5, 245,
+    6, 247, 7, 29, 4, 51, 5, 41, 5, 246, 7, 249, 3, 240, 11, 19, 5, 42, 3, 241,
+    4, 245, 25, 29, 3, 242, 5, 43, 4, 246, 3, 243, 17, 58, 17, 43, 3, 244,
+    5, 249, 6, 37, 3, 245, 2, 240, 5, 45, 2, 241, 21, 23, 2, 242, 3, 247,
+    2, 243, 5, 251, 2, 244, 29, 61, 2, 245, 3, 249, 2, 246, 17, 29, 2, 247,
+    9, 55, 1, 240, 1, 241, 1, 242, 1, 243, 1, 244, 1, 245, 1, 246, 1, 247,
+    1, 248, 1, 249, 1, 250, 1, 251, 1, 252, 1, 253, 1, 254, 1, 255
+};
+
+
 aco_opcode get_reduce_opcode(chip_class chip, ReduceOp op) {
    /* Because some 16-bit instructions are already VOP3 on GFX10, we use the
     * 32-bit opcodes (VOP2) which allows to remove the tempory VGPR and to use
@@ -999,11 +1030,15 @@ void split_copy(unsigned offset, Definition *def, Operand *op, const copy_operat
                       RegClass(src.def.regClass().type(), bytes).as_subdword();
    *def = Definition(src.def.tempId(), def_reg, def_cls);
    if (src.op.isConstant()) {
-      assert(offset == 0 || (offset == 4 && src.op.bytes() == 8));
-      if (src.op.bytes() == 8 && bytes == 4)
+      assert(bytes >= 1 && bytes <= 8);
+      if (bytes == 8)
+         *op = Operand(src.op.constantValue64() >> (offset * 8u));
+      else if (bytes == 4)
          *op = Operand(uint32_t(src.op.constantValue64() >> (offset * 8u)));
-      else
-         *op  = src.op;
+      else if (bytes == 2)
+         *op = Operand(uint16_t(src.op.constantValue64() >> (offset * 8u)));
+      else if (bytes == 1)
+         *op = Operand(uint8_t(src.op.constantValue64() >> (offset * 8u)));
    } else {
       RegClass op_cls = bytes % 4 == 0 ? RegClass(src.op.regClass().type(), bytes / 4u) :
                         RegClass(src.op.regClass().type(), bytes).as_subdword();
@@ -1124,7 +1159,7 @@ void do_swap(lower_context *ctx, Builder& bld, const copy_operation& copy, bool 
       Definition op_as_def = Definition(op.physReg(), op.regClass());
       if (ctx->program->chip_class >= GFX9 && def.regClass() == v1) {
          bld.vop1(aco_opcode::v_swap_b32, def, op_as_def, op, def_as_op);
-      } else if (def.regClass() == v1 || (def.regClass().is_subdword() && ctx->program->chip_class < GFX8)) {
+      } else if (def.regClass() == v1) {
          assert(def.physReg().byte() == 0 && op.physReg().byte() == 0);
          bld.vop2(aco_opcode::v_xor_b32, op_as_def, op, def_as_op);
          bld.vop2(aco_opcode::v_xor_b32, def, op, def_as_op);
@@ -1388,7 +1423,8 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
              * a partial copy allows further copies, it should be done instead. */
             bool partial_copy = (has_zero_use_bytes == 0xf) || (has_zero_use_bytes == 0xf0);
             for (std::pair<const PhysReg, copy_operation>& copy : copy_map) {
-               if (partial_copy)
+               /* on GFX6/7, we can only do copies with full registers */
+               if (partial_copy || ctx->program->chip_class <= GFX7)
                   break;
                for (uint16_t i = 0; i < copy.second.bytes; i++) {
                   /* distance might underflow */
@@ -1526,6 +1562,10 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
          swap.bytes = offset;
       }
 
+      /* GFX6-7 can only swap full registers */
+      if (ctx->program->chip_class <= GFX7)
+         swap.bytes = align(swap.bytes, 4);
+
       do_swap(ctx, bld, swap, preserve_scc, pi);
 
       /* remove from map */
@@ -1545,8 +1585,6 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
 
          if (!imask)
             continue;
-
-         assert(target->second.bytes < swap.bytes);
 
          int offset = (int)target->second.op.physReg().reg_b - (int)swap.def.physReg().reg_b;
 
@@ -1599,6 +1637,21 @@ void handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context*
    ctx->program->statistics[statistic_copies] += ctx->instructions.size() - num_instructions_before;
 }
 
+void emit_set_mode(Builder& bld, float_mode new_mode, bool set_round, bool set_denorm)
+{
+   if (bld.program->chip_class >= GFX10) {
+      if (set_round)
+         bld.sopp(aco_opcode::s_round_mode, -1, new_mode.round);
+      if (set_denorm)
+         bld.sopp(aco_opcode::s_denorm_mode, -1, new_mode.denorm);
+   } else if (set_round || set_denorm) {
+      /* "((size - 1) << 11) | register" (MODE is encoded as register 1) */
+      Instruction *instr = bld.sopk(aco_opcode::s_setreg_imm32_b32, Operand(new_mode.val), (7 << 11) | 1).instr;
+      /* has to be a literal */
+      instr->operands[0].setFixed(PhysReg{255});
+   }
+}
+
 void lower_to_hw_instr(Program* program)
 {
    Block *discard_block = NULL;
@@ -1610,26 +1663,28 @@ void lower_to_hw_instr(Program* program)
       ctx.program = program;
       Builder bld(program, &ctx.instructions);
 
-      bool set_mode = i == 0 && block->fp_mode.val != program->config->float_mode;
-      for (unsigned pred : block->linear_preds) {
-         if (program->blocks[pred].fp_mode.val != block->fp_mode.val) {
-            set_mode = true;
-            break;
+      float_mode config_mode;
+      config_mode.val = program->config->float_mode;
+
+      bool set_round = i == 0 && block->fp_mode.round != config_mode.round;
+      bool set_denorm = i == 0 && block->fp_mode.denorm != config_mode.denorm;
+      if (block->kind & block_kind_top_level) {
+         for (unsigned pred : block->linear_preds) {
+            if (program->blocks[pred].fp_mode.round != block->fp_mode.round)
+               set_round = true;
+            if (program->blocks[pred].fp_mode.denorm != block->fp_mode.denorm)
+               set_denorm = true;
          }
       }
-      if (set_mode) {
-         /* only allow changing modes at top-level blocks so this doesn't break
-          * the "jump over empty blocks" optimization */
-         assert(block->kind & block_kind_top_level);
-         uint32_t mode = block->fp_mode.val;
-         /* "((size - 1) << 11) | register" (MODE is encoded as register 1) */
-         bld.sopk(aco_opcode::s_setreg_imm32_b32, Operand(mode), (7 << 11) | 1);
-      }
+      /* only allow changing modes at top-level blocks so this doesn't break
+       * the "jump over empty blocks" optimization */
+      assert((!set_round && !set_denorm) || (block->kind & block_kind_top_level));
+      emit_set_mode(bld, block->fp_mode, set_round, set_denorm);
 
       for (size_t j = 0; j < block->instructions.size(); j++) {
          aco_ptr<Instruction>& instr = block->instructions[j];
          aco_ptr<Instruction> mov;
-         if (instr->format == Format::PSEUDO) {
+         if (instr->format == Format::PSEUDO && instr->opcode != aco_opcode::p_unit_test) {
             Pseudo_instruction *pi = (Pseudo_instruction*)instr.get();
 
             switch (instr->opcode)
@@ -1795,10 +1850,11 @@ void lower_to_hw_instr(Program* program)
             {
                if (ctx.program->chip_class <= GFX7)
                   emit_gfx6_bpermute(program, instr, bld);
-               else if (ctx.program->chip_class == GFX10 && ctx.program->wave_size == 64)
+               else if (ctx.program->chip_class >= GFX10 && ctx.program->wave_size == 64)
                   emit_gfx10_wave64_bpermute(program, instr, bld);
                else
                   unreachable("Current hardware supports ds_bpermute, don't emit p_bpermute.");
+               break;
             }
             default:
                break;
@@ -1853,6 +1909,29 @@ void lower_to_hw_instr(Program* program)
                            reduce->operands[2].physReg(), // vtmp
                            reduce->definitions[2].physReg(), // sitmp
                            reduce->operands[0], reduce->definitions[0]);
+         } else if (instr->format == Format::PSEUDO_BARRIER) {
+            Pseudo_barrier_instruction* barrier = static_cast<Pseudo_barrier_instruction*>(instr.get());
+
+            /* Anything larger than a workgroup isn't possible. Anything
+             * smaller requires no instructions and this pseudo instruction
+             * would only be included to control optimizations. */
+            bool emit_s_barrier = barrier->exec_scope == scope_workgroup &&
+                                  program->workgroup_size > program->wave_size;
+
+            bld.insert(std::move(instr));
+            if (emit_s_barrier)
+               bld.sopp(aco_opcode::s_barrier);
+         } else if (instr->opcode == aco_opcode::p_cvt_f16_f32_rtne) {
+            float_mode new_mode = block->fp_mode;
+            new_mode.round16_64 = fp_round_ne;
+            bool set_round = new_mode.round != block->fp_mode.round;
+
+            emit_set_mode(bld, new_mode, set_round, false);
+
+            instr->opcode = aco_opcode::v_cvt_f16_f32;
+            ctx.instructions.emplace_back(std::move(instr));
+
+            emit_set_mode(bld, block->fp_mode, set_round, false);
          } else {
             ctx.instructions.emplace_back(std::move(instr));
          }

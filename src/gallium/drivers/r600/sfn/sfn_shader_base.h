@@ -62,7 +62,7 @@ public:
 
    void emit_instruction(Instruction *ir);
 
-   PValue from_nir_with_fetch_constant(const nir_src& src, unsigned component);
+   PValue from_nir_with_fetch_constant(const nir_src& src, unsigned component, int channel = -1);
    GPRVector vec_from_nir_with_fetch_constant(const nir_src& src, unsigned mask,
                                               const GPRVector::Swizzle& swizzle, bool match = false);
 
@@ -105,6 +105,7 @@ protected:
    bool emit_load_tcs_param_base(nir_intrinsic_instr* instr, int offset);
    bool emit_load_local_shared(nir_intrinsic_instr* instr);
    bool emit_store_local_shared(nir_intrinsic_instr* instr);
+   bool emit_atomic_local_shared(nir_intrinsic_instr* instr);
 
    bool emit_barrier(nir_intrinsic_instr* instr);
 
@@ -208,6 +209,7 @@ private:
 
    r600_pipe_shader_selector& m_sel;
    int m_atomic_base ;
+   int m_image_count;
 };
 
 }

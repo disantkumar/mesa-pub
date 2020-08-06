@@ -44,17 +44,18 @@ libxvmc_gallium = shared_library(
     libgalliumvlwinsys, libgalliumvl, libgallium,
     libpipe_loader_static, libws_null, libwsw, libswdri, libswkmsdri,
   ],
-  dependencies : [idep_mesautil, idep_xmlconfig_headers, driver_r600, driver_nouveau],
+  dependencies : [idep_mesautil, driver_r600, driver_nouveau],
   link_depends : xvmc_link_depends,
   # Will be deleted during installation, see install_megadrivers.py
   install : true,
   install_dir : xvmc_drivers_path,
   name_suffix : 'so',
+  version : '@0@.@1@.0'.format(XVMC_MAJOR, XVMC_MINOR),
 )
 
 foreach d : [[with_gallium_r600, 'r600'], [with_gallium_nouveau, 'nouveau']]
   if d[0]
-    xvmc_drivers += 'libXvMC@0@.so'.format(d[1])
+    xvmc_drivers += 'libXvMC@0@.so.@1@.@2@.0'.format(d[1], XVMC_MAJOR, XVMC_MINOR)
   endif
 endforeach
 

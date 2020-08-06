@@ -98,7 +98,7 @@ radv_use_tc_compat_htile_for_image(struct radv_device *device,
 	if (pCreateInfo->samples >= 2 &&
 	    (format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
 	     (format == VK_FORMAT_D32_SFLOAT &&
-	      device->physical_device->rad_info.chip_class == GFX10)))
+	      device->physical_device->rad_info.chip_class >= GFX10)))
 		return false;
 
 	/* GFX9 supports both 32-bit and 16-bit depth surfaces, while GFX8 only
@@ -1233,9 +1233,11 @@ static void
 radv_image_alloc_single_sample_cmask(const struct radv_image *image,
                                      struct radeon_surf *surf)
 {
+	assert(image->info.storage_samples == 1 || surf->cmask_offset);
+
 	if (!surf->cmask_size || surf->cmask_offset || surf->bpe > 8 ||
 	    image->info.levels > 1 || image->info.depth > 1 ||
-	    !radv_image_use_fast_clear_for_image(image))
+	    radv_image_has_dcc(image) || !radv_image_use_fast_clear_for_image(image))
 		return;
 
 	surf->cmask_offset = align64(surf->total_size, surf->cmask_alignment);
@@ -1332,6 +1334,23 @@ radv_image_create_layout(struct radv_device *device,
 	return VK_SUCCESS;
 }
 
+static void
+radv_destroy_image(struct radv_device *device,
+		   const VkAllocationCallbacks *pAllocator,
+		   struct radv_image *image)
+{
+	if ((image->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) && image->bo)
+		device->ws->buffer_destroy(image->bo);
+
+	if (image->owned_memory != VK_NULL_HANDLE) {
+		RADV_FROM_HANDLE(radv_device_memory, mem, image->owned_memory);
+		radv_free_memory(device, pAllocator, mem);
+	}
+
+	vk_object_base_finish(&image->base);
+	vk_free2(&device->vk.alloc, pAllocator, image);
+}
+
 VkResult
 radv_image_create(VkDevice _device,
 		  const struct radv_image_create_info *create_info,
@@ -1421,7 +1440,7 @@ radv_image_create(VkDevice _device,
 		image->bo = device->ws->buffer_create(device->ws, image->size, image->alignment,
 		                                      0, RADEON_FLAG_VIRTUAL, RADV_BO_PRIORITY_VIRTUAL);
 		if (!image->bo) {
-			vk_free2(&device->vk.alloc, alloc, image);
+			radv_destroy_image(device, alloc, image);
 			return vk_error(device->instance, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 		}
 	}
@@ -1751,14 +1770,7 @@ radv_DestroyImage(VkDevice _device, VkImage _image,
 	if (!image)
 		return;
 
-	if (image->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT)
-		device->ws->buffer_destroy(image->bo);
-
-	if (image->owned_memory != VK_NULL_HANDLE)
-		radv_FreeMemory(_device, image->owned_memory, pAllocator);
-
-	vk_object_base_finish(&image->base);
-	vk_free2(&device->vk.alloc, pAllocator, image);
+	radv_destroy_image(device, pAllocator, image);
 }
 
 void radv_GetImageSubresourceLayout(

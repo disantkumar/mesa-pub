@@ -77,17 +77,40 @@ pan_format_from_nir_size(nir_alu_type base, unsigned size)
 }
 
 static enum mali_format
-pan_format_from_glsl(const struct glsl_type *type)
+pan_format_from_glsl(const struct glsl_type *type, unsigned precision, unsigned frac)
 {
-        enum glsl_base_type glsl_base = glsl_get_base_type(glsl_without_array(type));
+        const struct glsl_type *column = glsl_without_array_or_matrix(type);
+        enum glsl_base_type glsl_base = glsl_get_base_type(column);
         nir_alu_type t = nir_get_nir_type_for_glsl_base_type(glsl_base);
+        unsigned chan = glsl_get_components(column);
+
+        /* If we have a fractional location added, we need to increase the size
+         * so it will fit, i.e. a vec3 in YZW requires us to allocate a vec4.
+         * We could do better but this is an edge case as it is, normally
+         * packed varyings will be aligned. */
+        chan += frac;
+
+        assert(chan >= 1 && chan <= 4);
 
         unsigned base = nir_alu_type_get_base_type(t);
         unsigned size = nir_alu_type_get_type_size(t);
 
+        /* Demote to fp16 where possible. int16 varyings are TODO as the hw
+         * will saturate instead of wrap which is not conformant, so we need to
+         * insert i2i16/u2u16 instructions before the st_vary_32i/32u to get
+         * the intended behaviour */
+
+        bool is_16 = (precision == GLSL_PRECISION_MEDIUM)
+                || (precision == GLSL_PRECISION_LOW);
+
+        if (is_16 && base == nir_type_float)
+                size = 16;
+        else
+                size = 32;
+
         return pan_format_from_nir_base(base) |
                 pan_format_from_nir_size(base, size) |
-                MALI_NR_CHANNELS(4);
+                MALI_NR_CHANNELS(chan);
 }
 
 static enum bifrost_shader_type
@@ -109,8 +132,7 @@ bifrost_blend_type_from_nir(nir_alu_type nir_type)
         case nir_type_uint16:
                 return BIFROST_BLEND_U16;
         default:
-                DBG("Unsupported blend shader type for NIR alu type %d", nir_type);
-                assert(0);
+                unreachable("Unsupported blend shader type for NIR alu type");
                 return 0;
         }
 }
@@ -143,11 +165,13 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                 .alpha_ref = state->alpha_state.ref_value
         };
 
+        memcpy(program.rt_formats, state->rt_formats, sizeof(program.rt_formats));
+
         if (dev->quirks & IS_BIFROST) {
                 bifrost_compile_shader_nir(s, &program, dev->gpu_id);
         } else {
                 midgard_compile_shader_nir(s, &program, false, 0, dev->gpu_id,
-                                pan_debug & PAN_DBG_PRECOMPILE);
+                                dev->debug & PAN_DBG_PRECOMPILE, false);
         }
 
         /* Prepare the compiled binary for upload */
@@ -159,7 +183,7 @@ panfrost_shader_compile(struct panfrost_context *ctx,
          * that's how I'd do it. */
 
         if (size) {
-                state->bo = pan_bo_create(dev, size, PAN_BO_EXECUTE);
+                state->bo = panfrost_bo_create(dev, size, PAN_BO_EXECUTE);
                 memcpy(state->bo->cpu, dst, size);
         }
 
@@ -202,6 +226,12 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                 if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL))
                         state->writes_stencil = true;
 
+                uint64_t outputs_read = s->info.outputs_read;
+                if (outputs_read & BITFIELD64_BIT(FRAG_RESULT_COLOR))
+                        outputs_read |= BITFIELD64_BIT(FRAG_RESULT_DATA0);
+
+                state->outputs_read = outputs_read >> FRAG_RESULT_DATA0;
+
                 /* List of reasons we need to execute frag shaders when things
                  * are masked off */
 
@@ -221,10 +251,13 @@ panfrost_shader_compile(struct panfrost_context *ctx,
         }
 
         state->can_discard = s->info.fs.uses_discard;
-        state->writes_point_size = program.writes_point_size;
-        state->reads_point_coord = false;
         state->helper_invocations = s->info.fs.needs_helper_invocations;
         state->stack_size = program.tls_size;
+
+        state->reads_frag_coord = s->info.inputs_read & (1 << VARYING_SLOT_POS);
+        state->reads_point_coord = s->info.inputs_read & (1 << VARYING_SLOT_PNTC);
+        state->reads_face = s->info.inputs_read & (1 << VARYING_SLOT_FACE);
+        state->writes_point_size = s->info.outputs_written & (1 << VARYING_SLOT_PSIZ);
 
         if (outputs_written)
                 *outputs_written = s->info.outputs_written;
@@ -239,74 +272,19 @@ panfrost_shader_compile(struct panfrost_context *ctx,
                 for (unsigned i = 0; i < BIFROST_MAX_RENDER_TARGET_COUNT; i++)
                         state->blend_types[i] = bifrost_blend_type_from_nir(program.blend_types[i]);
 
-        unsigned default_vec1_swizzle;
-        unsigned default_vec2_swizzle;
-        unsigned default_vec4_swizzle;
-
-        if (dev->quirks & HAS_SWIZZLES) {
-                default_vec1_swizzle = panfrost_get_default_swizzle(1);
-                default_vec2_swizzle = panfrost_get_default_swizzle(2);
-                default_vec4_swizzle = panfrost_get_default_swizzle(4);
-        } else {
-                default_vec1_swizzle = panfrost_bifrost_swizzle(1);
-                default_vec2_swizzle = panfrost_bifrost_swizzle(2);
-                default_vec4_swizzle = panfrost_bifrost_swizzle(4);
-        }
-
         /* Record the varying mapping for the command stream's bookkeeping */
 
-        unsigned p_varyings[32];
-        enum mali_format p_varying_type[32];
+        nir_variable_mode varying_mode =
+                        stage == MESA_SHADER_VERTEX ? nir_var_shader_out : nir_var_shader_in;
 
-        struct exec_list *l_varyings =
-                        stage == MESA_SHADER_VERTEX ? &s->outputs : &s->inputs;
-
-        nir_foreach_variable(var, l_varyings) {
+        nir_foreach_variable_with_modes(var, s, varying_mode) {
                 unsigned loc = var->data.driver_location;
                 unsigned sz = glsl_count_attribute_slots(var->type, FALSE);
 
                 for (int c = 0; c < sz; ++c) {
-                        p_varyings[loc + c] = var->data.location + c;
-                        p_varying_type[loc + c] = pan_format_from_glsl(var->type);
+                        state->varyings_loc[loc + c] = var->data.location + c;
+                        state->varyings[loc + c] = pan_format_from_glsl(var->type,
+                                        var->data.precision, var->data.location_frac);
                 }
-        }
-
-        /* Iterate the varyings and emit the corresponding descriptor */
-        for (unsigned i = 0; i < state->varying_count; ++i) {
-                unsigned location = p_varyings[i];
-
-                /* Default to a vec4 varying */
-                struct mali_attr_meta v = {
-                        .format = p_varying_type[i],
-                        .swizzle = default_vec4_swizzle,
-                        .unknown1 = dev->quirks & IS_BIFROST ? 0x0 : 0x2,
-                };
-
-                /* Check for special cases, otherwise assume general varying */
-
-                if (location == VARYING_SLOT_POS) {
-                        if (stage == MESA_SHADER_FRAGMENT)
-                                state->reads_frag_coord = true;
-                        else
-                                v.format = MALI_VARYING_POS;
-                } else if (location == VARYING_SLOT_PSIZ) {
-                        v.format = MALI_R16F;
-                        v.swizzle = default_vec1_swizzle;
-
-                        state->writes_point_size = true;
-                } else if (location == VARYING_SLOT_PNTC) {
-                        v.format = MALI_RG16F;
-                        v.swizzle = default_vec2_swizzle;
-
-                        state->reads_point_coord = true;
-                } else if (location == VARYING_SLOT_FACE) {
-                        v.format = MALI_R32I;
-                        v.swizzle = default_vec1_swizzle;
-
-                        state->reads_face = true;
-                }
-
-                state->varyings[i] = v;
-                state->varyings_loc[i] = location;
         }
 }

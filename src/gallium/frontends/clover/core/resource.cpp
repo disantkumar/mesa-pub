@@ -64,6 +64,14 @@ resource::copy(command_queue &q, const vector &origin, const vector &region,
                                 box(src_res.offset + src_origin, region));
 }
 
+void
+resource::clear(command_queue &q, const size_t origin, const size_t size,
+                const void *pattern, const size_t pattern_size) {
+   auto p = offset[0] + origin;
+
+   q.pipe->clear_buffer(q.pipe, pipe, p, size, pattern, pattern_size);
+}
+
 void *
 resource::add_map(command_queue &q, cl_map_flags flags, bool blocking,
                   const vector &origin, const vector &region) {
@@ -119,8 +127,6 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
                              command_queue &q, const std::string &data) :
    resource(dev, obj) {
    pipe_resource info {};
-   const bool user_ptr_support = dev.pipe->get_param(dev.pipe,
-         PIPE_CAP_RESOURCE_FROM_USER_MEMORY);
 
    if (image *img = dynamic_cast<image *>(&obj)) {
       info.format = translate_format(img->format());
@@ -139,7 +145,7 @@ root_resource::root_resource(clover::device &dev, memory_obj &obj,
                 PIPE_BIND_COMPUTE_RESOURCE |
                 PIPE_BIND_GLOBAL);
 
-   if (obj.flags() & CL_MEM_USE_HOST_PTR && user_ptr_support) {
+   if (obj.flags() & CL_MEM_USE_HOST_PTR && dev.allows_user_pointers()) {
       // Page alignment is normally required for this, just try, hope for the
       // best and fall back if it fails.
       pipe = dev.pipe->resource_from_user_memory(dev.pipe, &info, obj.host_ptr());

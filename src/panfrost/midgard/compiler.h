@@ -51,6 +51,7 @@ struct midgard_block;
 #define TARGET_BREAK 1
 #define TARGET_CONTINUE 2
 #define TARGET_DISCARD 3
+#define TARGET_TILEBUF_WAIT 4
 
 typedef struct midgard_branch {
         /* If conditional, the condition is specified in r31.w */
@@ -128,9 +129,6 @@ typedef struct midgard_instruction {
         /* If the op supports it */
         enum midgard_roundmode roundmode;
 
-        /* Special fields for an ALU instruction */
-        midgard_reg_info registers;
-
         /* For textures: should helpers execute this instruction (instead of
          * just helping with derivatives)? Should helpers terminate after? */
         bool helper_terminate;
@@ -174,15 +172,19 @@ typedef struct midgard_instruction {
         unsigned nr_dependencies;
         BITSET_WORD *dependents;
 
+        /* Use this in conjunction with `type` */
+        unsigned op;
+
+        /* This refers to midgard_outmod_float or midgard_outmod_int.
+         * In case of a ALU op, use midgard_is_integer_out_op() to know which
+         * one is used.
+         * If it's a texture op, it's always midgard_outmod_float. */
+        unsigned outmod;
+
         union {
                 midgard_load_store_word load_store;
-                midgard_vector_alu alu;
                 midgard_texture_word texture;
-                midgard_branch_extended branch_extended;
-                uint16_t br_compact;
 
-                /* General branch, rather than packed br_compact. Higher level
-                 * than the other components */
                 midgard_branch branch;
         };
 } midgard_instruction;
@@ -224,10 +226,14 @@ typedef struct midgard_bundle {
 } midgard_bundle;
 
 enum midgard_rt_id {
-        MIDGARD_COLOR_RT0,
+        MIDGARD_COLOR_RT0 = 0,
         MIDGARD_COLOR_RT1,
         MIDGARD_COLOR_RT2,
         MIDGARD_COLOR_RT3,
+        MIDGARD_COLOR_RT4,
+        MIDGARD_COLOR_RT5,
+        MIDGARD_COLOR_RT6,
+        MIDGARD_COLOR_RT7,
         MIDGARD_ZS_RT,
         MIDGARD_NUM_RTS,
 };
@@ -241,6 +247,12 @@ typedef struct compiler_context {
 
         /* Render target number for a keyed blend shader. Depends on is_blend */
         unsigned blend_rt;
+
+        /* Index to precolour to r0 for an input blend colour */
+        unsigned blend_input;
+
+        /* Index to precolour to r2 for a dual-source blend colour */
+        unsigned blend_src1;
 
         /* Tracking for blend constant patching */
         int blend_constant_offset;
@@ -509,6 +521,8 @@ uint16_t mir_round_bytemask_up(uint16_t mask, unsigned bits);
 void mir_set_bytemask(midgard_instruction *ins, uint16_t bytemask);
 signed mir_upper_override(midgard_instruction *ins, unsigned inst_size);
 unsigned mir_components_for_type(nir_alu_type T);
+unsigned max_bitsize_for_alu(midgard_instruction *ins);
+midgard_reg_mode reg_mode_for_bitsize(unsigned bitsize);
 
 /* MIR printing */
 
@@ -539,11 +553,8 @@ v_mov(unsigned src, unsigned dest)
                 .swizzle = SWIZZLE_IDENTITY,
                 .dest = dest,
                 .dest_type = nir_type_uint32,
-                .alu = {
-                        .op = midgard_alu_op_imov,
-                        .reg_mode = midgard_reg_mode_32,
-                        .outmod = midgard_outmod_int_wrap
-                },
+                .op = midgard_alu_op_imov,
+                .outmod = midgard_outmod_int_wrap
         };
 
         return ins;
@@ -576,9 +587,8 @@ v_load_store_scratch(
                 .dest = ~0,
                 .src = { ~0, ~0, ~0, ~0 },
                 .swizzle = SWIZZLE_IDENTITY_4,
+                .op = is_store ? midgard_op_st_int4 : midgard_op_ld_int4,
                 .load_store = {
-                        .op = is_store ? midgard_op_st_int4 : midgard_op_ld_int4,
-
                         /* For register spilling - to thread local storage */
                         .arg_1 = 0xEA,
                         .arg_2 = 0x1E,
@@ -661,6 +671,8 @@ nir_undef_to_zero(nir_shader *shader);
 bool nir_fuse_io_16(nir_shader *shader);
 
 void midgard_nir_lod_errata(nir_shader *shader);
+
+unsigned midgard_get_first_tag_from_block(compiler_context *ctx, unsigned block_idx);
 
 /* Optimizations */
 

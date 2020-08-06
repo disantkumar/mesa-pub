@@ -411,15 +411,6 @@ image("samples", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("atomic_inc_wrap",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_dec_wrap",  src_comp=[4, 1, 1], dest_comp=1)
 
-# Intel-specific query for loading from the brw_image_param struct passed
-# into the shader as a uniform.  The variable is a deref to the image
-# variable. The const index specifies which of the six parameters to load.
-intrinsic("image_deref_load_param_intel", src_comp=[1], dest_comp=0,
-          indices=[BASE], flags=[CAN_ELIMINATE, CAN_REORDER])
-image("load_raw_intel", src_comp=[1], dest_comp=0,
-      flags=[CAN_ELIMINATE])
-image("store_raw_intel", src_comp=[1, 0])
-
 # Vulkan descriptor set intrinsics
 #
 # The Vulkan API uses a different binding model from GL.  In the Vulkan
@@ -490,20 +481,20 @@ intrinsic("deref_atomic_fcomp_swap", src_comp=[-1, 1, 1], dest_comp=1, indices=[
 # 2: The data parameter to the atomic function (i.e. the value to add
 #    in ssbo_atomic_add, etc).
 # 3: For CompSwap only: the second data parameter.
-intrinsic("ssbo_atomic_add",  src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_imin", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_umin", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_imax", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_umax", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_and",  src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_or",   src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_xor",  src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_exchange", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_comp_swap", src_comp=[1, 1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_fadd", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_fmin", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_fmax", src_comp=[1, 1, 1], dest_comp=1, indices=[ACCESS])
-intrinsic("ssbo_atomic_fcomp_swap", src_comp=[1, 1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_add",  src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_imin", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_umin", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_imax", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_umax", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_and",  src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_or",   src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_xor",  src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_exchange", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_comp_swap", src_comp=[-1, 1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_fadd", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_fmin", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_fmax", src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
+intrinsic("ssbo_atomic_fcomp_swap", src_comp=[-1, 1, 1, 1], dest_comp=1, indices=[ACCESS])
 
 # CS shared variable atomic intrinsics
 #
@@ -569,6 +560,7 @@ def system_value(name, dest_comp, indices=[], bit_sizes=[32]):
 
 system_value("frag_coord", 4)
 system_value("point_coord", 2)
+system_value("line_coord", 1)
 system_value("front_face", 1, bit_sizes=[1, 32])
 system_value("vertex_id", 1)
 system_value("vertex_id_zero_base", 1)
@@ -614,6 +606,11 @@ system_value("local_group_size", 3)
 system_value("global_invocation_id", 3, bit_sizes=[32, 64])
 system_value("global_invocation_index", 1, bit_sizes=[32, 64])
 system_value("work_dim", 1)
+system_value("line_width", 1)
+system_value("aa_line_width", 1)
+# BASE=0 for global/shader, BASE=1 for local/function
+system_value("scratch_base_ptr", 0, bit_sizes=[32,64], indices=[BASE])
+
 # Driver-specific viewport scale/offset parameters.
 #
 # VC4 and V3D need to emit a scaled version of the position in the vertex
@@ -648,9 +645,6 @@ system_value("color1", 4)
 
 # System value for internal compute shaders in radeonsi.
 system_value("user_data_amd", 4)
-
-# Number of data items being operated on for a SIMD program.
-system_value("simd_width_intel", 1)
 
 # Barycentric coordinate intrinsics.
 #
@@ -723,66 +717,65 @@ intrinsic("load_fs_input_interp_deltas", src_comp=[1], dest_comp=3,
 # varying slots and float units for fragment shader inputs.  UBO and SSBO
 # offsets are always in bytes.
 
-def load(name, num_srcs, indices=[], flags=[]):
-    intrinsic("load_" + name, [1] * num_srcs, dest_comp=0, indices=indices,
+def load(name, src_comp, indices=[], flags=[]):
+    intrinsic("load_" + name, src_comp, dest_comp=0, indices=indices,
               flags=flags)
 
 # src[] = { offset }.
-load("uniform", 1, [BASE, RANGE, TYPE], [CAN_ELIMINATE, CAN_REORDER])
+load("uniform", [1], [BASE, RANGE, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { buffer_index, offset }.
-load("ubo", 2, [ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE, CAN_REORDER])
+load("ubo", [-1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
-load("input", 1, [BASE, COMPONENT, TYPE], [CAN_ELIMINATE, CAN_REORDER])
+load("input", [1], [BASE, COMPONENT, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { vertex_id, offset }.
-load("input_vertex", 2, [BASE, COMPONENT, TYPE], [CAN_ELIMINATE, CAN_REORDER])
+load("input_vertex", [1, 1], [BASE, COMPONENT, TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { vertex, offset }.
-load("per_vertex_input", 2, [BASE, COMPONENT], [CAN_ELIMINATE, CAN_REORDER])
+load("per_vertex_input", [1, 1], [BASE, COMPONENT], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { barycoord, offset }.
-intrinsic("load_interpolated_input", src_comp=[2, 1], dest_comp=0,
-          indices=[BASE, COMPONENT], flags=[CAN_ELIMINATE, CAN_REORDER])
+load("interpolated_input", [2, 1], [BASE, COMPONENT], [CAN_ELIMINATE, CAN_REORDER])
 
 # src[] = { buffer_index, offset }.
-load("ssbo", 2, [ACCESS, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
+load("ssbo", [-1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
 # src[] = { buffer_index }
-load("ssbo_address", 1, [], [CAN_ELIMINATE, CAN_REORDER])
+load("ssbo_address", [1], [], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
-load("output", 1, [BASE, COMPONENT], flags=[CAN_ELIMINATE])
+load("output", [1], [BASE, COMPONENT], flags=[CAN_ELIMINATE])
 # src[] = { vertex, offset }.
-load("per_vertex_output", 2, [BASE, COMPONENT], [CAN_ELIMINATE])
+load("per_vertex_output", [1, 1], [BASE, COMPONENT], [CAN_ELIMINATE])
 # src[] = { offset }.
-load("shared", 1, [BASE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
+load("shared", [1], [BASE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
 # src[] = { offset }.
-load("push_constant", 1, [BASE, RANGE], [CAN_ELIMINATE, CAN_REORDER])
+load("push_constant", [1], [BASE, RANGE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
-load("constant", 1, [BASE, RANGE, ALIGN_MUL, ALIGN_OFFSET],
+load("constant", [1], [BASE, RANGE, ALIGN_MUL, ALIGN_OFFSET],
      [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { address }.
-load("global", 1, [ACCESS, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
+load("global", [1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
 # src[] = { address }.
-load("kernel_input", 1, [BASE, RANGE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE, CAN_REORDER])
+load("kernel_input", [1], [BASE, RANGE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
-load("scratch", 1, [ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
+load("scratch", [1], [ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
 
 # Stores work the same way as loads, except now the first source is the value
 # to store and the second (and possibly third) source specify where to store
 # the value.  SSBO and shared memory stores also have a
 # nir_intrinsic_write_mask()
 
-def store(name, num_srcs, indices=[], flags=[]):
-    intrinsic("store_" + name, [0] + ([1] * (num_srcs - 1)), indices=indices, flags=flags)
+def store(name, srcs, indices=[], flags=[]):
+    intrinsic("store_" + name, [0] + srcs, indices=indices, flags=flags)
 
 # src[] = { value, offset }.
-store("output", 2, [BASE, WRMASK, COMPONENT, TYPE])
+store("output", [1], [BASE, WRMASK, COMPONENT, TYPE])
 # src[] = { value, vertex, offset }.
-store("per_vertex_output", 3, [BASE, WRMASK, COMPONENT])
+store("per_vertex_output", [1, 1], [BASE, WRMASK, COMPONENT])
 # src[] = { value, block_index, offset }
-store("ssbo", 3, [WRMASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
+store("ssbo", [-1, 1], [WRMASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
 # src[] = { value, offset }.
-store("shared", 2, [BASE, WRMASK, ALIGN_MUL, ALIGN_OFFSET])
+store("shared", [1], [BASE, WRMASK, ALIGN_MUL, ALIGN_OFFSET])
 # src[] = { value, address }.
-store("global", 2, [WRMASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
+store("global", [1], [WRMASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
 # src[] = { value, offset }.
-store("scratch", 2, [ALIGN_MUL, ALIGN_OFFSET, WRMASK])
+store("scratch", [1], [ALIGN_MUL, ALIGN_OFFSET, WRMASK])
 
 # IR3-specific version of most SSBO intrinsics. The only different
 # compare to the originals is that they add an extra source to hold
@@ -795,10 +788,10 @@ store("scratch", 2, [ALIGN_MUL, ALIGN_OFFSET, WRMASK])
 #
 # The float versions are not handled because those are not supported
 # by the backend.
-intrinsic("store_ssbo_ir3",  src_comp=[0, 1, 1, 1],
-          indices=[WRMASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
-intrinsic("load_ssbo_ir3",  src_comp=[1, 1, 1], dest_comp=0,
-          indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE])
+store("ssbo_ir3", [1, 1, 1],
+      indices=[WRMASK, ACCESS, ALIGN_MUL, ALIGN_OFFSET])
+load("ssbo_ir3",  [1, 1, 1],
+     indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE])
 intrinsic("ssbo_atomic_add_ir3",        src_comp=[1, 1, 1, 1],    dest_comp=1, indices=[ACCESS])
 intrinsic("ssbo_atomic_imin_ir3",       src_comp=[1, 1, 1, 1],    dest_comp=1, indices=[ACCESS])
 intrinsic("ssbo_atomic_umin_ir3",       src_comp=[1, 1, 1, 1],    dest_comp=1, indices=[ACCESS])
@@ -840,9 +833,9 @@ intrinsic("end_patch_ir3")
 # between geometry stages - perhaps it's explicit access to the vertex cache.
 
 # src[] = { value, offset }.
-store("shared_ir3", 2, [BASE, ALIGN_MUL, ALIGN_OFFSET])
+store("shared_ir3", [1], [BASE, ALIGN_MUL, ALIGN_OFFSET])
 # src[] = { offset }.
-load("shared_ir3", 1, [BASE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
+load("shared_ir3", [1], [BASE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
 
 # IR3-specific load/store global intrinsics. They take a 64-bit base address
 # and a 32-bit offset.  The hardware will add the base and the offset, which
@@ -850,10 +843,10 @@ load("shared_ir3", 1, [BASE, ALIGN_MUL, ALIGN_OFFSET], [CAN_ELIMINATE])
 
 # src[] = { value, address(vec2 of hi+lo uint32_t), offset }.
 # const_index[] = { write_mask, align_mul, align_offset }
-intrinsic("store_global_ir3", [0, 2, 1], indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET])
+store("global_ir3", [2, 1], indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET])
 # src[] = { address(vec2 of hi+lo uint32_t), offset }.
 # const_index[] = { access, align_mul, align_offset }
-intrinsic("load_global_ir3", [2, 1], dest_comp=0, indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE])
+load("global_ir3", [2, 1], indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE])
 
 # IR3-specific bindless handle specifier. Similar to vulkan_resource_index, but
 # without the binding because the hardware expects a single flattened index
@@ -874,13 +867,13 @@ intrinsic("bindless_resource_ir3", [1], dest_comp=1, indices=[DESC_SET], flags=[
 # raw_output_pan and the hardware handles linear->sRGB.
 
 # src[] = { value }
-store("raw_output_pan", 1, [])
-store("combined_output_pan", 4, [BASE, COMPONENT])
-load("raw_output_pan", 0, [], [CAN_ELIMINATE, CAN_REORDER])
+store("raw_output_pan", [], [])
+store("combined_output_pan", [1, 1, 1], [BASE, COMPONENT])
+load("raw_output_pan", [1], [BASE], [CAN_ELIMINATE, CAN_REORDER])
 
 # Loads the sampler paramaters <min_lod, max_lod, lod_bias>
 # src[] = { sampler_index }
-load("sampler_lod_parameters_pan", 1, [CAN_ELIMINATE, CAN_REORDER])
+load("sampler_lod_parameters_pan", [1], [CAN_ELIMINATE, CAN_REORDER])
 
 # R600 specific instrincs
 #
@@ -888,7 +881,7 @@ load("sampler_lod_parameters_pan", 1, [CAN_ELIMINATE, CAN_REORDER])
 # is given in vec4 units, so we have to fetch the a vec4 and get the component
 # later
 # src[] = { buffer_index, offset }.
-load("ubo_r600", 2, [ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE, CAN_REORDER])
+load("ubo_r600", [1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # location where the tesselation data is stored in LDS
 system_value("tcs_in_param_base_r600", 4)
@@ -899,8 +892,8 @@ system_value("tcs_tess_factor_base_r600", 1)
 # load as many components as needed giving per-component addresses
 intrinsic("load_local_shared_r600", src_comp=[0], dest_comp=0, indices = [COMPONENT], flags = [CAN_ELIMINATE, CAN_REORDER])
 
-store("local_shared_r600", 2, [WRMASK])
-store("tf_r600", 1)
+store("local_shared_r600", [1], [WRMASK])
+store("tf_r600", [])
 
 # V3D-specific instrinc for tile buffer color reads.
 #
@@ -909,7 +902,7 @@ store("tf_r600", 1)
 #
 # src[] = { render_target }
 # BASE = sample index
-load("tlb_color_v3d", 1, [BASE, COMPONENT], [])
+load("tlb_color_v3d", [1], [BASE, COMPONENT], [])
 
 # V3D-specific instrinc for per-sample tile buffer color writes.
 #
@@ -918,8 +911,20 @@ load("tlb_color_v3d", 1, [BASE, COMPONENT], [])
 #
 # src[] = { value, render_target }
 # BASE = sample index
-store("tlb_sample_color_v3d", 2, [BASE, COMPONENT, TYPE], [])
+store("tlb_sample_color_v3d", [1], [BASE, COMPONENT, TYPE], [])
 
 # V3D-specific intrinsic to load the number of layers attached to
 # the target framebuffer
 intrinsic("load_fb_layers_v3d", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# Intel-specific query for loading from the brw_image_param struct passed
+# into the shader as a uniform.  The variable is a deref to the image
+# variable. The const index specifies which of the six parameters to load.
+intrinsic("image_deref_load_param_intel", src_comp=[1], dest_comp=0,
+          indices=[BASE], flags=[CAN_ELIMINATE, CAN_REORDER])
+image("load_raw_intel", src_comp=[1], dest_comp=0,
+      flags=[CAN_ELIMINATE])
+image("store_raw_intel", src_comp=[1, 0])
+
+# Number of data items being operated on for a SIMD program.
+system_value("simd_width_intel", 1)

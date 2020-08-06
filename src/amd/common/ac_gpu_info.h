@@ -59,6 +59,7 @@ struct radeon_info {
 	/* Features. */
 	bool                        has_graphics; /* false if the chip is compute-only */
 	uint32_t                    num_rings[NUM_RING_TYPES];
+	uint32_t                    ib_pad_dw_mask[NUM_RING_TYPES];
 	bool                        has_clear_state;
 	bool                        has_distributed_tess;
 	bool                        has_dcc_constant_encode;
@@ -133,6 +134,7 @@ struct radeon_info {
 	bool                        has_userptr;
 	bool                        has_syncobj;
 	bool                        has_syncobj_wait_for_submit;
+	bool                        has_timeline_syncobj;
 	bool                        has_fence_to_handle;
 	bool                        has_ctx_priority;
 	bool                        has_local_buffers;
@@ -151,6 +153,8 @@ struct radeon_info {
 	bool                        has_read_registers_query;
 	bool                        has_gds_ordered_append;
 	bool                        has_scheduled_fence_dependency;
+	/* Whether SR-IOV is enabled or amdgpu.mcbp=1 was set on the kernel command line. */
+	bool                        mid_command_buffer_preemption_enabled;
 
 	/* Shader cores. */
 	uint32_t                    cu_mask[4][2];

@@ -32,7 +32,7 @@ sys.path.append(VULKAN_UTIL)
 
 from vk_extensions import *
 
-API_PATCH_VERSION = 131
+API_PATCH_VERSION = 145
 
 # Supported API versions.  Each one is the maximum patch version for the given
 # version.  Version come in increasing order and each version is available if
@@ -87,7 +87,10 @@ EXTENSIONS = [
     Extension('VK_KHR_maintenance2',                      1, True),
     Extension('VK_KHR_maintenance3',                      1, True),
     Extension('VK_KHR_multiview',                         1, True),
-    Extension('VK_KHR_performance_query',                 1, 'device->use_softpin && device->perf && device->perf->i915_perf_version >= 3'),
+    Extension('VK_KHR_performance_query',                 1,
+              'device->use_softpin && device->perf && ' +
+              'device->perf->i915_perf_version >= 3 && ' +
+              'device->use_call_secondary'),
     Extension('VK_KHR_pipeline_executable_properties',    1, True),
     Extension('VK_KHR_push_descriptor',                   1, True),
     Extension('VK_KHR_relaxed_block_layout',              1, True),
@@ -115,6 +118,7 @@ EXTENSIONS = [
     Extension('VK_KHR_wayland_surface',                   6, 'VK_USE_PLATFORM_WAYLAND_KHR'),
     Extension('VK_KHR_xcb_surface',                       6, 'VK_USE_PLATFORM_XCB_KHR'),
     Extension('VK_KHR_xlib_surface',                      6, 'VK_USE_PLATFORM_XLIB_KHR'),
+    Extension('VK_EXT_4444_formats',                      1, True),
     Extension('VK_EXT_acquire_xlib_display',              1, 'VK_USE_PLATFORM_XLIB_XRANDR_EXT'),
     Extension('VK_EXT_buffer_device_address',             1, 'device->has_a64_buffer_access'),
     Extension('VK_EXT_calibrated_timestamps',             1, 'device->has_reg_timestamp'),
@@ -127,6 +131,7 @@ EXTENSIONS = [
     Extension('VK_EXT_direct_mode_display',               1, 'VK_USE_PLATFORM_DISPLAY_KHR'),
     Extension('VK_EXT_display_control',                   1, 'VK_USE_PLATFORM_DISPLAY_KHR'),
     Extension('VK_EXT_display_surface_counter',           1, 'VK_USE_PLATFORM_DISPLAY_KHR'),
+    Extension('VK_EXT_extended_dynamic_state',            1, True),
     Extension('VK_EXT_external_memory_dma_buf',           1, True),
     Extension('VK_EXT_external_memory_host',              1, True),
     Extension('VK_EXT_fragment_shader_interlock',         1, 'device->info.gen >= 9'),
@@ -134,11 +139,13 @@ EXTENSIONS = [
               'device->has_context_priority'),
     Extension('VK_EXT_host_query_reset',                  1, True),
     Extension('VK_EXT_image_drm_format_modifier',         1, False),
+    Extension('VK_EXT_image_robustness',                  1, True),
     Extension('VK_EXT_index_type_uint8',                  1, True),
     Extension('VK_EXT_inline_uniform_block',              1, True),
     Extension('VK_EXT_line_rasterization',                1, True),
     Extension('VK_EXT_memory_budget',                     1, 'device->has_mem_available'),
     Extension('VK_EXT_pci_bus_info',                      2, True),
+    Extension('VK_EXT_pipeline_creation_cache_control',   3, True),
     Extension('VK_EXT_pipeline_creation_feedback',        1, True),
     Extension('VK_EXT_post_depth_coverage',               1, 'device->info.gen >= 9'),
     Extension('VK_EXT_private_data',                      1, True),
@@ -147,6 +154,7 @@ EXTENSIONS = [
     Extension('VK_EXT_sampler_filter_minmax',             1, 'device->info.gen >= 9'),
     Extension('VK_EXT_scalar_block_layout',               1, True),
     Extension('VK_EXT_separate_stencil_usage',            1, True),
+    Extension('VK_EXT_shader_atomic_float',               1, True),
     Extension('VK_EXT_shader_demote_to_helper_invocation', 1, True),
     Extension('VK_EXT_shader_stencil_export',             1, 'device->info.gen >= 9'),
     Extension('VK_EXT_shader_subgroup_ballot',            1, True),

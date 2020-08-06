@@ -1,6 +1,6 @@
 #!/bin/bash
 
-BM=$CI_PROJECT_DIR/.gitlab-ci/bare-metal
+BM=$CI_PROJECT_DIR/install/bare-metal
 
 if [ -z "$BM_SERIAL" -a -z "$BM_SERIAL_SCRIPT" ]; then
   echo "Must set BM_SERIAL OR BM_SERIAL_SCRIPT in your gitlab-runner config.toml [[runners]] environment"
@@ -45,19 +45,30 @@ if [ -z "$BM_ROOTFS" ]; then
   exit 1
 fi
 
+if [ -z "$BM_WEBDAV_IP" -o -z "$BM_WEBDAV_PORT" ]; then
+  echo "BM_WEBDAV_IP and/or BM_WEBDAV_PORT is not set - no results will be uploaded from DUT!"
+  WEBDAV_CMDLINE=""
+else
+  WEBDAV_CMDLINE="webdav=http://$BM_WEBDAV_IP:$BM_WEBDAV_PORT"
+fi
+
 set -ex
 
-# Copy the rootfs to a temporary for our setup, as I believe changes to the
-# container can end up impacting future runs.
-cp -Rp $BM_ROOTFS/ rootfs
+# Clear out any previous run's artifacts.
+rm -rf results/
+mkdir -p results
+find artifacts/ -name serial\*.txt  | xargs rm -f
 
-. .gitlab-ci/bare-metal/rootfs-setup.sh rootfs
+# Create the rootfs in a temp dir
+rsync -a --delete $BM_ROOTFS/ rootfs/
+. $BM/rootfs-setup.sh rootfs
 
 # Finally, pack it up into a cpio rootfs.  Skip the vulkan CTS since none of
 # these devices use it and it would take up space in the initrd.
 pushd rootfs
 find -H | \
-  egrep -v "external/(openglcts|vulkancts|amber|glslang|spirv-tools)" | \
+  egrep -v "external/(openglcts|vulkancts|amber|glslang|spirv-tools)" |
+  egrep -v "traces-db|apitrace|renderdoc|python" | \
   cpio -H newc -o | \
   xz --check=crc32 -T4 - > $CI_PROJECT_DIR/rootfs.cpio.gz
 popd
@@ -68,8 +79,16 @@ abootimg \
   --create artifacts/fastboot.img \
   -k Image.gz-dtb \
   -r rootfs.cpio.gz \
-  -c cmdline="$BM_CMDLINE"
+  -c cmdline="$BM_CMDLINE $WEBDAV_CMDLINE"
 rm Image.gz-dtb
+
+# Start nginx to get results from DUT
+if [ -n "$WEBDAV_CMDLINE" ]; then
+  ln -s `pwd`/results /results
+  sed -i s/80/$BM_WEBDAV_PORT/g /etc/nginx/sites-enabled/default
+  sed -i s/www-data/root/g /etc/nginx/nginx.conf
+  nginx
+fi
 
 # Start watching serial, and power up the device.
 if [ -n "$BM_SERIAL" ]; then
@@ -92,13 +111,15 @@ $BM/expect-output.sh artifacts/serial-output.txt \
 fastboot boot -s $BM_FASTBOOT_SERIAL artifacts/fastboot.img
 
 # Wait for the device to complete the deqp run
-$BM/expect-output.sh artifacts/serial-output.txt -f "DEQP RESULT"
+$BM/expect-output.sh artifacts/serial-output.txt \
+    -f "bare-metal result" \
+    -e "---. end Kernel panic"
 
 # power down the device
 PATH=$BM:$PATH $BM_POWERDOWN
 
 set +e
-if grep -q "DEQP RESULT: pass" artifacts/serial-output.txt; then
+if grep -q "bare-metal result: pass" artifacts/serial-output.txt; then
    exit 0
 else
    exit 1

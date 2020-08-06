@@ -31,7 +31,6 @@ files_panfrost = files(
   'pan_context.c',
   'pan_blit.c',
   'pan_job.c',
-  'pan_allocate.c',
   'pan_assemble.c',
   'pan_blending.c',
   'pan_blend_shaders.c',
@@ -39,9 +38,9 @@ files_panfrost = files(
   'pan_cmdstream.c',
   'pan_compute.c',
   'pan_fragment.c',
-  'pan_scoreboard.c',
   'pan_sfbd.c',
   'pan_mfbd.c',
+  'pan_partial_update.c',
 )
 
 panfrost_includes = [

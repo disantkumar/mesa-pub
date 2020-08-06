@@ -231,6 +231,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_TGSI_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
@@ -322,10 +323,19 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return class_3d >= GM200_3D_CLASS;
    case PIPE_CAP_CONSERVATIVE_RASTER_PRE_SNAP_TRIANGLES:
       return class_3d >= GP100_3D_CLASS;
+   case PIPE_CAP_RESOURCE_FROM_USER_MEMORY_COMPUTE_ONLY:
+   case PIPE_CAP_SYSTEM_SVM:
+      return screen->has_svm ? 1 : 0;
 
    /* caps has to be turned on with nir */
+   case PIPE_CAP_GL_SPIRV:
+   case PIPE_CAP_GL_SPIRV_VARIABLE_POINTERS:
    case PIPE_CAP_INT64_DIVMOD:
       return screen->prefer_nir ? 1 : 0;
+
+   /* nir related caps */
+   case PIPE_CAP_NIR_IMAGES_AS_DEREF:
+      return 0;
 
    /* unsupported caps */
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
@@ -387,7 +397,6 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_OPENCL_INTEGER_FUNCTIONS: /* could be done */
    case PIPE_CAP_INTEGER_MULTIPLY_32X16: /* could be done */
    case PIPE_CAP_FRONTEND_NOOP:
-   case PIPE_CAP_GL_SPIRV:
    case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
    case PIPE_CAP_VIEWPORT_TRANSFORM_LOWERED:
    case PIPE_CAP_PSIZ_CLAMPED:
@@ -504,6 +513,7 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_INT16:
+   case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
       return 0;
@@ -1122,7 +1132,7 @@ nvc0_screen_create(struct nouveau_device *dev)
    PUSH_DATA (push, screen->m2mf->oclass);
    if (screen->m2mf->oclass == NVE4_P2MF_CLASS) {
       BEGIN_NVC0(push, SUBC_COPY(NV01_SUBCHAN_OBJECT), 1);
-      PUSH_DATA (push, 0xa0b5);
+      PUSH_DATA (push, NVE4_COPY_CLASS);
    }
 
    ret = nouveau_object_new(chan, 0xbeef902d, NVC0_2D_CLASS, NULL, 0,
@@ -1140,9 +1150,9 @@ nvc0_screen_create(struct nouveau_device *dev)
    PUSH_DATA (push, 0);
    BEGIN_NVC0(push, NVC0_2D(COLOR_KEY_ENABLE), 1);
    PUSH_DATA (push, 0);
-   BEGIN_NVC0(push, SUBC_2D(0x0884), 1);
+   BEGIN_NVC0(push, NVC0_2D(SET_PIXELS_FROM_MEMORY_CORRAL_SIZE), 1);
    PUSH_DATA (push, 0x3f);
-   BEGIN_NVC0(push, SUBC_2D(0x0888), 1);
+   BEGIN_NVC0(push, NVC0_2D(SET_PIXELS_FROM_MEMORY_SAFE_OVERLAP), 1);
    PUSH_DATA (push, 1);
    BEGIN_NVC0(push, NVC0_2D(COND_MODE), 1);
    PUSH_DATA (push, NV50_2D_COND_MODE_ALWAYS);

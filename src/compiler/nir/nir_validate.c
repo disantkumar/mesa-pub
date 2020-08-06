@@ -514,6 +514,21 @@ validate_deref_instr(nir_deref_instr *instr, validate_state *state)
    }
 }
 
+static bool
+vectorized_intrinsic(nir_intrinsic_instr *intr)
+{
+   const nir_intrinsic_info *info = &nir_intrinsic_infos[intr->intrinsic];
+
+   if (info->dest_components == 0)
+      return true;
+
+   for (unsigned i = 0; i < info->num_srcs; i++)
+      if (info->src_components[i] == 0)
+         return true;
+
+   return false;
+}
+
 static void
 validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
 {
@@ -640,6 +655,9 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
 
       validate_dest(&instr->dest, state, dest_bit_size, components_written);
    }
+
+   if (!vectorized_intrinsic(instr))
+      validate_assert(state, instr->num_components == 0);
 }
 
 static void
@@ -855,8 +873,8 @@ validate_phi_src(nir_phi_instr *instr, nir_block *pred, validate_state *state)
          return;
       }
    }
-
-   abort();
+   validate_assert(state, !"Phi does not have a source corresponding to one "
+                           "of its predecessor blocks");
 }
 
 static void
@@ -1075,42 +1093,21 @@ postvalidate_reg_decl(nir_register *reg, validate_state *state)
       validate_assert(state, entry);
       _mesa_set_remove(reg_state->uses, entry);
    }
-
-   if (reg_state->uses->entries != 0) {
-      printf("extra entries in register uses:\n");
-      set_foreach(reg_state->uses, entry)
-         printf("%p\n", entry->key);
-
-      abort();
-   }
+   validate_assert(state, reg_state->uses->entries == 0);
 
    nir_foreach_if_use(src, reg) {
       struct set_entry *entry = _mesa_set_search(reg_state->if_uses, src);
       validate_assert(state, entry);
       _mesa_set_remove(reg_state->if_uses, entry);
    }
-
-   if (reg_state->if_uses->entries != 0) {
-      printf("extra entries in register if_uses:\n");
-      set_foreach(reg_state->if_uses, entry)
-         printf("%p\n", entry->key);
-
-      abort();
-   }
+   validate_assert(state, reg_state->if_uses->entries == 0);
 
    nir_foreach_def(src, reg) {
       struct set_entry *entry = _mesa_set_search(reg_state->defs, src);
       validate_assert(state, entry);
       _mesa_set_remove(reg_state->defs, entry);
    }
-
-   if (reg_state->defs->entries != 0) {
-      printf("extra entries in register defs:\n");
-      set_foreach(reg_state->defs, entry)
-         printf("%p\n", entry->key);
-
-      abort();
-   }
+   validate_assert(state, reg_state->defs->entries == 0);
 }
 
 static void
@@ -1181,7 +1178,7 @@ validate_function_impl(nir_function_impl *impl, validate_state *state)
    state->parent_node = &impl->cf_node;
 
    exec_list_validate(&impl->locals);
-   nir_foreach_variable(var, &impl->locals) {
+   nir_foreach_function_temp_variable(var, impl) {
       validate_var_decl(var, nir_var_function_temp, state);
    }
 
@@ -1207,13 +1204,8 @@ validate_function_impl(nir_function_impl *impl, validate_state *state)
       postvalidate_reg_decl(reg, state);
    }
 
-   if (state->ssa_srcs->entries != 0) {
-      printf("extra dangling SSA sources:\n");
-      set_foreach(state->ssa_srcs, entry)
-         printf("%p\n", entry->key);
-
-      abort();
-   }
+   validate_assert(state, state->ssa_srcs->entries == 0);
+   _mesa_set_clear(state->ssa_srcs, NULL);
 }
 
 static void
@@ -1296,38 +1288,19 @@ nir_validate_shader(nir_shader *shader, const char *when)
 
    state.shader = shader;
 
-   exec_list_validate(&shader->uniforms);
-   nir_foreach_variable(var, &shader->uniforms) {
-      validate_var_decl(var, nir_var_uniform |
-                             nir_var_mem_ubo |
-                             nir_var_mem_ssbo,
-                        &state);
-   }
+   nir_variable_mode valid_modes =
+      nir_var_shader_in |
+      nir_var_shader_out |
+      nir_var_shader_temp |
+      nir_var_uniform |
+      nir_var_mem_ubo |
+      nir_var_system_value |
+      nir_var_mem_ssbo |
+      nir_var_mem_shared;
 
-   exec_list_validate(&shader->inputs);
-   nir_foreach_variable(var, &shader->inputs) {
-     validate_var_decl(var, nir_var_shader_in, &state);
-   }
-
-   exec_list_validate(&shader->outputs);
-   nir_foreach_variable(var, &shader->outputs) {
-     validate_var_decl(var, nir_var_shader_out, &state);
-   }
-
-   exec_list_validate(&shader->shared);
-   nir_foreach_variable(var, &shader->shared) {
-      validate_var_decl(var, nir_var_mem_shared, &state);
-   }
-
-   exec_list_validate(&shader->globals);
-   nir_foreach_variable(var, &shader->globals) {
-     validate_var_decl(var, nir_var_shader_temp, &state);
-   }
-
-   exec_list_validate(&shader->system_values);
-   nir_foreach_variable(var, &shader->system_values) {
-     validate_var_decl(var, nir_var_system_value, &state);
-   }
+   exec_list_validate(&shader->variables);
+   nir_foreach_variable_in_shader(var, shader)
+     validate_var_decl(var, valid_modes, &state);
 
    exec_list_validate(&shader->functions);
    foreach_list_typed(nir_function, func, node, &shader->functions) {

@@ -203,18 +203,6 @@ fd_half_precision(struct pipe_framebuffer_state *pfb)
 	return true;
 }
 
-/* Note sure if this is same on all gens, but seems to be same on the later
- * gen's
- */
-static inline unsigned
-fd_calc_guardband(unsigned x)
-{
-	float l = log2(x);
-	if (l <= 8)
-		return 511;
-	return 511 - ((l - 8) * 65);
-}
-
 static inline void emit_marker(struct fd_ringbuffer *ring, int scratch_idx);
 
 /* like OUT_RING() but appends a cmdstream patch point to 'buf' */
@@ -310,7 +298,7 @@ pack_rgba(enum pipe_format format, const float *rgba)
 	do { __typeof(a) __tmp = (a); (a) = (b); (b) = __tmp; } while (0)
 
 #define foreach_bit(b, mask) \
-	for (uint32_t _m = (mask); _m && ({(b) = u_bit_scan(&_m); 1;});)
+	for (uint32_t _m = (mask), b; _m && ({(b) = u_bit_scan(&_m); (void)(b); 1;});)
 
 
 #define BIT(bit) (1u << bit)
@@ -325,6 +313,7 @@ fd_msaa_samples(unsigned samples)
 	switch (samples) {
 	default:
 		debug_assert(0);
+		/* fallthrough */
 	case 0:
 	case 1: return MSAA_ONE;
 	case 2: return MSAA_TWO;

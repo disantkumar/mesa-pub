@@ -44,8 +44,7 @@
 #include "ir3/ir3_nir.h"
 
 static void
-dump_shader_info(struct ir3_shader_variant *v, bool binning_pass,
-		struct pipe_debug_callback *debug)
+dump_shader_info(struct ir3_shader_variant *v, struct pipe_debug_callback *debug)
 {
 	if (!unlikely(fd_mesa_debug & FD_DBG_SHADERDB))
 		return;
@@ -68,6 +67,27 @@ dump_shader_info(struct ir3_shader_variant *v, bool binning_pass,
 			v->info.sstall,
 			v->info.ss, v->info.sy,
 			v->max_sun, v->loops);
+}
+
+static void
+upload_shader_variant(struct ir3_shader_variant *v)
+{
+	struct shader_info *info = &v->shader->nir->info;
+	struct ir3_compiler *compiler = v->shader->compiler;
+
+	assert(!v->bo);
+
+	unsigned sz = v->info.sizedwords * 4;
+
+	v->bo = fd_bo_new(compiler->dev, sz,
+			DRM_FREEDRENO_GEM_CACHE_WCOMBINE |
+			DRM_FREEDRENO_GEM_TYPE_KMEM,
+			"%s:%s", ir3_shader_stage(v), info->name);
+
+	/* Always include shaders in kernel crash dumps. */
+	fd_bo_mark_for_dump(v->bo);
+
+	memcpy(fd_bo_map(v->bo), v->bin, sz);
 }
 
 struct ir3_shader_variant *
@@ -97,7 +117,14 @@ ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key,
 					key.vastc_srgb, key.fastc_srgb);
 
 		}
-		dump_shader_info(v, binning_pass, debug);
+
+		dump_shader_info(v, debug);
+		upload_shader_variant(v);
+
+		if (v->binning) {
+			upload_shader_variant(v->binning);
+			dump_shader_info(v->binning, debug);
+		}
 	}
 
 	return v;
@@ -145,7 +172,7 @@ ir3_shader_create(struct ir3_compiler *compiler,
 	struct ir3_stream_output_info stream_output;
 	copy_stream_out(&stream_output, &cso->stream_output);
 
-	struct ir3_shader *shader = ir3_shader_from_nir(compiler, nir, &stream_output);
+	struct ir3_shader *shader = ir3_shader_from_nir(compiler, nir, 0, &stream_output);
 
 	/* Compile standard variants immediately to try to avoid draw-time stalls
 	 * to run the compiler.
@@ -180,10 +207,27 @@ ir3_shader_create(struct ir3_compiler *compiler,
 		break;
 	}
 
-	ir3_shader_variant(shader, key, false, debug);
+	key.safe_constlen = false;
+	struct ir3_shader_variant *v = ir3_shader_variant(shader, key, false, debug);
+	if (!v)
+		return NULL;
 
-	if (nir->info.stage == MESA_SHADER_VERTEX)
-		ir3_shader_variant(shader, key, true, debug);
+	if (v->constlen > compiler->max_const_safe) {
+		key.safe_constlen = true;
+		ir3_shader_variant(shader, key, false, debug);
+	}
+
+	if (nir->info.stage == MESA_SHADER_VERTEX) {
+		key.safe_constlen = false;
+		v = ir3_shader_variant(shader, key, true, debug);
+		if (!v)
+			return NULL;
+
+		if (v->constlen > compiler->max_const_safe) {
+			key.safe_constlen = true;
+			ir3_shader_variant(shader, key, true, debug);
+		}
+	}
 
 	shader->initial_variants_done = true;
 
@@ -211,7 +255,7 @@ ir3_shader_create_compute(struct ir3_compiler *compiler,
 		nir = tgsi_to_nir(cso->prog, screen, false);
 	}
 
-	struct ir3_shader *shader = ir3_shader_from_nir(compiler, nir, NULL);
+	struct ir3_shader *shader = ir3_shader_from_nir(compiler, nir, 0, NULL);
 
 	/* Immediately compile a standard variant.  We have so few variants in our
 	 * shaders, that doing so almost eliminates draw-time recompiles.  (This
@@ -225,7 +269,7 @@ ir3_shader_create_compute(struct ir3_compiler *compiler,
 	return shader;
 }
 
-static void *
+void *
 ir3_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_state *cso)
 {
 	struct fd_context *ctx = fd_context(pctx);
@@ -233,11 +277,33 @@ ir3_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_stat
 	return ir3_shader_create(compiler, cso, &ctx->debug, pctx->screen);
 }
 
-static void
+void
 ir3_shader_state_delete(struct pipe_context *pctx, void *hwcso)
 {
 	struct ir3_shader *so = hwcso;
+
+	/* free the uploaded shaders, since this is handled outside of the
+	 * shared ir3 code (ie. not used by turnip):
+	 */
+	for (struct ir3_shader_variant *v = so->variants; v; v = v->next) {
+		fd_bo_del(v->bo);
+		v->bo = NULL;
+
+		if (v->binning && v->binning->bo) {
+			fd_bo_del(v->binning->bo);
+			v->binning->bo = NULL;
+		}
+	}
+
 	ir3_shader_destroy(so);
+}
+
+static void
+ir3_screen_finalize_nir(struct pipe_screen *pscreen, void *nir, bool optimize)
+{
+	struct fd_screen *screen = fd_screen(pscreen);
+
+	ir3_finalize_nir(screen->compiler, nir);
 }
 
 void
@@ -257,4 +323,10 @@ ir3_prog_init(struct pipe_context *pctx)
 
 	pctx->create_fs_state = ir3_shader_state_create;
 	pctx->delete_fs_state = ir3_shader_state_delete;
+}
+
+void
+ir3_screen_init(struct pipe_screen *pscreen)
+{
+	pscreen->finalize_nir = ir3_screen_finalize_nir;
 }

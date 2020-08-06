@@ -62,6 +62,7 @@ static const struct {
    { "jsl", 0x4E71 },
    { "tgl", 0x9a49 },
    { "rkl", 0x4c8a },
+   { "dg1", 0x4905 },
 };
 
 /**
@@ -909,83 +910,46 @@ static const struct gen_device_info gen_device_info_icl_gt0_5 = {
    .simulator_id = 19,
 };
 
-static const struct gen_device_info gen_device_info_ehl_7 = {
+#define GEN11_LP_FEATURES                           \
+   .is_elkhartlake = true,                          \
+   .urb = {                                         \
+      GEN11_URB_MIN_MAX_ENTRIES,                    \
+   },                                               \
+   .disable_ccs_repack = true,                      \
+   .simulator_id = 28
+
+static const struct gen_device_info gen_device_info_ehl_4x8 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
-   .simulator_id = 28,
+   GEN11_LP_FEATURES,
 };
 
-static const struct gen_device_info gen_device_info_ehl_6 = {
+static const struct gen_device_info gen_device_info_ehl_4x6 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
+   GEN11_LP_FEATURES,
    .num_eu_per_subslice = 6,
-   .simulator_id = 28,
 };
 
-static const struct gen_device_info gen_device_info_ehl_5 = {
+static const struct gen_device_info gen_device_info_ehl_4x5 = {
    GEN11_FEATURES(1, 1, subslices(4), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
-   .num_eu_per_subslice = 4,
-   .simulator_id = 28,
+   GEN11_LP_FEATURES,
+   .num_eu_per_subslice = 5,
 };
 
-static const struct gen_device_info gen_device_info_ehl_4 = {
+static const struct gen_device_info gen_device_info_ehl_4x4 = {
+   GEN11_FEATURES(1, 1, subslices(4), 4),
+   GEN11_LP_FEATURES,
+   .num_eu_per_subslice = 4,
+};
+
+static const struct gen_device_info gen_device_info_ehl_2x8 = {
    GEN11_FEATURES(1, 1, subslices(2), 4),
-   .is_elkhartlake = true,
-   .urb = {
-      .min_entries = {
-         [MESA_SHADER_VERTEX]    = 64,
-         [MESA_SHADER_TESS_EVAL] = 34,
-      },
-      .max_entries = {
-         [MESA_SHADER_VERTEX]    = 2384,
-         [MESA_SHADER_TESS_CTRL] = 1032,
-         [MESA_SHADER_TESS_EVAL] = 2384,
-         [MESA_SHADER_GEOMETRY]  = 1032,
-      },
-   },
-   .disable_ccs_repack = true,
+   GEN11_LP_FEATURES,
+};
+
+static const struct gen_device_info gen_device_info_ehl_2x4 = {
+   GEN11_FEATURES(1, 1, subslices(2), 4),
+   GEN11_LP_FEATURES,
    .num_eu_per_subslice =4,
-   .simulator_id = 28,
 };
 
 #define GEN12_URB_MIN_MAX_ENTRIES                   \
@@ -1048,6 +1012,17 @@ static const struct gen_device_info gen_device_info_rkl_gt05 = {
 
 static const struct gen_device_info gen_device_info_rkl_gt1 = {
    GEN12_GT_FEATURES(1),
+};
+
+#define GEN12_DG1_FEATURES                      \
+   GEN12_GT_FEATURES(2),                        \
+   .is_dg1 = true,                              \
+   .has_llc = false,                            \
+   .urb.size = 768,                             \
+   .simulator_id = 30
+
+UNUSED static const struct gen_device_info gen_device_info_dg1 = {
+   GEN12_DG1_FEATURES,
 };
 
 static void
@@ -1408,6 +1383,33 @@ gen_get_aperture_size(int fd, uint64_t *size)
    return ret;
 }
 
+static bool
+gen_has_get_tiling(int fd)
+{
+   int ret;
+
+   struct drm_i915_gem_create gem_create = {
+      .size = 4096,
+   };
+
+   if (gen_ioctl(fd, DRM_IOCTL_I915_GEM_CREATE, &gem_create)) {
+      unreachable("Failed to create GEM BO");
+      return false;
+   }
+
+   struct drm_i915_gem_get_tiling get_tiling = {
+      .handle = gem_create.handle,
+   };
+   ret = gen_ioctl(fd, DRM_IOCTL_I915_GEM_SET_TILING, &get_tiling);
+
+   struct drm_gem_close close = {
+      .handle = gem_create.handle,
+   };
+   gen_ioctl(fd, DRM_IOCTL_GEM_CLOSE, &close);
+
+   return ret == 0;
+}
+
 bool
 gen_get_device_info_from_fd(int fd, struct gen_device_info *devinfo)
 {
@@ -1476,6 +1478,7 @@ gen_get_device_info_from_fd(int fd, struct gen_device_info *devinfo)
    }
 
    gen_get_aperture_size(fd, &devinfo->aperture_bytes);
+   devinfo->has_tiling_uapi = gen_has_get_tiling(fd);
 
    return true;
 }

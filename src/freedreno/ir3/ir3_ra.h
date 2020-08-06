@@ -27,6 +27,8 @@
 #ifndef IR3_RA_H_
 #define IR3_RA_H_
 
+#include <setjmp.h>
+
 #include "util/bitset.h"
 
 
@@ -89,6 +91,14 @@ struct ir3_ra_reg_set {
 	unsigned int half_classes[half_class_count];
 	unsigned int high_classes[high_class_count];
 
+	/* pre-fetched tex dst is limited, on current gens to regs
+	 * 0x3f and below.  An additional register class, with one
+	 * vreg, that is setup to conflict with any regs above that
+	 * limit.
+	 */
+	unsigned prefetch_exclude_class;
+	unsigned prefetch_exclude_reg;
+
 	/* The virtual register space flattens out all the classes,
 	 * starting with full, followed by half and then high, ie:
 	 *
@@ -145,7 +155,8 @@ struct ir3_ra_ctx {
 
 	unsigned alloc_count;
 	unsigned r0_xyz_nodes; /* ra node numbers for r0.[xyz] precolors */
-	unsigned hr0_xyz_nodes; /* ra node numbers for hr0.[xyz] precolors pre-a6xx */
+	unsigned hr0_xyz_nodes; /* ra node numbers for hr0.[xyz] precolors */
+	unsigned prefetch_exclude_node;
 	/* one per class, plus one slot for arrays: */
 	unsigned class_alloc_count[total_class_count + 1];
 	unsigned class_base[total_class_count + 1];
@@ -171,7 +182,18 @@ struct ir3_ra_ctx {
 	 */
 	unsigned namebuf[NUM_REGS];
 	unsigned namecnt, nameidx;
+
+	/* Error handling: */
+	jmp_buf jmp_env;
 };
+
+#define ra_assert(ctx, expr) do { \
+		if (!(expr)) { \
+			_debug_printf("RA: %s:%u: %s: Assertion `%s' failed.\n", __FILE__, __LINE__, __func__, #expr); \
+			longjmp((ctx)->jmp_env, -1); \
+		} \
+	} while (0)
+#define ra_unreachable(ctx, str) ra_assert(ctx, !str)
 
 static inline int
 ra_name(struct ir3_ra_ctx *ctx, struct ir3_ra_instr_data *id)

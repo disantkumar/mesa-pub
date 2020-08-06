@@ -4,7 +4,7 @@
 # NFS and TFTP to boot.
 
 # We're run from the root of the repo, make a helper var for our paths
-BM=$CI_PROJECT_DIR/.gitlab-ci/bare-metal
+BM=$CI_PROJECT_DIR/install/bare-metal
 
 # Runner config checks
 if [ -z "$BM_SERIAL" ]; then
@@ -47,6 +47,11 @@ fi
 
 set -ex
 
+# Clear out any previous run's artifacts.
+rm -rf results/
+mkdir -p results
+find artifacts/ -name serial\*.txt  | xargs rm -f
+
 # Create the rootfs in the NFS directory.  rm to make sure it's in a pristine
 # state, since it's volume-mounted on the host.
 rsync -a --delete $BM_ROOTFS/ /nfs/
@@ -76,7 +81,10 @@ $BM/expect-output.sh serial-output.txt -f "load_archive: loading locale_en.bin"
 $BM/write-serial.py $BM_SERIAL `printf '\016'`
 
 # Wait for the device to complete the deqp run
-$BM/expect-output.sh serial-output.txt -f "DEQP RESULT"
+$BM/expect-output.sh serial-output.txt \
+    -f "bare-metal result" \
+    -e "---. end Kernel panic" \
+    -e "POWER_GOOD not seen in time"
 
 # power down the CPU on the device
 $BM/write-serial.py $BM_SERIAL_EC 'power off'
@@ -90,7 +98,7 @@ mkdir -p results
 cp -Rp /nfs/results/. results/
 
 set +e
-if grep -q "DEQP RESULT: pass" serial-output.txt; then
+if grep -q "bare-metal result: pass" serial-output.txt; then
    exit 0
 else
    exit 1

@@ -109,6 +109,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
    case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_INDEP_BLEND_ENABLE:
    case PIPE_CAP_INDEP_BLEND_FUNC:
    case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
@@ -407,6 +408,7 @@ iris_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_FP16:
    case PIPE_SHADER_CAP_FP16_DERIVATIVES:
    case PIPE_SHADER_CAP_INT16:
+   case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       return 0;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
    case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
@@ -673,7 +675,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
     *
     * Checking the last feature availability will include all previous ones.
     */
-   if (!iris_getparam_integer(fd, I915_PARAM_HAS_CONTEXT_ISOLATION)) {
+   if (iris_getparam_integer(fd, I915_PARAM_HAS_CONTEXT_ISOLATION) <= 0) {
       debug_error("Kernel is too old for Iris. Consider upgrading to kernel v4.16.\n");
       return NULL;
    }

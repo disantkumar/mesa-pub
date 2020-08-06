@@ -29,6 +29,7 @@
 #include "nir/nir_serialize.h"
 #include "anv_private.h"
 #include "nir/nir_xfb_info.h"
+#include "vulkan/util/vk_util.h"
 
 struct anv_shader_bin *
 anv_shader_bin_create(struct anv_device *device,
@@ -280,11 +281,13 @@ sha1_compare_func(const void *sha1_a, const void *sha1_b)
 void
 anv_pipeline_cache_init(struct anv_pipeline_cache *cache,
                         struct anv_device *device,
-                        bool cache_enabled)
+                        bool cache_enabled,
+                        bool external_sync)
 {
    vk_object_base_init(&device->vk, &cache->base,
                        VK_OBJECT_TYPE_PIPELINE_CACHE);
    cache->device = device;
+   cache->external_sync = external_sync;
    pthread_mutex_init(&cache->mutex, NULL);
 
    if (cache_enabled) {
@@ -340,6 +343,20 @@ anv_pipeline_cache_search_locked(struct anv_pipeline_cache *cache,
       return NULL;
 }
 
+static inline void
+anv_cache_lock(struct anv_pipeline_cache *cache)
+{
+   if (!cache->external_sync)
+      pthread_mutex_lock(&cache->mutex);
+}
+
+static inline void
+anv_cache_unlock(struct anv_pipeline_cache *cache)
+{
+   if (!cache->external_sync)
+      pthread_mutex_unlock(&cache->mutex);
+}
+
 struct anv_shader_bin *
 anv_pipeline_cache_search(struct anv_pipeline_cache *cache,
                           const void *key_data, uint32_t key_size)
@@ -347,12 +364,12 @@ anv_pipeline_cache_search(struct anv_pipeline_cache *cache,
    if (!cache->cache)
       return NULL;
 
-   pthread_mutex_lock(&cache->mutex);
+   anv_cache_lock(cache);
 
    struct anv_shader_bin *shader =
       anv_pipeline_cache_search_locked(cache, key_data, key_size);
 
-   pthread_mutex_unlock(&cache->mutex);
+   anv_cache_unlock(cache);
 
    /* We increment refcount before handing it to the caller */
    if (shader)
@@ -368,7 +385,7 @@ anv_pipeline_cache_add_shader_bin(struct anv_pipeline_cache *cache,
    if (!cache->cache)
       return;
 
-   pthread_mutex_lock(&cache->mutex);
+   anv_cache_lock(cache);
 
    struct hash_entry *entry = _mesa_hash_table_search(cache->cache, bin->key);
    if (entry == NULL) {
@@ -377,7 +394,7 @@ anv_pipeline_cache_add_shader_bin(struct anv_pipeline_cache *cache,
       _mesa_hash_table_insert(cache->cache, bin->key, bin);
    }
 
-   pthread_mutex_unlock(&cache->mutex);
+   anv_cache_unlock(cache);
 }
 
 static struct anv_shader_bin *
@@ -430,7 +447,7 @@ anv_pipeline_cache_upload_kernel(struct anv_pipeline_cache *cache,
                                  const struct anv_pipeline_bind_map *bind_map)
 {
    if (cache->cache) {
-      pthread_mutex_lock(&cache->mutex);
+      anv_cache_lock(cache);
 
       struct anv_shader_bin *bin =
          anv_pipeline_cache_add_shader_locked(cache, stage, key_data, key_size,
@@ -440,7 +457,7 @@ anv_pipeline_cache_upload_kernel(struct anv_pipeline_cache *cache,
                                               stats, num_stats,
                                               xfb_info, bind_map);
 
-      pthread_mutex_unlock(&cache->mutex);
+      anv_cache_unlock(cache);
 
       /* We increment refcount before handing it to the caller */
       if (bin)
@@ -459,14 +476,6 @@ anv_pipeline_cache_upload_kernel(struct anv_pipeline_cache *cache,
    }
 }
 
-struct cache_header {
-   uint32_t header_size;
-   uint32_t header_version;
-   uint32_t vendor_id;
-   uint32_t device_id;
-   uint8_t  uuid[VK_UUID_SIZE];
-};
-
 static void
 anv_pipeline_cache_load(struct anv_pipeline_cache *cache,
                         const void *data, size_t size)
@@ -480,7 +489,7 @@ anv_pipeline_cache_load(struct anv_pipeline_cache *cache,
    struct blob_reader blob;
    blob_reader_init(&blob, data, size);
 
-   struct cache_header header;
+   struct vk_pipeline_cache_header header;
    blob_copy_bytes(&blob, &header, sizeof(header));
    uint32_t count = blob_read_uint32(&blob);
    if (blob.overrun)
@@ -525,7 +534,8 @@ VkResult anv_CreatePipelineCache(
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    anv_pipeline_cache_init(cache, device,
-                           device->physical->instance->pipeline_cache_enabled);
+                           device->physical->instance->pipeline_cache_enabled,
+                           pCreateInfo->flags & VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT_EXT);
 
    if (pCreateInfo->initialDataSize > 0)
       anv_pipeline_cache_load(cache,
@@ -569,8 +579,8 @@ VkResult anv_GetPipelineCacheData(
       blob_init_fixed(&blob, NULL, SIZE_MAX);
    }
 
-   struct cache_header header = {
-      .header_size = sizeof(struct cache_header),
+   struct vk_pipeline_cache_header header = {
+      .header_size = sizeof(struct vk_pipeline_cache_header),
       .header_version = VK_PIPELINE_CACHE_HEADER_VERSION_ONE,
       .vendor_id = 0x8086,
       .device_id = device->info.chipset_id,
@@ -757,12 +767,12 @@ anv_device_search_for_nir(struct anv_device *device,
    if (cache && cache->nir_cache) {
       const struct serialized_nir *snir = NULL;
 
-      pthread_mutex_lock(&cache->mutex);
+      anv_cache_lock(cache);
       struct hash_entry *entry =
          _mesa_hash_table_search(cache->nir_cache, sha1_key);
       if (entry)
          snir = entry->data;
-      pthread_mutex_unlock(&cache->mutex);
+      anv_cache_unlock(cache);
 
       if (snir) {
          struct blob_reader blob;
@@ -787,10 +797,10 @@ anv_device_upload_nir(struct anv_device *device,
                       unsigned char sha1_key[20])
 {
    if (cache && cache->nir_cache) {
-      pthread_mutex_lock(&cache->mutex);
+      anv_cache_lock(cache);
       struct hash_entry *entry =
          _mesa_hash_table_search(cache->nir_cache, sha1_key);
-      pthread_mutex_unlock(&cache->mutex);
+      anv_cache_unlock(cache);
       if (entry)
          return;
 
@@ -803,7 +813,7 @@ anv_device_upload_nir(struct anv_device *device,
          return;
       }
 
-      pthread_mutex_lock(&cache->mutex);
+      anv_cache_lock(cache);
       /* Because ralloc isn't thread-safe, we have to do all this inside the
        * lock.  We could unlock for the big memcpy but it's probably not worth
        * the hassle.
@@ -811,7 +821,7 @@ anv_device_upload_nir(struct anv_device *device,
       entry = _mesa_hash_table_search(cache->nir_cache, sha1_key);
       if (entry) {
          blob_finish(&blob);
-         pthread_mutex_unlock(&cache->mutex);
+         anv_cache_unlock(cache);
          return;
       }
 
@@ -825,6 +835,6 @@ anv_device_upload_nir(struct anv_device *device,
 
       _mesa_hash_table_insert(cache->nir_cache, snir->sha1_key, snir);
 
-      pthread_mutex_unlock(&cache->mutex);
+      anv_cache_unlock(cache);
    }
 }

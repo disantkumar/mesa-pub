@@ -20,6 +20,7 @@
 // OTHER DEALINGS IN THE SOFTWARE.
 //
 
+#include <algorithm>
 #include <unistd.h>
 #include "core/device.hpp"
 #include "core/platform.hpp"
@@ -215,9 +216,9 @@ device::has_unified_memory() const {
    return pipe->get_param(pipe, PIPE_CAP_UMA);
 }
 
-cl_uint
+size_t
 device::mem_base_addr_align() const {
-   return sysconf(_SC_PAGESIZE);
+   return std::max((size_t)sysconf(_SC_PAGESIZE), sizeof(cl_long) * 16);
 }
 
 cl_device_svm_capabilities
@@ -237,13 +238,18 @@ device::svm_support() const {
    //
    // Another unsolvable scenario is a cl_mem object passed by cl_mem reference
    // and SVM pointer into the same kernel at the same time.
-   if (pipe->get_param(pipe, PIPE_CAP_RESOURCE_FROM_USER_MEMORY) &&
-       pipe->get_param(pipe, PIPE_CAP_SYSTEM_SVM))
+   if (allows_user_pointers() && pipe->get_param(pipe, PIPE_CAP_SYSTEM_SVM))
       // we can emulate all lower levels if we support fine grain system
       return CL_DEVICE_SVM_FINE_GRAIN_SYSTEM |
              CL_DEVICE_SVM_COARSE_GRAIN_BUFFER |
              CL_DEVICE_SVM_FINE_GRAIN_BUFFER;
    return 0;
+}
+
+bool
+device::allows_user_pointers() const {
+   return pipe->get_param(pipe, PIPE_CAP_RESOURCE_FROM_USER_MEMORY) ||
+          pipe->get_param(pipe, PIPE_CAP_RESOURCE_FROM_USER_MEMORY_COMPUTE_ONLY);
 }
 
 std::vector<size_t>

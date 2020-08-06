@@ -274,15 +274,17 @@ struct util_format_description
                         unsigned i, unsigned j);
 
    /**
-    * Unpack pixel blocks to R32G32B32A32_FLOAT.
+    * Unpack pixel blocks to R32G32B32A32_UINT/_INT_FLOAT based on whether the
+    * type is pure uint, int, or other.
+    *
     * Note: strides are in bytes.
     *
     * Only defined for non-depth-stencil formats.
     */
    void
-   (*unpack_rgba_float)(float *dst, unsigned dst_stride,
-                        const uint8_t *src, unsigned src_stride,
-                        unsigned width, unsigned height);
+   (*unpack_rgba)(void *dst, unsigned dst_stride,
+                  const uint8_t *src, unsigned src_stride,
+                  unsigned width, unsigned height);
 
    /**
     * Pack pixel blocks from R32G32B32A32_FLOAT.
@@ -371,32 +373,10 @@ struct util_format_description
                    const uint8_t *src, unsigned src_stride,
                    unsigned width, unsigned height);
 
-  /**
-    * Unpack pixel blocks to R32G32B32A32_UINT.
-    * Note: strides are in bytes.
-    *
-    * Only defined for INT formats.
-    */
-   void
-   (*unpack_rgba_uint)(uint32_t *dst, unsigned dst_stride,
-                       const uint8_t *src, unsigned src_stride,
-                       unsigned width, unsigned height);
-
    void
    (*pack_rgba_uint)(uint8_t *dst, unsigned dst_stride,
                      const uint32_t *src, unsigned src_stride,
                      unsigned width, unsigned height);
-
-  /**
-    * Unpack pixel blocks to R32G32B32A32_SINT.
-    * Note: strides are in bytes.
-    *
-    * Only defined for INT formats.
-    */
-   void
-   (*unpack_rgba_sint)(int32_t *dst, unsigned dst_stride,
-                       const uint8_t *src, unsigned src_stride,
-                       unsigned width, unsigned height);
 
    void
    (*pack_rgba_sint)(uint8_t *dst, unsigned dst_stride,
@@ -426,7 +406,7 @@ struct util_format_description
 
 
 const struct util_format_description *
-util_format_description(enum pipe_format format);
+util_format_description(enum pipe_format format) ATTRIBUTE_CONST;
 
 
 /*
@@ -1399,13 +1379,6 @@ util_format_get_plane_height(enum pipe_format format, unsigned plane,
    }
 }
 
-bool util_format_planar_is_supported(struct pipe_screen *screen,
-                                     enum pipe_format format,
-                                     enum pipe_texture_target target,
-                                     unsigned sample_count,
-                                     unsigned storage_sample_count,
-                                     unsigned bind);
-
 /**
  * Return the number of components stored.
  * Formats with block size != 1x1 will always have 1 component (the block).
@@ -1480,15 +1453,6 @@ util_format_unpack_s_8uint(enum pipe_format format, uint8_t *dst,
    desc->unpack_s_8uint(dst, 0, (const uint8_t *)src, 0, w, 1);
 }
 
-static inline void
-util_format_unpack_rgba_float(enum pipe_format format, float *dst,
-                              const void *src, unsigned w)
-{
-   const struct util_format_description *desc = util_format_description(format);
-
-   desc->unpack_rgba_float(dst, 0, (const uint8_t *)src, 0, w, 1);
-}
-
 /**
  * Unpacks a row of color data to 32-bit RGBA, either integers for pure
  * integer formats (sign-extended for signed data), or 32-bit floats.
@@ -1499,12 +1463,7 @@ util_format_unpack_rgba(enum pipe_format format, void *dst,
 {
    const struct util_format_description *desc = util_format_description(format);
 
-   if (util_format_is_pure_uint(format))
-      desc->unpack_rgba_uint((uint32_t *)dst, 0, (const uint8_t *)src, 0, w, 1);
-   else if (util_format_is_pure_sint(format))
-      desc->unpack_rgba_sint((int32_t *)dst, 0, (const uint8_t *)src, 0, w, 1);
-   else
-      desc->unpack_rgba_float((float *)dst, 0, (const uint8_t *)src, 0, w, 1);
+   desc->unpack_rgba(dst, 0, (const uint8_t *)src, 0, w, 1);
 }
 
 static inline void
@@ -1554,20 +1513,20 @@ util_format_pack_rgba(enum pipe_format format, void *dst,
 }
 
 /*
- * Format access functions.
+ * Format access functions for subrectangles
  */
 
 void
-util_format_read_4f(enum pipe_format format,
-                    float *dst, unsigned dst_stride, 
-                    const void *src, unsigned src_stride, 
-                    unsigned x, unsigned y, unsigned w, unsigned h);
+util_format_read_4(enum pipe_format format,
+                   void *dst, unsigned dst_stride,
+                   const void *src, unsigned src_stride,
+                   unsigned x, unsigned y, unsigned w, unsigned h);
 
 void
-util_format_write_4f(enum pipe_format format,
-                     const float *src, unsigned src_stride, 
-                     void *dst, unsigned dst_stride, 
-                     unsigned x, unsigned y, unsigned w, unsigned h);
+util_format_write_4(enum pipe_format format,
+                    const void *src, unsigned src_stride,
+                    void *dst, unsigned dst_stride,
+                    unsigned x, unsigned y, unsigned w, unsigned h);
 
 void
 util_format_read_4ub(enum pipe_format format,
@@ -1580,30 +1539,6 @@ util_format_write_4ub(enum pipe_format format,
                       const uint8_t *src, unsigned src_stride, 
                       void *dst, unsigned dst_stride, 
                       unsigned x, unsigned y, unsigned w, unsigned h);
-
-void
-util_format_read_4ui(enum pipe_format format,
-                     unsigned *dst, unsigned dst_stride,
-                     const void *src, unsigned src_stride,
-                     unsigned x, unsigned y, unsigned w, unsigned h);
-
-void
-util_format_write_4ui(enum pipe_format format,
-                      const unsigned int *src, unsigned src_stride,
-                      void *dst, unsigned dst_stride,
-                      unsigned x, unsigned y, unsigned w, unsigned h);
-
-void
-util_format_read_4i(enum pipe_format format,
-                    int *dst, unsigned dst_stride,
-                    const void *src, unsigned src_stride,
-                    unsigned x, unsigned y, unsigned w, unsigned h);
-
-void
-util_format_write_4i(enum pipe_format format,
-                     const int *src, unsigned src_stride,
-                     void *dst, unsigned dst_stride,
-                     unsigned x, unsigned y, unsigned w, unsigned h);
 
 /*
  * Generic format conversion;

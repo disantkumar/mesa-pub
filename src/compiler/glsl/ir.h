@@ -2214,7 +2214,7 @@ union ir_constant_data {
       bool b[16];
       double d[16];
       uint16_t f16[16];
-      int16_t u16[16];
+      uint16_t u16[16];
       int16_t i16[16];
       uint64_t u64[16];
       int64_t i64[16];
@@ -2534,6 +2534,9 @@ extern "C" {
 
 extern void _mesa_print_ir(FILE *f, struct exec_list *instructions,
                            struct _mesa_glsl_parse_state *state);
+
+extern void
+ir_print_type(FILE *f, const struct glsl_type *t);
 
 extern void
 fprint_ir(FILE *f, const void *instruction);

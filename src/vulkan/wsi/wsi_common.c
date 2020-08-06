@@ -24,6 +24,7 @@
 #include "wsi_common_private.h"
 #include "drm-uapi/drm_fourcc.h"
 #include "util/macros.h"
+#include "util/os_file.h"
 #include "util/xmlconfig.h"
 #include "vk_util.h"
 
@@ -621,7 +622,7 @@ wsi_create_native_image(const struct wsi_swapchain *chain,
          if (p == 0) {
             image->fds[p] = fd;
          } else {
-            image->fds[p] = dup(fd);
+            image->fds[p] = os_dupfd_cloexec(fd);
             if (image->fds[p] == -1) {
                for (uint32_t i = 0; i < p; i++)
                   close(image->fds[i]);
@@ -1099,7 +1100,7 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
 
    VkResult result = swapchain->acquire_next_image(swapchain, pAcquireInfo,
                                                    pImageIndex);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
       return result;
 
    if (wsi->set_memory_ownership) {
@@ -1123,7 +1124,7 @@ wsi_common_acquire_next_image2(const struct wsi_device *wsi,
                                    image->memory);
    }
 
-   return VK_SUCCESS;
+   return result;
 }
 
 VkResult
@@ -1225,7 +1226,7 @@ wsi_common_queue_present(const struct wsi_device *wsi,
          region = &regions->pRegions[i];
 
       result = swapchain->queue_present(swapchain, image_index, region);
-      if (result != VK_SUCCESS)
+      if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
          goto fail_present;
 
       if (wsi->set_memory_ownership) {

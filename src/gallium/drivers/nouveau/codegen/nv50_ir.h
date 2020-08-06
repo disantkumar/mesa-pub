@@ -983,7 +983,7 @@ public:
    class Target
    {
    public:
-      Target(TexTarget targ = TEX_TARGET_2D) : target(targ) { }
+      Target(TexTarget targ = TEX_TARGET_1D) : target(targ) { }
 
       const char *getName() const { return descTable[target].name; }
       unsigned int getArgCount() const { return descTable[target].argc; }
@@ -1341,6 +1341,7 @@ public:
 
    int maxGPR;
    bool fp64;
+   bool persampleInvocation;
 
    MemoryPool mem_Instruction;
    MemoryPool mem_CmpInstruction;

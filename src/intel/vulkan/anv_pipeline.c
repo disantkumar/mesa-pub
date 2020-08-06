@@ -259,6 +259,7 @@ anv_shader_compile_to_nir(struct anv_device *device,
    NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_function_temp);
    NIR_PASS_V(nir, nir_lower_returns);
    NIR_PASS_V(nir, nir_inline_functions);
+   NIR_PASS_V(nir, nir_copy_prop);
    NIR_PASS_V(nir, nir_opt_deref);
 
    /* Pick off the single entrypoint that we want */
@@ -299,6 +300,54 @@ anv_shader_compile_to_nir(struct anv_device *device,
    return nir;
 }
 
+VkResult
+anv_pipeline_init(struct anv_pipeline *pipeline,
+                  struct anv_device *device,
+                  enum anv_pipeline_type type,
+                  VkPipelineCreateFlags flags,
+                  const VkAllocationCallbacks *pAllocator)
+{
+   VkResult result;
+
+   memset(pipeline, 0, sizeof(*pipeline));
+
+   vk_object_base_init(&device->vk, &pipeline->base,
+                       VK_OBJECT_TYPE_PIPELINE);
+   pipeline->device = device;
+
+   /* It's the job of the child class to provide actual backing storage for
+    * the batch by setting batch.start, batch.next, and batch.end.
+    */
+   pipeline->batch.alloc = pAllocator ? pAllocator : &device->vk.alloc;
+   pipeline->batch.relocs = &pipeline->batch_relocs;
+   pipeline->batch.status = VK_SUCCESS;
+
+   result = anv_reloc_list_init(&pipeline->batch_relocs,
+                                pipeline->batch.alloc);
+   if (result != VK_SUCCESS)
+      return result;
+
+   pipeline->mem_ctx = ralloc_context(NULL);
+
+   pipeline->type = type;
+   pipeline->flags = flags;
+
+   util_dynarray_init(&pipeline->executables, pipeline->mem_ctx);
+
+   return VK_SUCCESS;
+}
+
+void
+anv_pipeline_finish(struct anv_pipeline *pipeline,
+                    struct anv_device *device,
+                    const VkAllocationCallbacks *pAllocator)
+{
+   anv_reloc_list_finish(&pipeline->batch_relocs,
+                         pAllocator ? pAllocator : &device->vk.alloc);
+   ralloc_free(pipeline->mem_ctx);
+   vk_object_base_finish(&pipeline->base);
+}
+
 void anv_DestroyPipeline(
     VkDevice                                    _device,
     VkPipeline                                  _pipeline,
@@ -309,11 +358,6 @@ void anv_DestroyPipeline(
 
    if (!pipeline)
       return;
-
-   anv_reloc_list_finish(&pipeline->batch_relocs,
-                         pAllocator ? pAllocator : &device->vk.alloc);
-
-   ralloc_free(pipeline->mem_ctx);
 
    switch (pipeline->type) {
    case ANV_PIPELINE_GRAPHICS: {
@@ -344,7 +388,7 @@ void anv_DestroyPipeline(
       unreachable("invalid pipeline type");
    }
 
-   vk_object_base_finish(&pipeline->base);
+   anv_pipeline_finish(pipeline, device, pAllocator);
    vk_free2(&device->vk.alloc, pAllocator, pipeline);
 }
 
@@ -472,6 +516,8 @@ populate_wm_prog_key(const struct gen_device_info *devinfo,
 
    /* XXX Vulkan doesn't appear to specify */
    key->clamp_fragment_color = false;
+
+   key->ignore_sample_mask_out = false;
 
    assert(subpass->color_count <= MAX_RTS);
    for (uint32_t i = 0; i < subpass->color_count; i++) {
@@ -967,7 +1013,7 @@ anv_pipeline_link_fs(const struct brw_compiler *compiler,
     */
    nir_function_impl *impl = nir_shader_get_entrypoint(stage->nir);
    bool deleted_output = false;
-   nir_foreach_variable_safe(var, &stage->nir->outputs) {
+   nir_foreach_shader_out_variable_safe(var, stage->nir) {
       /* TODO: We don't delete depth/stencil writes.  We probably could if the
        * subpass doesn't have a depth/stencil attachment.
        */
@@ -1374,6 +1420,9 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
       }
    }
 
+   if (info->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT)
+      return VK_PIPELINE_COMPILE_REQUIRED_EXT;
+
    void *pipeline_ctx = ralloc_context(NULL);
 
    for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
@@ -1636,6 +1685,10 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                                          &cache_hit);
    }
 
+   if (bin == NULL &&
+       (info->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_EXT))
+      return VK_PIPELINE_COMPILE_REQUIRED_EXT;
+
    void *mem_ctx = ralloc_context(NULL);
    if (bin == NULL) {
       int64_t stage_start = os_time_get_nano();
@@ -1818,6 +1871,76 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
          pCreateInfo->pRasterizationState->depthBiasSlopeFactor;
    }
 
+   if (states & ANV_CMD_DIRTY_DYNAMIC_CULL_MODE) {
+      assert(pCreateInfo->pRasterizationState);
+      dynamic->cull_mode =
+         pCreateInfo->pRasterizationState->cullMode;
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE) {
+      assert(pCreateInfo->pRasterizationState);
+      dynamic->front_face =
+         pCreateInfo->pRasterizationState->frontFace;
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE &&
+       subpass->depth_stencil_attachment) {
+      dynamic->depth_test_enable =
+         pCreateInfo->pDepthStencilState->depthTestEnable;
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE &&
+       subpass->depth_stencil_attachment) {
+      dynamic->depth_write_enable =
+         pCreateInfo->pDepthStencilState->depthWriteEnable;
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP &&
+       subpass->depth_stencil_attachment) {
+      dynamic->depth_compare_op =
+         pCreateInfo->pDepthStencilState->depthCompareOp;
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE &&
+       subpass->depth_stencil_attachment) {
+      dynamic->depth_bounds_test_enable =
+         pCreateInfo->pDepthStencilState->depthBoundsTestEnable;
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE &&
+       subpass->depth_stencil_attachment) {
+      dynamic->stencil_test_enable =
+         pCreateInfo->pDepthStencilState->stencilTestEnable;
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP &&
+       subpass->depth_stencil_attachment) {
+      const VkPipelineDepthStencilStateCreateInfo *info =
+         pCreateInfo->pDepthStencilState;
+      memcpy(&dynamic->stencil_op.front, &info->front,
+             sizeof(dynamic->stencil_op.front));
+      memcpy(&dynamic->stencil_op.back, &info->back,
+             sizeof(dynamic->stencil_op.back));
+   }
+
+   if (states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY) {
+      assert(pCreateInfo->pInputAssemblyState);
+      bool has_tess = false;
+      for (uint32_t i = 0; i < pCreateInfo->stageCount; i++) {
+         const VkPipelineShaderStageCreateInfo *sinfo = &pCreateInfo->pStages[i];
+         gl_shader_stage stage = vk_to_mesa_shader_stage(sinfo->stage);
+         if (stage == MESA_SHADER_TESS_CTRL || stage == MESA_SHADER_TESS_EVAL)
+            has_tess = true;
+      }
+       if (has_tess) {
+          const VkPipelineTessellationStateCreateInfo *tess_info =
+             pCreateInfo->pTessellationState;
+          dynamic->primitive_topology = _3DPRIM_PATCHLIST(tess_info->patchControlPoints);
+       } else {
+         dynamic->primitive_topology = pCreateInfo->pInputAssemblyState->topology;
+       }
+   }
+
    /* Section 9.2 of the Vulkan 1.0.15 spec says:
     *
     *    pColorBlendState is [...] NULL if the pipeline has rasterization
@@ -1974,40 +2097,28 @@ anv_pipeline_setup_l3_config(struct anv_pipeline *pipeline, bool needs_slm)
 }
 
 VkResult
-anv_pipeline_init(struct anv_graphics_pipeline *pipeline,
-                  struct anv_device *device,
-                  struct anv_pipeline_cache *cache,
-                  const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                  const VkAllocationCallbacks *alloc)
+anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
+                           struct anv_device *device,
+                           struct anv_pipeline_cache *cache,
+                           const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                           const VkAllocationCallbacks *alloc)
 {
    VkResult result;
 
    anv_pipeline_validate_create_info(pCreateInfo);
 
-   if (alloc == NULL)
-      alloc = &device->vk.alloc;
+   result = anv_pipeline_init(&pipeline->base, device,
+                              ANV_PIPELINE_GRAPHICS, pCreateInfo->flags,
+                              alloc);
+   if (result != VK_SUCCESS)
+      return result;
 
-   vk_object_base_init(&device->vk, &pipeline->base.base,
-                       VK_OBJECT_TYPE_PIPELINE);
-   pipeline->base.device = device;
-   pipeline->base.type = ANV_PIPELINE_GRAPHICS;
+   anv_batch_set_storage(&pipeline->base.batch, ANV_NULL_ADDRESS,
+                         pipeline->batch_data, sizeof(pipeline->batch_data));
 
    ANV_FROM_HANDLE(anv_render_pass, render_pass, pCreateInfo->renderPass);
    assert(pCreateInfo->subpass < render_pass->subpass_count);
    pipeline->subpass = &render_pass->subpasses[pCreateInfo->subpass];
-
-   result = anv_reloc_list_init(&pipeline->base.batch_relocs, alloc);
-   if (result != VK_SUCCESS)
-      return result;
-
-   pipeline->base.batch.alloc = alloc;
-   pipeline->base.batch.next = pipeline->base.batch.start = pipeline->batch_data;
-   pipeline->base.batch.end = pipeline->base.batch.start + sizeof(pipeline->batch_data);
-   pipeline->base.batch.relocs = &pipeline->base.batch_relocs;
-   pipeline->base.batch.status = VK_SUCCESS;
-
-   pipeline->base.mem_ctx = ralloc_context(NULL);
-   pipeline->base.flags = pCreateInfo->flags;
 
    assert(pCreateInfo->pRasterizationState);
 
@@ -2034,12 +2145,9 @@ anv_pipeline_init(struct anv_graphics_pipeline *pipeline,
     */
    memset(pipeline->shaders, 0, sizeof(pipeline->shaders));
 
-   util_dynarray_init(&pipeline->base.executables, pipeline->base.mem_ctx);
-
    result = anv_pipeline_compile_graphics(pipeline, cache, pCreateInfo);
    if (result != VK_SUCCESS) {
-      ralloc_free(pipeline->base.mem_ctx);
-      anv_reloc_list_finish(&pipeline->base.batch_relocs, alloc);
+      anv_pipeline_finish(&pipeline->base, device, alloc);
       return result;
    }
 

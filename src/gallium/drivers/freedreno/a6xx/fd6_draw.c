@@ -53,13 +53,13 @@ draw_emit_indirect(struct fd_ringbuffer *ring,
 
 	if (info->index_size) {
 		struct pipe_resource *idx = info->index.resource;
-		unsigned max_indicies = (idx->width0 - index_offset) / info->index_size;
+		unsigned max_indices = (idx->width0 - index_offset) / info->index_size;
 
 		OUT_PKT(ring, CP_DRAW_INDX_INDIRECT,
 				pack_CP_DRAW_INDX_OFFSET_0(*draw0),
 				A5XX_CP_DRAW_INDX_INDIRECT_INDX_BASE(
 						fd_resource(idx)->bo, index_offset),
-				A5XX_CP_DRAW_INDX_INDIRECT_3(.max_indices = max_indicies),
+				A5XX_CP_DRAW_INDX_INDIRECT_3(.max_indices = max_indices),
 				A5XX_CP_DRAW_INDX_INDIRECT_INDIRECT(
 						ind->bo, info->indirect->offset)
 			);
@@ -82,17 +82,16 @@ draw_emit(struct fd_ringbuffer *ring,
 		assert(!info->has_user_indices);
 
 		struct pipe_resource *idx_buffer = info->index.resource;
-		uint32_t idx_size = info->index_size * info->count;
-		uint32_t idx_offset = index_offset + info->start * info->index_size;
+		unsigned max_indices = (idx_buffer->width0 - index_offset) / info->index_size;
 
 		OUT_PKT(ring, CP_DRAW_INDX_OFFSET,
 				pack_CP_DRAW_INDX_OFFSET_0(*draw0),
 				CP_DRAW_INDX_OFFSET_1(.num_instances = info->instance_count),
 				CP_DRAW_INDX_OFFSET_2(.num_indices = info->count),
-				CP_DRAW_INDX_OFFSET_3(0),
+				CP_DRAW_INDX_OFFSET_3(.first_indx = info->start),
 				A5XX_CP_DRAW_INDX_OFFSET_INDX_BASE(
-						fd_resource(idx_buffer)->bo, idx_offset),
-				A5XX_CP_DRAW_INDX_OFFSET_6(.indx_size = idx_size)
+						fd_resource(idx_buffer)->bo, index_offset),
+				A5XX_CP_DRAW_INDX_OFFSET_6(.max_indices = max_indices)
 			);
 	} else {
 		OUT_PKT(ring, CP_DRAW_INDX_OFFSET,
@@ -144,6 +143,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
              unsigned index_offset)
 {
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
+	struct ir3_shader *gs = ctx->prog.gs;
 	struct fd6_emit emit = {
 		.ctx = ctx,
 		.vtx  = &ctx->vtx,
@@ -165,6 +165,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 				.fsaturate_s = fd6_ctx->fsaturate_s,
 				.fsaturate_t = fd6_ctx->fsaturate_t,
 				.fsaturate_r = fd6_ctx->fsaturate_r,
+				.layer_zero = !gs || !(gs->nir->info.outputs_written & VARYING_BIT_LAYER),
 				.vsamples = ctx->tex[PIPE_SHADER_VERTEX].samples,
 				.fsamples = ctx->tex[PIPE_SHADER_FRAGMENT].samples,
 				.sample_shading = (ctx->min_samples > 1),
@@ -177,9 +178,15 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		.primitive_restart = info->primitive_restart && info->index_size,
 	};
 
+	if (!(ctx->prog.vs && ctx->prog.fs))
+		return false;
+
 	if (info->mode == PIPE_PRIM_PATCHES) {
 		emit.key.hs = ctx->prog.hs;
 		emit.key.ds = ctx->prog.ds;
+
+		if (!(ctx->prog.hs && ctx->prog.ds))
+			return false;
 
 		shader_info *ds_info = &emit.key.ds->nir->info;
 		emit.key.key.tessellation = ir3_tess_mode(ds_info->tess.primitive_mode);
@@ -202,6 +209,8 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 	/* bail if compile failed: */
 	if (!fd6_ctx->prog)
 		return NULL;
+
+	fixup_draw_state(ctx, &emit);
 
 	emit.dirty = ctx->dirty;      /* *after* fixup_shader_state() */
 	emit.bs = fd6_emit_get_prog(&emit)->bs;
@@ -258,7 +267,7 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 		ctx->batch->tessellation = true;
 		ctx->batch->tessparam_size = MAX2(ctx->batch->tessparam_size,
-				emit.hs->shader->output_size * 4 * info->count);
+				emit.hs->output_size * 4 * info->count);
 		ctx->batch->tessfactor_size = MAX2(ctx->batch->tessfactor_size,
 				factor_stride * info->count);
 
@@ -295,8 +304,6 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		OUT_RING(ring, restart_index); /* PC_RESTART_INDEX */
 		ctx->last.restart_index = restart_index;
 	}
-
-	fixup_draw_state(ctx, &emit);
 
 	fd6_emit_state(ring, &emit);
 
@@ -355,15 +362,26 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_PKT4(ring, REG_A6XX_RB_CCU_CNTL, 1);
 	OUT_RING(ring, fd6_ctx->magic.RB_CCU_CNTL_bypass);
 
-	OUT_PKT4(ring, REG_A6XX_HLSQ_UPDATE_CNTL, 1);
-	OUT_RING(ring, 0x7ffff);
+	OUT_REG(ring, A6XX_HLSQ_INVALIDATE_CMD(
+			.vs_state = true,
+			.hs_state = true,
+			.ds_state = true,
+			.gs_state = true,
+			.fs_state = true,
+			.cs_state = true,
+			.gfx_ibo = true,
+			.cs_ibo = true,
+			.gfx_shared_const = true,
+			.gfx_bindless = 0x1f,
+			.cs_bindless = 0x1f
+		));
 
 	emit_marker6(ring, 7);
 	OUT_PKT7(ring, CP_SET_MARKER, 1);
 	OUT_RING(ring, A6XX_CP_SET_MARKER_0_MODE(RM6_BLIT2DSCALE));
 	emit_marker6(ring, 7);
 
-	OUT_PKT4(ring, REG_A6XX_RB_UNKNOWN_8C01, 1);
+	OUT_PKT4(ring, REG_A6XX_RB_2D_UNKNOWN_8C01, 1);
 	OUT_RING(ring, 0x0);
 
 	OUT_PKT4(ring, REG_A6XX_SP_PS_2D_SRC_INFO, 13);
@@ -381,7 +399,7 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 
-	OUT_PKT4(ring, REG_A6XX_SP_2D_SRC_FORMAT, 1);
+	OUT_PKT4(ring, REG_A6XX_SP_2D_DST_FORMAT, 1);
 	OUT_RING(ring, 0x0000f410);
 
 	OUT_PKT4(ring, REG_A6XX_GRAS_2D_BLIT_CNTL, 1);
@@ -406,18 +424,18 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth)
 			A6XX_RB_2D_DST_INFO_TILE_MODE(TILE6_LINEAR) |
 			A6XX_RB_2D_DST_INFO_COLOR_SWAP(WZYX));
 	OUT_RELOC(ring, zsbuf->lrz, 0, 0, 0);
-	OUT_RING(ring, A6XX_RB_2D_DST_SIZE_PITCH(zsbuf->lrz_pitch * 2));
+	OUT_RING(ring, A6XX_RB_2D_DST_PITCH(zsbuf->lrz_pitch * 2).value);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 
-	OUT_PKT4(ring, REG_A6XX_GRAS_2D_SRC_TL_X, 4);
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_TL_X_X(0));
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_BR_X_X(0));
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_TL_Y_Y(0));
-	OUT_RING(ring, A6XX_GRAS_2D_SRC_BR_Y_Y(0));
+	OUT_REG(ring,
+			A6XX_GRAS_2D_SRC_TL_X(0),
+			A6XX_GRAS_2D_SRC_BR_X(0),
+			A6XX_GRAS_2D_SRC_TL_Y(0),
+			A6XX_GRAS_2D_SRC_BR_Y(0));
 
 	OUT_PKT4(ring, REG_A6XX_GRAS_2D_DST_TL, 2);
 	OUT_RING(ring, A6XX_GRAS_2D_DST_TL_X(0) |
@@ -466,7 +484,6 @@ fd6_clear(struct fd_context *ctx, unsigned buffers,
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
 	const bool has_depth = pfb->zsbuf;
 	unsigned color_buffers = buffers >> 2;
-	unsigned i;
 
 	/* If we're clearing after draws, fallback to 3D pipe clears.  We could
 	 * use blitter clears in the draw batch but then we'd have to patch up the

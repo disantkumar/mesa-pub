@@ -328,13 +328,13 @@ i915_add_config(struct gen_perf_config *perf, int fd,
    memcpy(i915_config.uuid, guid, sizeof(i915_config.uuid));
 
    i915_config.n_mux_regs = config->n_mux_regs;
-   i915_config.mux_regs_ptr = to_user_pointer(config->mux_regs);
+   i915_config.mux_regs_ptr = to_const_user_pointer(config->mux_regs);
 
    i915_config.n_boolean_regs = config->n_b_counter_regs;
-   i915_config.boolean_regs_ptr = to_user_pointer(config->b_counter_regs);
+   i915_config.boolean_regs_ptr = to_const_user_pointer(config->b_counter_regs);
 
    i915_config.n_flex_regs = config->n_flex_regs;
-   i915_config.flex_regs_ptr = to_user_pointer(config->flex_regs);
+   i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
 
    int ret = gen_ioctl(fd, DRM_IOCTL_I915_PERF_ADD_CONFIG, &i915_config);
    return ret > 0 ? ret : 0;
@@ -594,14 +594,29 @@ i915_get_sseu(int drm_fd, struct drm_i915_gem_context_param_sseu *sseu)
 static int
 compare_counters(const void *_c1, const void *_c2)
 {
-   const struct gen_perf_query_counter * const *c1 = _c1, * const *c2 = _c2;
-   return strcmp((*c1)->symbol_name, (*c2)->symbol_name);
+   const struct gen_perf_query_counter_info *c1 = _c1, *c2 = _c2;
+   return strcmp(c1->counter->symbol_name, c2->counter->symbol_name);
 }
 
 static void
 build_unique_counter_list(struct gen_perf_config *perf)
 {
    assert(perf->n_queries < 64);
+
+   size_t max_counters = 0;
+
+   for (int q = 0; q < perf->n_queries; q++)
+      max_counters += perf->queries[q].n_counters;
+
+   /*
+    * Allocate big enough array to hold maximum possible number of counters.
+    * We can't alloc it small and realloc when needed because the hash table
+    * below contains pointers to this array.
+    */
+   struct gen_perf_query_counter_info *counter_infos =
+         ralloc_array_size(perf, sizeof(counter_infos[0]), max_counters);
+
+   perf->n_counters = 0;
 
    struct hash_table *counters_table =
       _mesa_hash_table_create(perf,
@@ -612,37 +627,37 @@ build_unique_counter_list(struct gen_perf_config *perf)
       struct gen_perf_query_info *query = &perf->queries[q];
 
       for (int c = 0; c < query->n_counters; c++) {
-         struct gen_perf_query_counter *counter, *unique_counter;
+         struct gen_perf_query_counter *counter;
+         struct gen_perf_query_counter_info *counter_info;
 
          counter = &query->counters[c];
          entry = _mesa_hash_table_search(counters_table, counter->symbol_name);
 
          if (entry) {
-            unique_counter = entry->data;
-            unique_counter->query_mask |= BITFIELD64_BIT(q);
+            counter_info = entry->data;
+            counter_info->query_mask |= BITFIELD64_BIT(q);
             continue;
          }
+         assert(perf->n_counters < max_counters);
 
-         unique_counter = counter;
-         unique_counter->query_mask = BITFIELD64_BIT(q);
+         counter_info = &counter_infos[perf->n_counters++];
+         counter_info->counter = counter;
+         counter_info->query_mask = BITFIELD64_BIT(q);
 
-         _mesa_hash_table_insert(counters_table, unique_counter->symbol_name, unique_counter);
+         counter_info->location.group_idx = q;
+         counter_info->location.counter_idx = c;
+
+         _mesa_hash_table_insert(counters_table, counter->symbol_name, counter_info);
       }
-   }
-
-   perf->n_counters = _mesa_hash_table_num_entries(counters_table);
-   perf->counters = ralloc_array(perf, struct gen_perf_query_counter *,
-                                 perf->n_counters);
-
-   int c = 0;
-   hash_table_foreach(counters_table, entry) {
-      struct gen_perf_query_counter *counter = entry->data;
-      perf->counters[c++] = counter;
    }
 
    _mesa_hash_table_destroy(counters_table, NULL);
 
-   qsort(perf->counters, perf->n_counters, sizeof(perf->counters[0]),
+   /* Now we can realloc counter_infos array because hash table doesn't exist. */
+   perf->counter_infos = reralloc_array_size(perf, counter_infos,
+         sizeof(counter_infos[0]), perf->n_counters);
+
+   qsort(perf->counter_infos, perf->n_counters, sizeof(perf->counter_infos[0]),
          compare_counters);
 }
 
@@ -678,9 +693,9 @@ load_oa_metrics(struct gen_perf_config *perf, int fd,
          if (paranoid == 0 || geteuid() == 0)
             i915_perf_oa_available = true;
       }
-   }
 
-   perf->platform_supported = oa_register != NULL;
+      perf->platform_supported = oa_register != NULL;
+   }
 
    if (!i915_perf_oa_available ||
        !oa_register ||
@@ -733,9 +748,9 @@ gen_perf_load_configuration(struct gen_perf_config *perf_cfg, int fd, const char
     * struct gen_perf_query_register_prog maps exactly to the tuple of
     * (register offset, register value) returned by the i915.
     */
-   i915_config.flex_regs_ptr = to_user_pointer(config->flex_regs);
-   i915_config.mux_regs_ptr = to_user_pointer(config->mux_regs);
-   i915_config.boolean_regs_ptr = to_user_pointer(config->b_counter_regs);
+   i915_config.flex_regs_ptr = to_const_user_pointer(config->flex_regs);
+   i915_config.mux_regs_ptr = to_const_user_pointer(config->mux_regs);
+   i915_config.boolean_regs_ptr = to_const_user_pointer(config->b_counter_regs);
    if (!i915_query_perf_config_data(perf_cfg, fd, guid, &i915_config)) {
       ralloc_free(config);
       return NULL;
@@ -812,13 +827,13 @@ get_passes_mask(struct gen_perf_config *perf,
          assert(counter_indices[i] < perf->n_counters);
 
          uint32_t idx = counter_indices[i];
-         if (__builtin_popcount(perf->counters[idx]->query_mask) != (q + 1))
+         if (__builtin_popcount(perf->counter_infos[idx].query_mask) != (q + 1))
             continue;
 
-         if (queries_mask & perf->counters[idx]->query_mask)
+         if (queries_mask & perf->counter_infos[idx].query_mask)
             continue;
 
-         queries_mask |= BITFIELD64_BIT(ffsll(perf->counters[idx]->query_mask) - 1);
+         queries_mask |= BITFIELD64_BIT(ffsll(perf->counter_infos[idx].query_mask) - 1);
       }
    }
 
@@ -851,15 +866,15 @@ gen_perf_get_counters_passes(struct gen_perf_config *perf,
                              struct gen_perf_counter_pass *counter_pass)
 {
    uint64_t queries_mask = get_passes_mask(perf, counter_indices, counter_indices_count);
-   uint32_t n_passes = __builtin_popcount(queries_mask);
+   ASSERTED uint32_t n_passes = __builtin_popcount(queries_mask);
 
    for (uint32_t i = 0; i < counter_indices_count; i++) {
       assert(counter_indices[i] < perf->n_counters);
 
       uint32_t idx = counter_indices[i];
-      counter_pass[i].counter = perf->counters[idx];
+      counter_pass[i].counter = perf->counter_infos[idx].counter;
 
-      uint32_t query_idx = ffsll(perf->counters[idx]->query_mask & queries_mask) - 1;
+      uint32_t query_idx = ffsll(perf->counter_infos[idx].query_mask & queries_mask) - 1;
       counter_pass[i].query = &perf->queries[query_idx];
 
       uint32_t clear_bits = 63 - query_idx;

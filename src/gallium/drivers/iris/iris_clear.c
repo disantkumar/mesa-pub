@@ -34,7 +34,6 @@
 #include "iris_resource.h"
 #include "iris_screen.h"
 #include "intel/compiler/brw_compiler.h"
-#include "util/format_srgb.h"
 
 static bool
 iris_is_color_fast_clear_compatible(struct iris_context *ice,
@@ -69,7 +68,6 @@ can_fast_clear_color(struct iris_context *ice,
                      struct pipe_resource *p_res,
                      unsigned level,
                      const struct pipe_box *box,
-                     enum isl_format format,
                      enum isl_format render_format,
                      union isl_color_value color)
 {
@@ -88,13 +86,24 @@ can_fast_clear_color(struct iris_context *ice,
       return false;
    }
 
+   /* Disable sRGB fast-clears for non-0/1 color values. For texturing and
+    * draw calls, HW expects the clear color to be in two different color
+    * spaces after sRGB fast-clears - sRGB in the former and linear in the
+    * latter. By limiting the allowable values to 0/1, both color space
+    * requirements are satisfied.
+    */
+   if (isl_format_is_srgb(render_format) &&
+       !isl_color_value_is_zero_one(color, render_format)) {
+      return false;
+   }
+
    /* We store clear colors as floats or uints as needed.  If there are
     * texture views in play, the formats will not properly be respected
     * during resolves because the resolve operations only know about the
     * resource and not the renderbuffer.
     */
-   if (isl_format_srgb_to_linear(render_format) !=
-       isl_format_srgb_to_linear(format)) {
+   if (!iris_render_formats_color_compatible(render_format, res->surf.format,
+                                             color)) {
       return false;
    }
 
@@ -102,7 +111,7 @@ can_fast_clear_color(struct iris_context *ice,
     * see intel_miptree_create_for_dri_image()
     */
 
-   if (!iris_is_color_fast_clear_compatible(ice, format, color))
+   if (!iris_is_color_fast_clear_compatible(ice, res->surf.format, color))
       return false;
 
    return true;
@@ -111,7 +120,6 @@ can_fast_clear_color(struct iris_context *ice,
 static union isl_color_value
 convert_fast_clear_color(struct iris_context *ice,
                          struct iris_resource *res,
-                         enum isl_format render_format,
                          const union isl_color_value color)
 {
    union isl_color_value override_color = color;
@@ -175,14 +183,6 @@ convert_fast_clear_color(struct iris_context *ice,
          override_color.f32[3] = 1.0f;
    }
 
-   /* Handle linear to SRGB conversion */
-   if (isl_format_is_srgb(render_format)) {
-      for (int i = 0; i < 3; i++) {
-         override_color.f32[i] =
-            util_format_linear_to_srgb_float(override_color.f32[i]);
-      }
-   }
-
    return override_color;
 }
 
@@ -200,7 +200,7 @@ fast_clear_color(struct iris_context *ice,
    const enum isl_aux_state aux_state =
       iris_resource_get_aux_state(res, level, box->z);
 
-   color = convert_fast_clear_color(ice, res, format, color);
+   color = convert_fast_clear_color(ice, res, color);
 
    bool color_changed = !!memcmp(&res->aux.clear_color, &color,
                                  sizeof(color));
@@ -310,14 +310,7 @@ fast_clear_color(struct iris_context *ice,
    iris_blorp_surf_for_resource(&batch->screen->isl_dev, &surf,
                                 p_res, res->aux.usage, level, true);
 
-   /* In newer gens (> 9), the hardware will do a linear -> sRGB conversion of
-    * the clear color during the fast clear, if the surface format is of sRGB
-    * type. We use the linear version of the surface format here to prevent
-    * that from happening, since we already do our own linear -> sRGB
-    * conversion in convert_fast_clear_color().
-    */
-   blorp_fast_clear(&blorp_batch, &surf, isl_format_srgb_to_linear(format),
-                    ISL_SWIZZLE_IDENTITY,
+   blorp_fast_clear(&blorp_batch, &surf, format, ISL_SWIZZLE_IDENTITY,
                     level, box->z, box->depth,
                     box->x, box->y, box->x + box->width,
                     box->y + box->height);
@@ -364,7 +357,7 @@ clear_color(struct iris_context *ice,
    iris_batch_maybe_flush(batch, 1500);
 
    bool can_fast_clear = can_fast_clear_color(ice, p_res, level, box,
-                                              res->surf.format, format, color);
+                                              format, color);
    if (can_fast_clear) {
       fast_clear_color(ice, res, level, box, format, color,
                        blorp_flags);
@@ -373,8 +366,7 @@ clear_color(struct iris_context *ice,
 
    bool color_write_disable[4] = { false, false, false, false };
    enum isl_aux_usage aux_usage =
-      iris_resource_render_aux_usage(ice, res, format,
-                                     false, false);
+      iris_resource_render_aux_usage(ice, res, format, false);
 
    iris_resource_prepare_render(ice, batch, res, level,
                                 box->z, box->depth, aux_usage);
@@ -591,7 +583,7 @@ clear_depth_stencil(struct iris_context *ice,
    /* At this point, we might have fast cleared the depth buffer. So if there's
     * no stencil clear pending, return early.
     */
-   if (!(clear_depth || clear_stencil)) {
+   if (!(clear_depth || (clear_stencil && stencil_res))) {
       return;
    }
 

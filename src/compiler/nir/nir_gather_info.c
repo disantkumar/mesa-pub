@@ -301,7 +301,7 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
    case nir_intrinsic_demote:
    case nir_intrinsic_demote_if:
       shader->info.fs.uses_demote = true;
-   /* fallthrough: quads with helper lanes only might be discarded entirely */
+   /* fallthrough - quads with helper lanes only might be discarded entirely */
    case nir_intrinsic_discard:
    case nir_intrinsic_discard_if:
       /* Freedreno uses the discard_if intrinsic to end GS invocations that
@@ -348,6 +348,7 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
    case nir_intrinsic_load_draw_id:
    case nir_intrinsic_load_frag_coord:
    case nir_intrinsic_load_point_coord:
+   case nir_intrinsic_load_line_coord:
    case nir_intrinsic_load_front_face:
    case nir_intrinsic_load_vertex_id:
    case nir_intrinsic_load_vertex_id_zero_base:
@@ -600,7 +601,7 @@ nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint)
    shader->info.image_buffers = 0;
    shader->info.msaa_images = 0;
 
-   nir_foreach_variable(var, &shader->uniforms) {
+   nir_foreach_uniform_variable(var, shader) {
       /* Bindless textures and images don't use non-bindless slots.
        * Interface blocks imply inputs, outputs, UBO, or SSBO, which can only
        * mean bindless.

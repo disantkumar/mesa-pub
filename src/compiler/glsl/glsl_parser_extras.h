@@ -356,7 +356,8 @@ struct _mesa_glsl_parse_state {
 
    bool has_implicit_conversions() const
    {
-      return EXT_shader_implicit_conversions_enable || is_version(120, 0);
+      return EXT_shader_implicit_conversions_enable ||
+             is_version(allow_glsl_120_subset_in_110 ? 110 : 120, 0);
    }
 
    bool has_implicit_int_to_uint_conversion() const
@@ -845,6 +846,8 @@ struct _mesa_glsl_parse_state {
    bool EXT_shader_framebuffer_fetch_warn;
    bool EXT_shader_framebuffer_fetch_non_coherent_enable;
    bool EXT_shader_framebuffer_fetch_non_coherent_warn;
+   bool EXT_shader_group_vote_enable;
+   bool EXT_shader_group_vote_warn;
    bool EXT_shader_image_load_formatted_enable;
    bool EXT_shader_image_load_formatted_warn;
    bool EXT_shader_image_load_store_enable;
@@ -936,6 +939,7 @@ struct _mesa_glsl_parse_state {
    bool layer_viewport_relative;
 
    bool allow_extension_directive_midshader;
+   bool allow_glsl_120_subset_in_110;
    bool allow_builtin_variable_redeclaration;
    bool allow_layout_qualifier_on_function_parameter;
 

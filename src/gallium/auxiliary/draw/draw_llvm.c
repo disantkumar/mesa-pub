@@ -1181,8 +1181,8 @@ store_aos(struct gallivm_state *gallivm,
  * {
  *   return (x >> 16) |              // vertex_id
  *          ((x & 0x3fff) << 18) |   // clipmask
- *          ((x & 0x4000) << 3) |    // pad
- *          ((x & 0x8000) << 1);     // edgeflag
+ *          ((x & 0x4000) << 3) |    // edgeflag
+ *          ((x & 0x8000) << 1);     // pad
  * }
  */
 static LLVMValueRef
@@ -1200,11 +1200,11 @@ adjust_mask(struct gallivm_state *gallivm,
    clipmask  = LLVMBuildAnd(builder, mask, lp_build_const_int32(gallivm, 0x3fff), "");
    clipmask  = LLVMBuildShl(builder, clipmask, lp_build_const_int32(gallivm, 18), "");
    if (0) {
-      pad = LLVMBuildAnd(builder, mask, lp_build_const_int32(gallivm, 0x4000), "");
-      pad = LLVMBuildShl(builder, pad, lp_build_const_int32(gallivm, 3), "");
+      pad = LLVMBuildAnd(builder, mask, lp_build_const_int32(gallivm, 0x8000), "");
+      pad = LLVMBuildShl(builder, pad, lp_build_const_int32(gallivm, 1), "");
    }
-   edgeflag = LLVMBuildAnd(builder, mask, lp_build_const_int32(gallivm, 0x8000), "");
-   edgeflag = LLVMBuildShl(builder, edgeflag, lp_build_const_int32(gallivm, 1), "");
+   edgeflag = LLVMBuildAnd(builder, mask, lp_build_const_int32(gallivm, 0x4000), "");
+   edgeflag = LLVMBuildShl(builder, edgeflag, lp_build_const_int32(gallivm, 3), "");
 
    mask = LLVMBuildOr(builder, vertex_id, clipmask, "");
    if (0) {
@@ -1785,7 +1785,7 @@ draw_gs_llvm_emit_vertex(const struct lp_build_gs_iface *gs_base,
                          struct lp_build_context * bld,
                          LLVMValueRef (*outputs)[4],
                          LLVMValueRef emitted_vertices_vec,
-                         LLVMValueRef stream_id)
+                         LLVMValueRef mask_vec, LLVMValueRef stream_id)
 {
    const struct draw_gs_llvm_iface *gs_iface = draw_gs_llvm_iface(gs_base);
    struct draw_gs_llvm_variant *variant = gs_iface->variant;
@@ -1801,12 +1801,15 @@ draw_gs_llvm_emit_vertex(const struct lp_build_gs_iface *gs_base,
    unsigned i;
    const struct tgsi_shader_info *gs_info = &variant->shader->base.info;
 
+   LLVMValueRef cond = LLVMBuildICmp(gallivm->builder, LLVMIntNE, mask_vec, lp_build_const_int_vec(gallivm, bld->type, 0), "");
    for (i = 0; i < gs_type.length; ++i) {
       LLVMValueRef ind = lp_build_const_int32(gallivm, i);
       LLVMValueRef currently_emitted =
          LLVMBuildExtractElement(builder, emitted_vertices_vec, ind, "");
       indices[i] = LLVMBuildMul(builder, ind, next_prim_offset, "");
       indices[i] = LLVMBuildAdd(builder, indices[i], currently_emitted, "");
+      indices[i] = LLVMBuildSelect(builder, LLVMBuildExtractElement(builder, cond, ind, ""), indices[i],
+                                   lp_build_const_int32(gallivm, variant->shader->base.primitive_boundary - 1), "");
    }
 
    LLVMValueRef stream_idx = LLVMBuildExtractElement(builder, stream_id, lp_build_const_int32(gallivm, 0), "");
@@ -1828,7 +1831,7 @@ draw_gs_llvm_end_primitive(const struct lp_build_gs_iface *gs_base,
                            LLVMValueRef total_emitted_vertices_vec_ptr,
                            LLVMValueRef verts_per_prim_vec,
                            LLVMValueRef emitted_prims_vec,
-                           LLVMValueRef mask_vec)
+                           LLVMValueRef mask_vec, unsigned stream)
 {
    const struct draw_gs_llvm_iface *gs_iface = draw_gs_llvm_iface(gs_base);
    struct draw_gs_llvm_variant *variant = gs_iface->variant;
@@ -1850,6 +1853,8 @@ draw_gs_llvm_end_primitive(const struct lp_build_gs_iface *gs_base,
       LLVMValueRef this_cond = LLVMBuildExtractElement(gallivm->builder, cond, ind, "");
       struct lp_build_if_state ifthen;
       lp_build_if(&ifthen, gallivm, this_cond);
+      prims_emitted = LLVMBuildMul(gallivm->builder, prims_emitted, lp_build_const_int32(gallivm, variant->shader->base.num_vertex_streams), "");
+      prims_emitted = LLVMBuildAdd(gallivm->builder, prims_emitted, lp_build_const_int32(gallivm, stream), "");
       store_ptr = LLVMBuildGEP(builder, prim_lengts_ptr, &prims_emitted, 1, "");
       store_ptr = LLVMBuildLoad(builder, store_ptr, "");
       store_ptr = LLVMBuildGEP(builder, store_ptr, &ind, 1, "");
@@ -2032,9 +2037,10 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant)
    fake_buf_ptr = LLVMBuildGEP(builder, fake_buf, &bld.zero, 1, "");
 
    /* code generated texture sampling */
-   sampler = draw_llvm_sampler_soa_create(draw_llvm_variant_key_samplers(key));
+   sampler = draw_llvm_sampler_soa_create(draw_llvm_variant_key_samplers(key), key->nr_samplers);
 
-   image = draw_llvm_image_soa_create(draw_llvm_variant_key_images(key));
+   image = draw_llvm_image_soa_create(draw_llvm_variant_key_images(key),
+                                      key->nr_images);
 
    step = lp_build_const_int32(gallivm, vector_length);
 
@@ -2821,8 +2827,9 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
       draw_gs_jit_context_num_ssbos(variant->gallivm, context_ptr);
 
    /* code generated texture sampling */
-   sampler = draw_llvm_sampler_soa_create(variant->key.samplers);
-   image = draw_llvm_image_soa_create(draw_gs_llvm_variant_key_images(&variant->key));
+   sampler = draw_llvm_sampler_soa_create(variant->key.samplers, variant->key.nr_samplers);
+   image = draw_llvm_image_soa_create(draw_gs_llvm_variant_key_images(&variant->key),
+                                      variant->key.nr_images);
    mask_val = generate_mask_value(variant, gs_type);
    lp_build_mask_begin(&mask, gallivm, gs_type, mask_val);
 
@@ -2853,6 +2860,7 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
    params.ssbo_ptr = ssbos_ptr;
    params.ssbo_sizes_ptr = num_ssbos_ptr;
    params.image = image;
+   params.gs_vertex_streams = variant->shader->base.num_vertex_streams;
 
    if (llvm->draw->gs.geometry_shader->state.type == PIPE_SHADER_IR_TGSI)
       lp_build_tgsi_soa(variant->gallivm,
@@ -3429,8 +3437,9 @@ draw_tcs_llvm_generate(struct draw_llvm *llvm,
    ssbos_ptr = draw_tcs_jit_context_ssbos(variant->gallivm, context_ptr);
    num_ssbos_ptr =
       draw_tcs_jit_context_num_ssbos(variant->gallivm, context_ptr);
-   sampler = draw_llvm_sampler_soa_create(variant->key.samplers);
-   image = draw_llvm_image_soa_create(draw_tcs_llvm_variant_key_images(&variant->key));
+   sampler = draw_llvm_sampler_soa_create(variant->key.samplers, variant->key.nr_samplers);
+   image = draw_llvm_image_soa_create(draw_tcs_llvm_variant_key_images(&variant->key),
+                                      variant->key.nr_images);
 
    LLVMValueRef counter = LLVMGetParam(variant_coro, 5);
    LLVMValueRef invocvec = LLVMGetUndef(LLVMVectorType(int32_type, vector_length));
@@ -3926,8 +3935,9 @@ draw_tes_llvm_generate(struct draw_llvm *llvm,
    ssbos_ptr = draw_tes_jit_context_ssbos(variant->gallivm, context_ptr);
    num_ssbos_ptr =
       draw_tes_jit_context_num_ssbos(variant->gallivm, context_ptr);
-   sampler = draw_llvm_sampler_soa_create(variant->key.samplers);
-   image = draw_llvm_image_soa_create(draw_tes_llvm_variant_key_images(&variant->key));
+   sampler = draw_llvm_sampler_soa_create(variant->key.samplers, variant->key.nr_samplers);
+   image = draw_llvm_image_soa_create(draw_tes_llvm_variant_key_images(&variant->key),
+                                      variant->key.nr_images);
    step = lp_build_const_int32(gallivm, vector_length);
 
    system_values.tess_outer = LLVMBuildLoad(builder, tess_outer, "");

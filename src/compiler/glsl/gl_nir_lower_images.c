@@ -39,8 +39,15 @@
 static void
 type_size_align_1(const struct glsl_type *type, unsigned *size, unsigned *align)
 {
-   *size = 1;
-   *align = 1;
+   unsigned s;
+
+   if (glsl_type_is_array(type))
+      s = glsl_get_aoa_size(type);
+   else
+      s = 1;
+
+   *size = s;
+   *align = s;
 }
 
 static bool
@@ -66,6 +73,8 @@ lower_impl(nir_builder *b, nir_instr *instr, bool bindless_only)
    case nir_intrinsic_image_deref_atomic_exchange:
    case nir_intrinsic_image_deref_atomic_comp_swap:
    case nir_intrinsic_image_deref_atomic_fadd:
+   case nir_intrinsic_image_deref_atomic_inc_wrap:
+   case nir_intrinsic_image_deref_atomic_dec_wrap:
    case nir_intrinsic_image_deref_load:
    case nir_intrinsic_image_deref_samples:
    case nir_intrinsic_image_deref_size:

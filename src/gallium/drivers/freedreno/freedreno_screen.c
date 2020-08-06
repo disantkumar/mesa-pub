@@ -59,6 +59,7 @@
 
 
 #include "ir3/ir3_nir.h"
+#include "ir3/ir3_compiler.h"
 #include "a2xx/ir2.h"
 
 static const struct debug_named_value debug_options[] = {
@@ -159,7 +160,9 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 
 	simple_mtx_destroy(&screen->lock);
 
-	ralloc_free(screen->compiler);
+	if (screen->compiler)
+		ir3_compiler_destroy(screen->compiler);
+
 	ralloc_free(screen->live_batches);
 
 	free(screen->perfcntr_queries);
@@ -195,6 +198,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_TEXTURE_BARRIER:
 	case PIPE_CAP_INVALIDATE_BUFFER:
 	case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
+	case PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS:
+	case PIPE_CAP_NIR_COMPACT_ARRAYS:
 		return 1;
 
 	case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
@@ -232,6 +237,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
 	case PIPE_CAP_VERTEX_SHADER_SATURATE:
 	case PIPE_CAP_PRIMITIVE_RESTART:
+	case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
 	case PIPE_CAP_TGSI_INSTANCEID:
 	case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
 	case PIPE_CAP_INDEP_BLEND_ENABLE:
@@ -257,7 +263,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return is_a3xx(screen) || is_a4xx(screen);
 
 	case PIPE_CAP_POLYGON_OFFSET_CLAMP:
-		return is_a5xx(screen) || is_a6xx(screen);
+		return is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen);
 
 	case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
 		if (is_a3xx(screen)) return 16;
@@ -389,6 +395,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
 	case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
 	case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
+	case PIPE_CAP_TGSI_TEXCOORD:
 		if (is_ir3(screen))
 			return 1;
 		return 0;
@@ -565,8 +572,9 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 	case PIPE_SHADER_CAP_INTEGERS:
 		return is_ir3(screen) ? 1 : 0;
 	case PIPE_SHADER_CAP_INT64_ATOMICS:
-        case PIPE_SHADER_CAP_FP16_DERIVATIVES:
-        case PIPE_SHADER_CAP_INT16:
+	case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+	case PIPE_SHADER_CAP_INT16:
+	case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
 		return 0;
 	case PIPE_SHADER_CAP_FP16:
 		return ((is_a5xx(screen) || is_a6xx(screen)) &&
@@ -709,6 +717,19 @@ fd_get_compiler_options(struct pipe_screen *pscreen,
 		return ir3_get_compiler_options(screen->compiler);
 
 	return ir2_get_compiler_options();
+}
+
+static struct disk_cache *
+fd_get_disk_shader_cache(struct pipe_screen *pscreen)
+{
+	struct fd_screen *screen = fd_screen(pscreen);
+
+	if (is_ir3(screen)) {
+		struct ir3_compiler *compiler = screen->compiler;
+		return compiler->disk_cache;
+	}
+
+	return NULL;
 }
 
 bool
@@ -988,6 +1009,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	pscreen->get_shader_param = fd_screen_get_shader_param;
 	pscreen->get_compute_param = fd_get_compute_param;
 	pscreen->get_compiler_options = fd_get_compiler_options;
+	pscreen->get_disk_shader_cache = fd_get_disk_shader_cache;
 
 	fd_resource_screen_init(pscreen);
 	fd_query_screen_init(pscreen);

@@ -317,6 +317,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
           sizeof(this->atomic_counter_offsets));
    this->allow_extension_directive_midshader =
       ctx->Const.AllowGLSLExtensionDirectiveMidShader;
+   this->allow_glsl_120_subset_in_110 =
+      ctx->Const.AllowGLSL120SubsetIn110;
    this->allow_builtin_variable_redeclaration =
       ctx->Const.AllowGLSLBuiltinVariableRedeclaration;
    this->allow_layout_qualifier_on_function_parameter =
@@ -737,6 +739,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(EXT_separate_shader_objects),
    EXT(EXT_shader_framebuffer_fetch),
    EXT(EXT_shader_framebuffer_fetch_non_coherent),
+   EXT(EXT_shader_group_vote),
    EXT(EXT_shader_image_load_formatted),
    EXT(EXT_shader_image_load_store),
    EXT(EXT_shader_implicit_conversions),
@@ -2246,7 +2249,8 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
       &ctx->Const.ShaderCompilerOptions[shader->Stage];
 
    if (!state->error && !shader->ir->is_empty()) {
-      if (options->LowerPrecisionFloat16 || options->LowerPrecisionInt16)
+      if (state->es_shader &&
+          (options->LowerPrecisionFloat16 || options->LowerPrecisionInt16))
          lower_precision(options, shader->ir);
       lower_builtins(shader->ir);
       assign_subroutine_indexes(state);

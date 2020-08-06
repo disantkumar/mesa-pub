@@ -288,6 +288,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_VERTEX_SHADER_SATURATE:
 	case PIPE_CAP_SEAMLESS_CUBE_MAP:
 	case PIPE_CAP_PRIMITIVE_RESTART:
+	case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
 	case PIPE_CAP_CONDITIONAL_RENDER:
 	case PIPE_CAP_TEXTURE_BARRIER:
 	case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
@@ -341,6 +342,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_TGSI_TEXCOORD:
 		return 1;
 
+	case PIPE_CAP_NIR_IMAGES_AS_DEREF:
 	case PIPE_CAP_FAKE_SW_MSAA:
 		return 0;
 
@@ -613,6 +615,7 @@ static int r600_get_shader_param(struct pipe_screen* pscreen,
 	case PIPE_SHADER_CAP_FP16:
         case PIPE_SHADER_CAP_FP16_DERIVATIVES:
         case PIPE_SHADER_CAP_INT16:
+        case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
 		return 0;
 	case PIPE_SHADER_CAP_INTEGERS:
 	case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:

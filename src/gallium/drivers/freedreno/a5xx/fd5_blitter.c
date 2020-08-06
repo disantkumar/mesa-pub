@@ -46,7 +46,7 @@ ok_dims(const struct pipe_resource *r, const struct pipe_box *b, int lvl)
 
 /* Not sure if format restrictions differ for src and dst, or if
  * they only matter when src fmt != dst fmt..  but there appear to
- * be *some* limitations so let's just start blacklisting stuff that
+ * be *some* limitations so let's just start rejecting stuff that
  * piglit complains about
  */
 static bool
@@ -348,8 +348,8 @@ emit_blit(struct fd_ringbuffer *ring, const struct pipe_blit_info *info)
 	sswap = fd5_pipe2swap(info->src.format);
 	dswap = fd5_pipe2swap(info->dst.format);
 
-	spitch = sslice->pitch;
-	dpitch = dslice->pitch;
+	spitch = fd_resource_pitch(src, info->src.level);
+	dpitch = fd_resource_pitch(dst, info->dst.level);
 
 	/* if dtile, then dswap ignored by hw, and likewise if stile then sswap
 	 * ignored by hw.. but in this case we have already rejected the blit

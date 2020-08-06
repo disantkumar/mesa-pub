@@ -28,9 +28,9 @@
 #include "util/u_math.h"
 
 static bool
-range_is_gl_uniforms(struct ir3_ubo_range *r)
+ubo_is_gl_uniforms(const struct ir3_ubo_info *ubo)
 {
-	return !r->bindless && r->block == 0;
+	return !ubo->bindless && ubo->block == 0;
 }
 
 static inline struct ir3_ubo_range
@@ -54,41 +54,70 @@ get_ubo_load_range(nir_shader *nir, nir_intrinsic_instr *instr, uint32_t alignme
 	return r;
 }
 
-static struct ir3_ubo_range *
-get_existing_range(nir_intrinsic_instr *instr,
-				   struct ir3_ubo_analysis_state *state,
-				   bool create_new)
+static bool
+get_ubo_info(nir_intrinsic_instr *instr, struct ir3_ubo_info *ubo)
 {
-	unsigned block, base = 0;
-	bool bindless;
 	if (nir_src_is_const(instr->src[0])) {
-		block = nir_src_as_uint(instr->src[0]);
-		bindless = false;
+		ubo->block = nir_src_as_uint(instr->src[0]);
+		ubo->bindless_base = 0;
+		ubo->bindless = false;
+		return true;
 	} else {
 		nir_intrinsic_instr *rsrc = ir3_bindless_resource(instr->src[0]);
 		if (rsrc && nir_src_is_const(rsrc->src[0])) {
-			block = nir_src_as_uint(rsrc->src[0]);
-			base = nir_intrinsic_desc_set(rsrc);
-			bindless = true;
-		} else {
-			return NULL;
+			ubo->block = nir_src_as_uint(rsrc->src[0]);
+			ubo->bindless_base = nir_intrinsic_desc_set(rsrc);
+			ubo->bindless = true;
+			return true;
 		}
 	}
+	return false;
+}
+
+/**
+ * Get an existing range, but don't create a new range associated with
+ * the ubo, but don't create a new one if one does not already exist.
+ */
+static const struct ir3_ubo_range *
+get_existing_range(nir_intrinsic_instr *instr,
+				   const struct ir3_ubo_analysis_state *state)
+{
+	struct ir3_ubo_info ubo = {};
+
+	if (!get_ubo_info(instr, &ubo))
+		return NULL;
+
+	for (int i = 0; i < IR3_MAX_UBO_PUSH_RANGES; i++) {
+		const struct ir3_ubo_range *range = &state->range[i];
+		if (range->end < range->start) {
+			break;
+		} else if (!memcmp(&range->ubo, &ubo, sizeof(ubo))) {
+			return range;
+		}
+	}
+
+	return NULL;
+}
+
+/**
+ * Get an existing range, or create a new one if necessary/possible.
+ */
+static struct ir3_ubo_range *
+get_range(nir_intrinsic_instr *instr, struct ir3_ubo_analysis_state *state)
+{
+	struct ir3_ubo_info ubo = {};
+
+	if (!get_ubo_info(instr, &ubo))
+		return NULL;
+
 	for (int i = 0; i < IR3_MAX_UBO_PUSH_RANGES; i++) {
 		struct ir3_ubo_range *range = &state->range[i];
 		if (range->end < range->start) {
 			/* We don't have a matching range, but there are more available.
 			 */
-			if (create_new) {
-				range->block = block;
-				range->bindless_base = base;
-				range->bindless = bindless;
-				return range;
-			} else {
-				return NULL;
-			}
-		} else if (range->block == block && range->bindless_base == base &&
-				   range->bindless == bindless) {
+			range->ubo = ubo;
+			return range;
+		} else if (!memcmp(&range->ubo, &ubo, sizeof(ubo))) {
 			return range;
 		}
 	}
@@ -103,14 +132,14 @@ gather_ubo_ranges(nir_shader *nir, nir_intrinsic_instr *instr,
 	if (ir3_shader_debug & IR3_DBG_NOUBOOPT)
 		return;
 
-	struct ir3_ubo_range *old_r = get_existing_range(instr, state, true);
+	struct ir3_ubo_range *old_r = get_range(instr, state);
 	if (!old_r)
 		return;
 
 	/* We don't know how to get the size of UBOs being indirected on, other
 	 * than on the GL uniforms where we have some other shader_info data.
 	 */
-	if (!nir_src_is_const(instr->src[1]) && !range_is_gl_uniforms(old_r))
+	if (!nir_src_is_const(instr->src[1]) && !ubo_is_gl_uniforms(&old_r->ubo))
 		return;
 
 	const struct ir3_ubo_range r = get_ubo_load_range(nir, instr, alignment);
@@ -200,9 +229,10 @@ track_ubo_use(nir_intrinsic_instr *instr, nir_builder *b, int *num_ubos)
 	}
 }
 
-static void
+static bool
 lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
-		struct ir3_ubo_analysis_state *state, int *num_ubos, uint32_t alignment)
+		const struct ir3_ubo_analysis_state *state,
+		int *num_ubos, uint32_t alignment)
 {
 	b->cursor = nir_before_instr(&instr->instr);
 
@@ -210,17 +240,19 @@ lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
 	 * could probably with some effort determine a block stride in number of
 	 * registers.
 	 */
-	struct ir3_ubo_range *range = get_existing_range(instr, state, false);
+	const struct ir3_ubo_range *range = get_existing_range(instr, state);
 	if (!range) {
 		track_ubo_use(instr, b, num_ubos);
-		return;
+		return false;
 	}
 
 	/* We don't have a good way of determining the range of the dynamic
 	 * access in general, so for now just fall back to pulling.
 	 */
-	if (!nir_src_is_const(instr->src[1]) && !range_is_gl_uniforms(range))
-		return;
+	if (!nir_src_is_const(instr->src[1]) && !ubo_is_gl_uniforms(&range->ubo)) {
+		track_ubo_use(instr, b, num_ubos);
+		return false;
+	}
 
 	/* After gathering the UBO access ranges, we limit the total
 	 * upload. Don't lower if this load is outside the range.
@@ -229,7 +261,7 @@ lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
 			instr, alignment);
 	if (!(range->start <= r.start && r.end <= range->end)) {
 		track_ubo_use(instr, b, num_ubos);
-		return;
+		return false;
 	}
 
 	nir_ssa_def *ubo_offset = nir_ssa_for_src(b, instr->src[1], 1);
@@ -284,7 +316,7 @@ lower_ubo_load_to_uniform(nir_intrinsic_instr *instr, nir_builder *b,
 
 	nir_instr_remove(&instr->instr);
 
-	state->lower_count++;
+	return true;
 }
 
 static bool
@@ -301,10 +333,12 @@ instr_is_load_ubo(nir_instr *instr)
 	return op == nir_intrinsic_load_ubo;
 }
 
-bool
-ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader *shader)
+void
+ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader_variant *v)
 {
-	struct ir3_ubo_analysis_state *state = &shader->ubo_state;
+	struct ir3_const_state *const_state = ir3_const_state(v);
+	struct ir3_ubo_analysis_state *state = &const_state->ubo_state;
+	struct ir3_compiler *compiler = v->shader->compiler;
 
 	memset(state, 0, sizeof(*state));
 	for (int i = 0; i < IR3_MAX_UBO_PUSH_RANGES; i++) {
@@ -317,7 +351,7 @@ ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader *shader)
 				nir_foreach_instr (instr, block) {
 					if (instr_is_load_ubo(instr))
 						gather_ubo_ranges(nir, nir_instr_as_intrinsic(instr),
-								state, shader->compiler->const_upload_unit);
+								state, compiler->const_upload_unit);
 				}
 			}
 		}
@@ -339,11 +373,11 @@ ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader *shader)
 	 * be driver params but this pass usually eliminatings them.
 	 */
 	struct ir3_const_state worst_case_const_state = { };
-	ir3_setup_const_state(shader, nir, &worst_case_const_state);
-	const uint32_t max_upload = (shader->compiler->max_const -
+	ir3_setup_const_state(nir, v, &worst_case_const_state);
+	const uint32_t max_upload = (ir3_max_const(v) -
 			worst_case_const_state.offsets.immediate) * 16;
 
-	uint32_t offset = shader->const_state.num_reserved_user_consts * 16;
+	uint32_t offset = v->shader->num_reserved_user_consts * 16;
 	state->num_enabled = ARRAY_SIZE(state->range);
 	for (uint32_t i = 0; i < ARRAY_SIZE(state->range); i++) {
 		if (state->range[i].start >= state->range[i].end) {
@@ -363,18 +397,33 @@ ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader *shader)
 
 	}
 	state->size = offset;
+}
+
+bool
+ir3_nir_lower_ubo_loads(nir_shader *nir, struct ir3_shader_variant *v)
+{
+	struct ir3_compiler *compiler = v->shader->compiler;
+	/* For the binning pass variant, we re-use the corresponding draw-pass
+	 * variants const_state and ubo state.  To make these clear, in this
+	 * pass it is const (read-only)
+	 */
+	const struct ir3_const_state *const_state = ir3_const_state(v);
+	const struct ir3_ubo_analysis_state *state = &const_state->ubo_state;
 
 	int num_ubos = 0;
+	bool progress = false;
 	nir_foreach_function (function, nir) {
 		if (function->impl) {
 			nir_builder builder;
 			nir_builder_init(&builder, function->impl);
 			nir_foreach_block (block, function->impl) {
 				nir_foreach_instr_safe (instr, block) {
-					if (instr_is_load_ubo(instr))
+					if (!instr_is_load_ubo(instr))
+						continue;
+					progress |=
 						lower_ubo_load_to_uniform(nir_instr_as_intrinsic(instr),
 								&builder, state, &num_ubos,
-								shader->compiler->const_upload_unit);
+								compiler->const_upload_unit);
 				}
 			}
 
@@ -389,5 +438,5 @@ ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader *shader)
 	if (nir->info.first_ubo_is_default_ubo)
 	    nir->info.num_ubos = num_ubos;
 
-	return state->lower_count > 0;
+	return progress;
 }

@@ -41,6 +41,7 @@
 #include "util/xmlconfig.h"
 
 #include "vk_util.h"
+#include "vk_enum_to_str.h"
 #include "wsi_common_private.h"
 #include "wsi_common_x11.h"
 #include "wsi_common_queue.h"
@@ -450,6 +451,33 @@ x11_surface_get_support(VkIcdSurfaceBase *icd_surface,
    return VK_SUCCESS;
 }
 
+static uint32_t
+x11_get_min_image_count(struct wsi_device *wsi_device)
+{
+   if (wsi_device->x11.override_minImageCount)
+      return wsi_device->x11.override_minImageCount;
+
+   /* For IMMEDIATE and FIFO, most games work in a pipelined manner where the
+    * can produce frames at a rate of 1/MAX(CPU duration, GPU duration), but
+    * the render latency is CPU duration + GPU duration.
+    *
+    * This means that with scanout from pageflipping we need 3 frames to run
+    * full speed:
+    * 1) CPU rendering work
+    * 2) GPU rendering work
+    * 3) scanout
+    *
+    * Once we have a nonblocking acquire that returns a semaphore we can merge
+    * 1 and 3. Hence the ideal implementation needs only 2 images, but games
+    * cannot tellwe currently do not have an ideal implementation and that
+    * hence they need to allocate 3 images. So let us do it for them.
+    *
+    * This is a tradeoff as it uses more memory than needed for non-fullscreen
+    * and non-performance intensive applications.
+    */
+   return 3;
+}
+
 static VkResult
 x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
                              struct wsi_device *wsi_device,
@@ -484,7 +512,7 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
        * to come back from the compositor.  In that case, we don't know the
        * size of the window so we just return valid "I don't know" stuff.
        */
-      caps->currentExtent = (VkExtent2D) { -1, -1 };
+      caps->currentExtent = (VkExtent2D) { UINT32_MAX, UINT32_MAX };
       caps->minImageExtent = (VkExtent2D) { 1, 1 };
       caps->maxImageExtent = (VkExtent2D) {
          wsi_device->maxImageDimension2D,
@@ -502,30 +530,9 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
                                       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
    }
 
-   /* For IMMEDIATE and FIFO, most games work in a pipelined manner where the
-    * can produce frames at a rate of 1/MAX(CPU duration, GPU duration), but
-    * the render latency is CPU duration + GPU duration.
-    *
-    * This means that with scanout from pageflipping we need 3 frames to run
-    * full speed:
-    * 1) CPU rendering work
-    * 2) GPU rendering work
-    * 3) scanout
-    *
-    * Once we have a nonblocking acquire that returns a semaphore we can merge
-    * 1 and 3. Hence the ideal implementation needs only 2 images, but games
-    * cannot tellwe currently do not have an ideal implementation and that
-    * hence they need to allocate 3 images. So let us do it for them.
-    *
-    * This is a tradeoff as it uses more memory than needed for non-fullscreen
-    * and non-performance intensive applications.
-    */
-   caps->minImageCount = 3;
+   caps->minImageCount = x11_get_min_image_count(wsi_device);
    /* There is no real maximum */
    caps->maxImageCount = 0;
-
-   if (wsi_device->x11.override_minImageCount)
-      caps->minImageCount = wsi_device->x11.override_minImageCount;
 
    caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
@@ -646,25 +653,6 @@ x11_surface_get_present_modes(VkIcdSurfaceBase *surface,
       VK_INCOMPLETE : VK_SUCCESS;
 }
 
-static bool
-x11_surface_is_local_to_gpu(struct wsi_device *wsi_dev,
-                            xcb_connection_t *conn)
-{
-   struct wsi_x11_connection *wsi_conn =
-      wsi_x11_get_connection(wsi_dev, conn);
-
-   if (!wsi_conn)
-      return false;
-
-   if (!wsi_x11_check_for_dri3(wsi_conn))
-      return false;
-
-   if (!wsi_x11_check_dri3_compatible(wsi_dev, conn))
-      return false;
-
-   return true;
-}
-
 static VkResult
 x11_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
                                    struct wsi_device *wsi_device,
@@ -675,30 +663,28 @@ x11_surface_get_present_rectangles(VkIcdSurfaceBase *icd_surface,
    xcb_window_t window = x11_surface_get_window(icd_surface);
    VK_OUTARRAY_MAKE(out, pRects, pRectCount);
 
-   if (x11_surface_is_local_to_gpu(wsi_device, conn)) {
-      vk_outarray_append(&out, rect) {
-         xcb_generic_error_t *err = NULL;
-         xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(conn, window);
-         xcb_get_geometry_reply_t *geom =
-            xcb_get_geometry_reply(conn, geom_cookie, &err);
-         free(err);
-         if (geom) {
-            *rect = (VkRect2D) {
-               .offset = { 0, 0 },
-               .extent = { geom->width, geom->height },
-            };
-         } else {
-            /* This can happen if the client didn't wait for the configure event
-             * to come back from the compositor.  In that case, we don't know the
-             * size of the window so we just return valid "I don't know" stuff.
-             */
-            *rect = (VkRect2D) {
-               .offset = { 0, 0 },
-               .extent = { -1, -1 },
-            };
-         }
-         free(geom);
+   vk_outarray_append(&out, rect) {
+      xcb_generic_error_t *err = NULL;
+      xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(conn, window);
+      xcb_get_geometry_reply_t *geom =
+         xcb_get_geometry_reply(conn, geom_cookie, &err);
+      free(err);
+      if (geom) {
+         *rect = (VkRect2D) {
+            .offset = { 0, 0 },
+            .extent = { geom->width, geom->height },
+         };
+      } else {
+         /* This can happen if the client didn't wait for the configure event
+          * to come back from the compositor.  In that case, we don't know the
+          * size of the window so we just return valid "I don't know" stuff.
+          */
+         *rect = (VkRect2D) {
+            .offset = { 0, 0 },
+            .extent = { UINT32_MAX, UINT32_MAX },
+         };
       }
+      free(geom);
    }
 
    return vk_outarray_status(&out);
@@ -790,7 +776,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(x11_swapchain, base.base, VkSwapchainKHR,
  * this has not been seen, success will be returned.
  */
 static VkResult
-x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
+_x11_swapchain_result(struct x11_swapchain *chain, VkResult result,
+                      const char *file, int line)
 {
    /* Prioritise returning existing errors for consistency. */
    if (chain->status < 0)
@@ -798,6 +785,10 @@ x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
 
    /* If we have a new error, mark it as permanent on the chain and return. */
    if (result < 0) {
+#ifndef NDEBUG
+      fprintf(stderr, "%s:%d: Swapchain status changed to %s\n",
+              file, line, vk_Result_to_str(result));
+#endif
       chain->status = result;
       return result;
    }
@@ -810,6 +801,12 @@ x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
     * and is always returned rather than success.
     */
    if (result == VK_SUBOPTIMAL_KHR) {
+#ifndef NDEBUG
+      if (chain->status != VK_SUBOPTIMAL_KHR) {
+         fprintf(stderr, "%s:%d: Swapchain status changed to %s\n",
+                 file, line, vk_Result_to_str(result));
+      }
+#endif
       chain->status = result;
       return result;
    }
@@ -817,6 +814,8 @@ x11_swapchain_result(struct x11_swapchain *chain, VkResult result)
    /* No changes, so return the last status. */
    return chain->status;
 }
+#define x11_swapchain_result(chain, result) \
+   _x11_swapchain_result(chain, result, __FILE__, __LINE__)
 
 static struct wsi_image *
 x11_get_wsi_image(struct wsi_swapchain *wsi_chain, uint32_t image_index)
@@ -1440,6 +1439,8 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       num_images = pCreateInfo->minImageCount;
    else if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)
       num_images = MAX2(num_images, 5);
+   else if (wsi_device->x11.ensure_minImageCount)
+      num_images = MAX2(num_images, x11_get_min_image_count(wsi_device));
 
    xcb_connection_t *conn = x11_surface_get_connection(icd_surface);
    struct wsi_x11_connection *wsi_conn =
@@ -1659,6 +1660,11 @@ wsi_x11_init_wsi(struct wsi_device *wsi_device,
          wsi_device->x11.strict_imageCount =
             driQueryOptionb(dri_options, "vk_x11_strict_image_count");
       }
+      if (driCheckOption(dri_options, "vk_x11_ensure_min_image_count", DRI_BOOL)) {
+         wsi_device->x11.ensure_minImageCount =
+            driQueryOptionb(dri_options, "vk_x11_ensure_min_image_count");
+      }
+
    }
 
    wsi->base.get_support = x11_surface_get_support;

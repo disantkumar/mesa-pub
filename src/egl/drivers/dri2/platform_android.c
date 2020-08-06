@@ -39,9 +39,10 @@
 #include <sys/types.h>
 #include <drm-uapi/drm_fourcc.h>
 
+#include "util/os_file.h"
+
 #include "loader.h"
 #include "egl_dri2.h"
-#include "egl_dri2_fallbacks.h"
 
 #ifdef HAVE_DRM_GRALLOC
 #include <gralloc_drm_handle.h>
@@ -331,7 +332,7 @@ droid_set_shared_buffer_mode(_EGLDisplay *disp, _EGLSurface *surf, bool mode)
 }
 
 static _EGLSurface *
-droid_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
+droid_create_surface(const _EGLDriver *drv, _EGLDisplay *disp, EGLint type,
 		    _EGLConfig *conf, void *native_window,
 		    const EGLint *attrib_list)
 {
@@ -444,7 +445,7 @@ cleanup_surface:
 }
 
 static _EGLSurface *
-droid_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
+droid_create_window_surface(const _EGLDriver *drv, _EGLDisplay *disp,
                             _EGLConfig *conf, void *native_window,
                             const EGLint *attrib_list)
 {
@@ -453,7 +454,7 @@ droid_create_window_surface(_EGLDriver *drv, _EGLDisplay *disp,
 }
 
 static _EGLSurface *
-droid_create_pbuffer_surface(_EGLDriver *drv, _EGLDisplay *disp,
+droid_create_pbuffer_surface(const _EGLDriver *drv, _EGLDisplay *disp,
 			    _EGLConfig *conf, const EGLint *attrib_list)
 {
    return droid_create_surface(drv, disp, EGL_PBUFFER_BIT, conf,
@@ -461,7 +462,7 @@ droid_create_pbuffer_surface(_EGLDriver *drv, _EGLDisplay *disp,
 }
 
 static EGLBoolean
-droid_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
+droid_destroy_surface(const _EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
@@ -497,7 +498,7 @@ droid_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 }
 
 static EGLBoolean
-droid_swap_interval(_EGLDriver *drv, _EGLDisplay *disp,
+droid_swap_interval(const _EGLDriver *drv, _EGLDisplay *disp,
                    _EGLSurface *surf, EGLint interval)
 {
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
@@ -700,7 +701,7 @@ droid_image_get_buffers(__DRIdrawable *driDrawable,
 }
 
 static EGLint
-droid_query_buffer_age(_EGLDriver *drv,
+droid_query_buffer_age(const _EGLDriver *drv,
                           _EGLDisplay *disp, _EGLSurface *surface)
 {
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surface);
@@ -714,7 +715,7 @@ droid_query_buffer_age(_EGLDriver *drv,
 }
 
 static EGLBoolean
-droid_swap_buffers(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
+droid_swap_buffers(const _EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *draw)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
@@ -1005,7 +1006,7 @@ droid_create_image_from_name(_EGLDisplay *disp, _EGLContext *ctx,
 #endif /* HAVE_DRM_GRALLOC */
 
 static EGLBoolean
-droid_query_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf,
+droid_query_surface(const _EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf,
                     EGLint attribute, EGLint *value)
 {
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
@@ -1068,7 +1069,7 @@ dri2_create_image_android_native_buffer(_EGLDisplay *disp,
 }
 
 static _EGLImage *
-droid_create_image_khr(_EGLDriver *drv, _EGLDisplay *disp,
+droid_create_image_khr(const _EGLDriver *drv, _EGLDisplay *disp,
 		       _EGLContext *ctx, EGLenum target,
 		       EGLClientBuffer buffer, const EGLint *attr_list)
 {
@@ -1177,7 +1178,7 @@ droid_get_capability(void *loaderPrivate, enum dri_loader_cap cap)
 }
 
 static EGLBoolean
-droid_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
+droid_add_configs_for_visuals(const _EGLDriver *drv, _EGLDisplay *disp)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    static const struct {
@@ -1260,20 +1261,13 @@ droid_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
 static const struct dri2_egl_display_vtbl droid_display_vtbl = {
    .authenticate = NULL,
    .create_window_surface = droid_create_window_surface,
-   .create_pixmap_surface = dri2_fallback_create_pixmap_surface,
    .create_pbuffer_surface = droid_create_pbuffer_surface,
    .destroy_surface = droid_destroy_surface,
    .create_image = droid_create_image_khr,
    .swap_buffers = droid_swap_buffers,
-   .swap_buffers_with_damage = dri2_fallback_swap_buffers_with_damage, /* Android implements the function */
-   .swap_buffers_region = dri2_fallback_swap_buffers_region,
    .swap_interval = droid_swap_interval,
-   .post_sub_buffer = dri2_fallback_post_sub_buffer,
-   .copy_buffers = dri2_fallback_copy_buffers,
    .query_buffer_age = droid_query_buffer_age,
    .query_surface = droid_query_surface,
-   .create_wayland_buffer_from_image = dri2_fallback_create_wayland_buffer_from_image,
-   .get_sync_values = dri2_fallback_get_sync_values,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
    .set_shared_buffer_mode = droid_set_shared_buffer_mode,
 };
@@ -1394,8 +1388,7 @@ static const __DRIextension *droid_image_loader_extensions[] = {
 static EGLBoolean
 droid_load_driver(_EGLDisplay *disp, bool swrast)
 {
-   struct dri2_egl_display *dri2_dpy = disp->DriverData;
-   const char *err;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
    dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd);
    if (dri2_dpy->driver_name == NULL)
@@ -1407,7 +1400,6 @@ droid_load_driver(_EGLDisplay *disp, bool swrast)
     * systems.) */
    dri2_dpy->loader_extensions = droid_dri2_loader_extensions;
    if (!dri2_load_driver(disp)) {
-      err = "DRI2: failed to load driver";
       goto error;
    }
 #else
@@ -1421,14 +1413,12 @@ droid_load_driver(_EGLDisplay *disp, bool swrast)
          free(dri2_dpy->driver_name);
          dri2_dpy->driver_name = strdup("kms_swrast");
       } else {
-         err = "DRI3: failed to find software capable driver";
          goto error;
       }
    }
 
    dri2_dpy->loader_extensions = droid_image_loader_extensions;
    if (!dri2_load_driver_dri3(disp)) {
-      err = "DRI3: failed to load driver";
       goto error;
    }
 #endif
@@ -1505,7 +1495,7 @@ droid_open_device(_EGLDisplay *disp, bool swrast)
       return EGL_FALSE;
    }
 
-   dri2_dpy->fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+   dri2_dpy->fd = os_dupfd_cloexec(fd);
    if (dri2_dpy->fd < 0)
       return EGL_FALSE;
 
@@ -1594,7 +1584,7 @@ droid_open_device(_EGLDisplay *disp, bool swrast)
 #endif
 
 EGLBoolean
-dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *disp)
+dri2_initialize_android(const _EGLDriver *drv, _EGLDisplay *disp)
 {
    _EGLDevice *dev;
    bool device_opened = false;

@@ -2,17 +2,46 @@
 
 set -ex
 
+if [ $DEBIAN_ARCH = arm64 ]; then
+    ARCH_PACKAGES="firmware-qcom-media"
+elif [ $DEBIAN_ARCH = amd64 ]; then
+    # Upstream LLVM package repository
+    apt-get -y install --no-install-recommends gnupg ca-certificates
+    apt-key add /llvm-snapshot.gpg.key
+    echo "deb https://apt.llvm.org/buster/ llvm-toolchain-buster-9 main" >/etc/apt/sources.list.d/llvm9.list
+    apt-get update
+
+    ARCH_PACKAGES="libelf1
+                   libllvm9
+                   libxcb-dri2-0
+                   libxcb-dri3-0
+                   libxcb-present0
+                   libxcb-sync1
+                   libxcb-xfixes0
+                   libxshmfence1
+                   firmware-amd-graphics
+                  "
+fi
+
 apt-get -y install --no-install-recommends \
     ca-certificates \
+    curl \
     initramfs-tools \
     libpng16-16 \
     strace \
     libsensors5 \
     libexpat1 \
-    libdrm2 \
-    libdrm-nouveau2 \
-    firmware-qcom-media \
+    libx11-6 \
+    libx11-xcb1 \
+    $ARCH_PACKAGES \
     netcat-openbsd \
+    python3 \
+    libpython3.7 \
+    python3-pil \
+    python3-pytest \
+    python3-requests \
+    python3-yaml \
+    sntp \
     wget \
     xz-utils
 
@@ -50,7 +79,8 @@ cp /usr/share/zoneinfo/Etc/UTC /etc/localtime
 
 UNNEEDED_PACKAGES="libfdisk1
                    tzdata
-                   diffutils"
+                   diffutils
+                   gnupg"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -72,6 +102,7 @@ rm -rf /var/log/*
 # Dropping documentation, localization, i18n files, etc
 rm -rf /usr/share/doc/*
 rm -rf /usr/share/locale/*
+rm -rf /usr/share/X11/locale/*
 rm -rf /usr/share/man
 rm -rf /usr/share/i18n/*
 rm -rf /usr/share/info/*
@@ -119,6 +150,15 @@ UNNEEDED_PACKAGES="apt libapt-pkg6.0 "\
 "hostname "\
 "adduser "\
 "debian-archive-keyring "\
+"libegl1-mesa-dev "\
+"libegl-mesa0 "\
+"libgl1-mesa-dev "\
+"libgl1-mesa-dri "\
+"libglapi-mesa "\
+"libgles2-mesa-dev "\
+"libglx-mesa0 "\
+"mesa-common-dev "\
+"libz3-4 "\
 
 # Removing unneeded packages
 for PACKAGE in ${UNNEEDED_PACKAGES}

@@ -74,8 +74,7 @@ ir3_context_init(struct ir3_compiler *compiler,
 	 */
 
 	ctx->s = nir_shader_clone(ctx, so->shader->nir);
-	if (ir3_key_lowers_nir(&so->key))
-		ir3_optimize_nir(so->shader, ctx->s, &so->key);
+	ir3_nir_lower_variant(so, ctx->s);
 
 	/* this needs to be the last pass run, so do this here instead of
 	 * in ir3_optimize_nir():
@@ -228,7 +227,7 @@ ir3_get_src(struct ir3_context *ctx, nir_src *src)
 		for (unsigned i = 0; i < num_components; i++) {
 			unsigned n = src->reg.base_offset * reg->num_components + i;
 			compile_assert(ctx, n < arr->length);
-			value[i] = ir3_create_array_load(ctx, arr, n, addr, reg->bit_size);
+			value[i] = ir3_create_array_load(ctx, arr, n, addr);
 		}
 
 		return value;
@@ -554,6 +553,10 @@ ir3_declare_array(struct ir3_context *ctx, nir_register *reg)
 	arr->length = reg->num_components * MAX2(1, reg->num_array_elems);
 	compile_assert(ctx, arr->length > 0);
 	arr->r = reg;
+	arr->half = reg->bit_size <= 16;
+	// HACK one-bit bools still end up as 32b:
+	if (reg->bit_size == 1)
+		arr->half = false;
 	list_addtail(&arr->node, &ctx->ir->array_list);
 }
 
@@ -571,7 +574,7 @@ ir3_get_array(struct ir3_context *ctx, nir_register *reg)
 /* relative (indirect) if address!=NULL */
 struct ir3_instruction *
 ir3_create_array_load(struct ir3_context *ctx, struct ir3_array *arr, int n,
-		struct ir3_instruction *address, unsigned bitsize)
+		struct ir3_instruction *address)
 {
 	struct ir3_block *block = ctx->block;
 	struct ir3_instruction *mov;
@@ -579,11 +582,10 @@ ir3_create_array_load(struct ir3_context *ctx, struct ir3_array *arr, int n,
 	unsigned flags = 0;
 
 	mov = ir3_instr_create(block, OPC_MOV);
-	if (bitsize == 16) {
+	if (arr->half) {
 		mov->cat1.src_type = TYPE_U16;
 		mov->cat1.dst_type = TYPE_U16;
 		flags |= IR3_REG_HALF;
-		arr->half = true;
 	} else {
 		mov->cat1.src_type = TYPE_U32;
 		mov->cat1.dst_type = TYPE_U32;
@@ -613,6 +615,7 @@ ir3_create_array_store(struct ir3_context *ctx, struct ir3_array *arr, int n,
 	struct ir3_block *block = ctx->block;
 	struct ir3_instruction *mov;
 	struct ir3_register *dst;
+	unsigned flags = 0;
 
 	/* if not relative store, don't create an extra mov, since that
 	 * ends up being difficult for cp to remove.
@@ -640,17 +643,24 @@ ir3_create_array_store(struct ir3_context *ctx, struct ir3_array *arr, int n,
 	}
 
 	mov = ir3_instr_create(block, OPC_MOV);
-	mov->cat1.src_type = TYPE_U32;
-	mov->cat1.dst_type = TYPE_U32;
+	if (arr->half) {
+		mov->cat1.src_type = TYPE_U16;
+		mov->cat1.dst_type = TYPE_U16;
+		flags |= IR3_REG_HALF;
+	} else {
+		mov->cat1.src_type = TYPE_U32;
+		mov->cat1.dst_type = TYPE_U32;
+	}
 	mov->barrier_class = IR3_BARRIER_ARRAY_W;
 	mov->barrier_conflict = IR3_BARRIER_ARRAY_R | IR3_BARRIER_ARRAY_W;
 	dst = ir3_reg_create(mov, 0, IR3_REG_ARRAY |
+			flags |
 			COND(address, IR3_REG_RELATIV));
 	dst->instr = arr->last_write;
 	dst->size  = arr->length;
 	dst->array.id = arr->id;
 	dst->array.offset = n;
-	ir3_reg_create(mov, 0, IR3_REG_SSA)->instr = src;
+	ir3_reg_create(mov, 0, IR3_REG_SSA | flags)->instr = src;
 
 	if (address)
 		ir3_instr_set_address(mov, address);

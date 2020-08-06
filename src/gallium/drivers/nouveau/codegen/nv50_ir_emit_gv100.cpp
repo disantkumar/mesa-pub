@@ -858,6 +858,7 @@ CodeEmitterGV100::emitATOM()
          break;
       }
       emitField(73, 3, dType);
+      emitGPR  (64, insn->src(2));
    }
 
    emitPRED (81);
@@ -909,6 +910,40 @@ CodeEmitterGV100::emitATOMS()
    emitGPR  (16, insn->def(0));
 }
 
+static void
+interpApply(const FixupEntry *entry, uint32_t *code, const FixupData& data)
+{
+   int ipa = entry->ipa;
+   int loc = entry->loc;
+
+   if (data.force_persample_interp &&
+       (ipa & NV50_IR_INTERP_SAMPLE_MASK) == NV50_IR_INTERP_DEFAULT &&
+       (ipa & NV50_IR_INTERP_MODE_MASK) != NV50_IR_INTERP_FLAT) {
+      ipa |= NV50_IR_INTERP_CENTROID;
+   }
+
+   int sample;
+   switch (ipa & NV50_IR_INTERP_SAMPLE_MASK) {
+   case NV50_IR_INTERP_DEFAULT : sample = 0; break;
+   case NV50_IR_INTERP_CENTROID: sample = 1; break;
+   case NV50_IR_INTERP_OFFSET  : sample = 2; break;
+   default: assert(!"invalid sample mode");
+   }
+
+   int interp;
+   switch (ipa & NV50_IR_INTERP_MODE_MASK) {
+   case NV50_IR_INTERP_LINEAR     :
+   case NV50_IR_INTERP_PERSPECTIVE: interp = 0; break;
+   case NV50_IR_INTERP_FLAT       : interp = 1; break;
+   case NV50_IR_INTERP_SC         : interp = 2; break;
+   default: assert(!"invalid ipa mode");
+   }
+
+   code[loc + 2] &= ~(0xf << 12);
+   code[loc + 2] |= sample << 12;
+   code[loc + 2] |= interp << 14;
+}
+
 void
 CodeEmitterGV100::emitIPA()
 {
@@ -925,17 +960,21 @@ CodeEmitterGV100::emitIPA()
       break;
    }
 
+   switch (insn->getSampleMode()) {
+   case NV50_IR_INTERP_DEFAULT : emitField(76, 2, 0); break;
+   case NV50_IR_INTERP_CENTROID: emitField(76, 2, 1); break;
+   case NV50_IR_INTERP_OFFSET  : emitField(76, 2, 2); break;
+   default:
+      assert(!"invalid sample mode");
+      break;
+   }
+
    if (insn->getSampleMode() != NV50_IR_INTERP_OFFSET) {
-      switch (insn->getSampleMode()) {
-      case NV50_IR_INTERP_DEFAULT : emitField(76, 2, 0); break;
-      case NV50_IR_INTERP_CENTROID: emitField(76, 2, 1); break;
-      default:
-         break;
-      }
       emitGPR  (32);
+      addInterp(insn->ipa, 0xff, interpApply);
    } else {
-      emitField(76, 2, 2);
       emitGPR  (32, insn->src(1));
+      addInterp(insn->ipa, insn->getSrc(1)->reg.data.id, interpApply);
    }
 
    assert(!insn->src(0).isIndirect(0));
@@ -952,21 +991,22 @@ CodeEmitterGV100::emitISBERD()
 }
 
 void
-CodeEmitterGV100::emitLDSTc(int pos)
+CodeEmitterGV100::emitLDSTc(int posm, int poso)
 {
    int mode = 0;
+   int order = 1;
 
    switch (insn->cache) {
-   case CACHE_CA: mode = 0; break;
-   case CACHE_CG: mode = 1; break;
-   case CACHE_CS: mode = 2; break;
-   case CACHE_CV: mode = 3; break;
+   case CACHE_CA: mode = 0; order = 1; break;
+   case CACHE_CG: mode = 2; order = 2; break;
+   case CACHE_CV: mode = 3; order = 2; break;
    default:
       assert(!"invalid caching mode");
       break;
    }
 
-   emitField(pos, 2, mode);
+   emitField(poso, 2, order);
+   emitField(posm, 2, mode);
 }
 
 void
@@ -1189,6 +1229,14 @@ CodeEmitterGV100::emitTLD4()
 {
    const TexInstruction *insn = this->insn->asTex();
 
+   int offsets = 0;
+   switch (insn->tex.useOffsets) {
+   case 4: offsets = 2; break;
+   case 1: offsets = 1; break;
+   case 0: offsets = 0; break;
+   default: assert(!"invalid offsets count"); break;
+   }
+
    if (insn->tex.rIndirectSrc < 0) {
       emitInsn (0xb63);
       emitField(54, 5, prog->driver->io.auxCBSlot);
@@ -1202,8 +1250,7 @@ CodeEmitterGV100::emitTLD4()
    emitField(84, 1, 1); // !.EF
    emitPRED (81);
    emitField(78, 1, insn->tex.target.isShadow());
-   emitField(77, 2, insn->tex.useOffsets == 4);
-   emitField(76, 2, insn->tex.useOffsets == 1);
+   emitField(76, 2, offsets);
    emitField(72, 4, insn->tex.mask);
    emitGPR  (64, insn->def(1));
    emitField(63, 1, insn->tex.target.isArray());
@@ -1413,7 +1460,6 @@ CodeEmitterGV100::emitSULD()
          assert(0);
          break;
       }
-   //   emitLDSTc(0x18);
       emitField(73, 3, type);
    } else {
       emitInsn(0x998);
@@ -1422,7 +1468,7 @@ CodeEmitterGV100::emitSULD()
    }
 
    emitPRED (81);
-   emitField(79, 2, 1);
+   emitLDSTc(77, 79);
 
    emitGPR  (16, insn->def(0));
    emitGPR  (24, insn->src(0));
@@ -1442,12 +1488,7 @@ CodeEmitterGV100::emitSUST()
 #endif
    emitSUTarget();
 
-
-#if 0
-   emitLDSTc(0x18);
-#endif
-
-   emitField(79, 2, 1);
+   emitLDSTc(77, 79);
    emitField(72, 4, 0xf); // rgba
    emitGPR(32, insn->src(1));
    emitGPR(24, insn->src(0));

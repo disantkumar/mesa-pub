@@ -95,9 +95,6 @@ typedef struct {
         unsigned sysval_count;
         unsigned sysvals[MAX_SYSVAL_COUNT];
 
-        /* Boolean properties of the program */
-        bool writes_point_size;
-
         int first_tag;
 
         struct util_dynarray compiled;
@@ -113,6 +110,9 @@ typedef struct {
 
         /* IN: For a fragment shader with a lowered alpha test, the ref value */
         float alpha_ref;
+
+        /* IN: Render target formats for output load/store lowering */
+        enum pipe_format rt_formats[8];
 } panfrost_program;
 
 typedef struct pan_block {

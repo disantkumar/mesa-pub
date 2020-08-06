@@ -23,32 +23,35 @@
  */
 
 #include "si_pipe.h"
+#include "si_build_pm4.h"
 #include "sid.h"
 #include "util/u_memory.h"
 
-void si_pm4_cmd_begin(struct si_pm4_state *state, unsigned opcode)
+static void si_pm4_cmd_begin(struct si_pm4_state *state, unsigned opcode)
 {
+   assert(state->ndw < SI_PM4_MAX_DW);
    state->last_opcode = opcode;
    state->last_pm4 = state->ndw++;
 }
 
 void si_pm4_cmd_add(struct si_pm4_state *state, uint32_t dw)
 {
+   assert(state->ndw < SI_PM4_MAX_DW);
    state->pm4[state->ndw++] = dw;
 }
 
-void si_pm4_cmd_end(struct si_pm4_state *state, bool predicate)
+static void si_pm4_cmd_end(struct si_pm4_state *state, bool predicate)
 {
    unsigned count;
    count = state->ndw - state->last_pm4 - 2;
    state->pm4[state->last_pm4] = PKT3(state->last_opcode, count, predicate);
-
-   assert(state->ndw <= SI_PM4_MAX_DW);
 }
 
 void si_pm4_set_reg(struct si_pm4_state *state, unsigned reg, uint32_t val)
 {
    unsigned opcode;
+
+   SI_CHECK_SHADOWED_REGS(reg, 1);
 
    if (reg >= SI_CONFIG_REG_OFFSET && reg < SI_CONFIG_REG_END) {
       opcode = PKT3_SET_CONFIG_REG;
@@ -83,22 +86,8 @@ void si_pm4_set_reg(struct si_pm4_state *state, unsigned reg, uint32_t val)
    si_pm4_cmd_end(state, false);
 }
 
-void si_pm4_add_bo(struct si_pm4_state *state, struct si_resource *bo, enum radeon_bo_usage usage,
-                   enum radeon_bo_priority priority)
-{
-   unsigned idx = state->nbo++;
-   assert(idx < SI_PM4_MAX_BO);
-
-   si_resource_reference(&state->bo[idx], bo);
-   state->bo_usage[idx] = usage;
-   state->bo_priority[idx] = priority;
-}
-
 void si_pm4_clear_state(struct si_pm4_state *state)
 {
-   for (int i = 0; i < state->nbo; ++i)
-      si_resource_reference(&state->bo[i], NULL);
-   state->nbo = 0;
    state->ndw = 0;
 }
 
@@ -119,9 +108,9 @@ void si_pm4_emit(struct si_context *sctx, struct si_pm4_state *state)
 {
    struct radeon_cmdbuf *cs = sctx->gfx_cs;
 
-   for (int i = 0; i < state->nbo; ++i) {
-      radeon_add_to_buffer_list(sctx, sctx->gfx_cs, state->bo[i], state->bo_usage[i],
-                                state->bo_priority[i]);
+   if (state->shader) {
+      radeon_add_to_buffer_list(sctx, sctx->gfx_cs, state->shader->bo,
+                                RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY);
    }
 
    radeon_emit_array(cs, state->pm4, state->ndw);
@@ -130,8 +119,23 @@ void si_pm4_emit(struct si_context *sctx, struct si_pm4_state *state)
       state->atom.emit(sctx);
 }
 
-void si_pm4_reset_emitted(struct si_context *sctx)
+void si_pm4_reset_emitted(struct si_context *sctx, bool first_cs)
 {
+   if (!first_cs && sctx->shadowed_regs) {
+      /* Only dirty states that contain buffers, so that they are
+       * added to the buffer list on the next draw call.
+       */
+      for (unsigned i = 0; i < SI_NUM_STATES; i++) {
+         struct si_pm4_state *state = sctx->emitted.array[i];
+
+         if (state && state->shader) {
+            sctx->emitted.array[i] = NULL;
+            sctx->dirty_states |= 1 << i;
+         }
+      }
+      return;
+   }
+
    memset(&sctx->emitted, 0, sizeof(sctx->emitted));
    sctx->dirty_states |= u_bit_consecutive(0, SI_NUM_STATES);
 }

@@ -3969,6 +3969,7 @@ emit_vertex(
       bld->gs_iface->emit_vertex(bld->gs_iface, &bld->bld_base.base,
                                  bld->outputs,
                                  total_emitted_vertices_vec,
+                                 mask,
                                  stream_id);
       increment_vec_ptr_by_mask(bld_base, bld->emitted_vertices_vec_ptr,
                                 mask);
@@ -4014,7 +4015,7 @@ end_primitive_masked(struct lp_build_tgsi_context * bld_base,
                                    total_emitted_vertices_vec,
                                    emitted_vertices_vec,
                                    emitted_prims_vec,
-                                   mask_vec(bld_base));
+                                   mask_vec(bld_base), 0);
 
 #if DUMP_GS_EMITS
       lp_build_print_value(bld->bld_base.base.gallivm,

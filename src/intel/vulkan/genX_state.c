@@ -256,15 +256,17 @@ genX(init_device_state)(struct anv_device *device)
 #endif
 
 #if GEN_GEN == 12
-   uint64_t aux_base_addr = gen_aux_map_get_base(device->aux_map_ctx);
-   assert(aux_base_addr % (32 * 1024) == 0);
-   anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
-      lri.RegisterOffset = GENX(GFX_AUX_TABLE_BASE_ADDR_num);
-      lri.DataDWord = aux_base_addr & 0xffffffff;
-   }
-   anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
-      lri.RegisterOffset = GENX(GFX_AUX_TABLE_BASE_ADDR_num) + 4;
-      lri.DataDWord = aux_base_addr >> 32;
+   if (device->info.has_aux_map) {
+      uint64_t aux_base_addr = gen_aux_map_get_base(device->aux_map_ctx);
+      assert(aux_base_addr % (32 * 1024) == 0);
+      anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+         lri.RegisterOffset = GENX(GFX_AUX_TABLE_BASE_ADDR_num);
+         lri.DataDWord = aux_base_addr & 0xffffffff;
+      }
+      anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+         lri.RegisterOffset = GENX(GFX_AUX_TABLE_BASE_ADDR_num) + 4;
+         lri.DataDWord = aux_base_addr >> 32;
+      }
    }
 #endif
 
@@ -293,6 +295,20 @@ genX(init_device_state)(struct anv_device *device)
       }
 #endif
    }
+
+#if GEN_GEN >= 12
+   const struct gen_l3_config *cfg = gen_get_default_l3_config(&device->info);
+   if (!cfg) {
+      /* Platforms with no configs just setup full-way allocation. */
+      uint32_t l3cr;
+      anv_pack_struct(&l3cr, GENX(L3ALLOC),
+                      .L3FullWayAllocationEnable = true);
+      anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
+         lri.RegisterOffset = GENX(L3ALLOC_num);
+         lri.DataDWord      = l3cr;
+      }
+   }
+#endif
 
    anv_batch_emit(&batch, GENX(MI_BATCH_BUFFER_END), bbe);
 

@@ -134,7 +134,6 @@ anv_deps = [
   dep_valgrind,
   idep_nir_headers,
   idep_vulkan_util_headers,
-  idep_xmlconfig_headers,
 ]
 anv_flags = [
   no_override_init_args,
@@ -156,7 +155,7 @@ if with_platform_wayland
   libanv_files += files('anv_wsi_wayland.c')
 endif
 
-if with_platform_drm
+if system_has_kms_drm and not with_platform_android
   anv_flags += '-DVK_USE_PLATFORM_DISPLAY_KHR'
   libanv_files += files('anv_wsi_display.c')
 endif

@@ -35,7 +35,7 @@
 #include "util/u_math.h"
 
 #include "instr-a3xx.h"
-#include "ir3_compiler.h"
+#include "ir3_shader.h"
 
 /* simple allocator to carve allocations out of an up-front allocated heap,
  * so that we can free everything easily in one shot.
@@ -45,12 +45,13 @@ void * ir3_alloc(struct ir3 *shader, int sz)
 	return rzalloc_size(shader, sz); /* TODO: don't use rzalloc */
 }
 
-struct ir3 * ir3_create(struct ir3_compiler *compiler, gl_shader_stage type)
+struct ir3 * ir3_create(struct ir3_compiler *compiler,
+		struct ir3_shader_variant *v)
 {
-	struct ir3 *shader = rzalloc(NULL, struct ir3);
+	struct ir3 *shader = rzalloc(v, struct ir3);
 
 	shader->compiler = compiler;
-	shader->type = type;
+	shader->type = v->type;
 
 	list_inithead(&shader->block_list);
 	list_inithead(&shader->array_list);
@@ -79,6 +80,7 @@ void ir3_destroy(struct ir3 *shader)
 static uint32_t reg(struct ir3_register *reg, struct ir3_info *info,
 		uint32_t repeat, uint32_t valid_flags)
 {
+	struct ir3_shader_variant *v = info->data;
 	reg_t val = { .dummy32 = 0 };
 
 	if (reg->flags & ~valid_flags) {
@@ -112,7 +114,7 @@ static uint32_t reg(struct ir3_register *reg, struct ir3_info *info,
 			/* ignore writes to dummy register r63.x */
 		} else if (max < regid(48, 0)) {
 			if (reg->flags & IR3_REG_HALF) {
-				if (info->gpu_id >= 600) {
+				if (v->mergedregs) {
 					/* starting w/ a6xx, half regs conflict with full regs: */
 					info->max_reg = MAX2(info->max_reg, max >> 3);
 				} else {
@@ -130,11 +132,12 @@ static uint32_t reg(struct ir3_register *reg, struct ir3_info *info,
 static int emit_cat0(struct ir3_instruction *instr, void *ptr,
 		struct ir3_info *info)
 {
+	struct ir3_shader_variant *v = info->data;
 	instr_cat0_t *cat0 = ptr;
 
-	if (info->gpu_id >= 500) {
+	if (v->shader->compiler->gpu_id >= 500) {
 		cat0->a5xx.immed = instr->cat0.immed;
-	} else if (info->gpu_id >= 400) {
+	} else if (v->shader->compiler->gpu_id >= 400) {
 		cat0->a4xx.immed = instr->cat0.immed;
 	} else {
 		cat0->a3xx.immed = instr->cat0.immed;
@@ -485,7 +488,6 @@ static int emit_cat5(struct ir3_instruction *instr, void *ptr,
 
 	if (instr->flags & IR3_INSTR_S2EN) {
 		struct ir3_register *samp_tex = instr->regs[1];
-		iassert(samp_tex->flags & IR3_REG_HALF);
 		cat5->s2en_bindless.src3 = reg(samp_tex, info, instr->repeat,
 									   (instr->flags & IR3_INSTR_B) ? 0 : IR3_REG_HALF);
 		if (instr->flags & IR3_INSTR_B) {
@@ -628,13 +630,14 @@ static int emit_cat6_a6xx(struct ir3_instruction *instr, void *ptr,
 static int emit_cat6(struct ir3_instruction *instr, void *ptr,
 		struct ir3_info *info)
 {
+	struct ir3_shader_variant *v = info->data;
 	struct ir3_register *dst, *src1, *src2;
 	instr_cat6_t *cat6 = ptr;
 
 	/* In a6xx we start using a new instruction encoding for some of
 	 * these instructions:
 	 */
-	if (info->gpu_id >= 600) {
+	if (v->shader->compiler->gpu_id >= 600) {
 		switch (instr->opc) {
 		case OPC_ATOMIC_ADD:
 		case OPC_ATOMIC_SUB:
@@ -878,6 +881,7 @@ static int emit_cat6(struct ir3_instruction *instr, void *ptr,
 			}
 		} else {
 			cat6c->off = instr->cat6.dst_offset;
+			cat6c->off_high = instr->cat6.dst_offset >> 8;
 		}
 	} else {
 		instr_cat6d_t *cat6d = ptr;
@@ -912,34 +916,32 @@ static int (*emit[])(struct ir3_instruction *instr, void *ptr,
 	emit_cat7,
 };
 
-void * ir3_assemble(struct ir3 *shader, struct ir3_info *info,
-		uint32_t gpu_id)
+void * ir3_assemble(struct ir3_shader_variant *v)
 {
 	uint32_t *ptr, *dwords;
+	struct ir3_info *info = &v->info;
+	struct ir3 *shader = v->ir;
+	const struct ir3_compiler *compiler = v->shader->compiler;
 
 	memset(info, 0, sizeof(*info));
-	info->gpu_id        = gpu_id;
+	info->data          = v;
 	info->max_reg       = -1;
 	info->max_half_reg  = -1;
 	info->max_const     = -1;
 
+	uint32_t instr_count = 0;
 	foreach_block (block, &shader->block_list) {
 		foreach_instr (instr, &block->instr_list) {
-			info->sizedwords += 2;
+			instr_count++;
 		}
 	}
 
-	/* need an integer number of instruction "groups" (sets of 16
-	 * instructions on a4xx or sets of 4 instructions on a3xx),
-	 * so pad out w/ NOPs if needed: (NOTE each instruction is 64bits)
-	 */
-	if (gpu_id >= 400) {
-		info->sizedwords = align(info->sizedwords, 16 * 2);
-	} else {
-		info->sizedwords = align(info->sizedwords, 4 * 2);
-	}
+	v->instrlen = DIV_ROUND_UP(instr_count, compiler->instr_align);
 
-	ptr = dwords = calloc(4, info->sizedwords);
+	/* Pad out with NOPs to instrlen. */
+	info->sizedwords = v->instrlen * compiler->instr_align * sizeof(instr_t) / 4;
+
+	ptr = dwords = rzalloc_size(v, 4 * info->sizedwords);
 
 	foreach_block (block, &shader->block_list) {
 		unsigned sfu_delay = 0;
@@ -996,8 +998,6 @@ static struct ir3_register * reg_create(struct ir3 *shader,
 	reg->wrmask = 1;
 	reg->flags = flags;
 	reg->num = num;
-	if (shader->compiler->gpu_id >= 600)
-		reg->merged = true;
 	return reg;
 }
 
@@ -1284,4 +1284,174 @@ ir3_fixup_src_type(struct ir3_instruction *instr)
 		}
 		break;
 	}
+}
+
+static unsigned
+cp_flags(unsigned flags)
+{
+	/* only considering these flags (at least for now): */
+	flags &= (IR3_REG_CONST | IR3_REG_IMMED |
+			IR3_REG_FNEG | IR3_REG_FABS |
+			IR3_REG_SNEG | IR3_REG_SABS |
+			IR3_REG_BNOT | IR3_REG_RELATIV);
+	return flags;
+}
+
+bool
+ir3_valid_flags(struct ir3_instruction *instr, unsigned n,
+		unsigned flags)
+{
+	struct ir3_compiler *compiler = instr->block->shader->compiler;
+	unsigned valid_flags;
+
+	if ((flags & IR3_REG_HIGH) &&
+			(opc_cat(instr->opc) > 1) &&
+			(compiler->gpu_id >= 600))
+		return false;
+
+	flags = cp_flags(flags);
+
+	/* If destination is indirect, then source cannot be.. at least
+	 * I don't think so..
+	 */
+	if ((instr->regs[0]->flags & IR3_REG_RELATIV) &&
+			(flags & IR3_REG_RELATIV))
+		return false;
+
+	if (flags & IR3_REG_RELATIV) {
+		/* TODO need to test on earlier gens.. pretty sure the earlier
+		 * problem was just that we didn't check that the src was from
+		 * same block (since we can't propagate address register values
+		 * across blocks currently)
+		 */
+		if (compiler->gpu_id < 600)
+			return false;
+
+		/* NOTE in the special try_swap_mad_two_srcs() case we can be
+		 * called on a src that has already had an indirect load folded
+		 * in, in which case ssa() returns NULL
+		 */
+		if (instr->regs[n+1]->flags & IR3_REG_SSA) {
+			struct ir3_instruction *src = ssa(instr->regs[n+1]);
+			if (src->address->block != instr->block)
+				return false;
+		}
+	}
+
+	switch (opc_cat(instr->opc)) {
+	case 1:
+		valid_flags = IR3_REG_IMMED | IR3_REG_CONST | IR3_REG_RELATIV;
+		if (flags & ~valid_flags)
+			return false;
+		break;
+	case 2:
+		valid_flags = ir3_cat2_absneg(instr->opc) |
+				IR3_REG_CONST | IR3_REG_RELATIV;
+
+		if (ir3_cat2_int(instr->opc))
+			valid_flags |= IR3_REG_IMMED;
+
+		if (flags & ~valid_flags)
+			return false;
+
+		if (flags & (IR3_REG_CONST | IR3_REG_IMMED)) {
+			unsigned m = (n ^ 1) + 1;
+			/* cannot deal w/ const in both srcs:
+			 * (note that some cat2 actually only have a single src)
+			 */
+			if (m < instr->regs_count) {
+				struct ir3_register *reg = instr->regs[m];
+				if ((flags & IR3_REG_CONST) && (reg->flags & IR3_REG_CONST))
+					return false;
+				if ((flags & IR3_REG_IMMED) && (reg->flags & IR3_REG_IMMED))
+					return false;
+			}
+		}
+		break;
+	case 3:
+		valid_flags = ir3_cat3_absneg(instr->opc) |
+				IR3_REG_CONST | IR3_REG_RELATIV;
+
+		if (flags & ~valid_flags)
+			return false;
+
+		if (flags & (IR3_REG_CONST | IR3_REG_RELATIV)) {
+			/* cannot deal w/ const/relativ in 2nd src: */
+			if (n == 1)
+				return false;
+		}
+
+		break;
+	case 4:
+		/* seems like blob compiler avoids const as src.. */
+		/* TODO double check if this is still the case on a4xx */
+		if (flags & (IR3_REG_CONST | IR3_REG_IMMED))
+			return false;
+		if (flags & (IR3_REG_SABS | IR3_REG_SNEG))
+			return false;
+		break;
+	case 5:
+		/* no flags allowed */
+		if (flags)
+			return false;
+		break;
+	case 6:
+		valid_flags = IR3_REG_IMMED;
+		if (flags & ~valid_flags)
+			return false;
+
+		if (flags & IR3_REG_IMMED) {
+			/* doesn't seem like we can have immediate src for store
+			 * instructions:
+			 *
+			 * TODO this restriction could also apply to load instructions,
+			 * but for load instructions this arg is the address (and not
+			 * really sure any good way to test a hard-coded immed addr src)
+			 */
+			if (is_store(instr) && (n == 1))
+				return false;
+
+			if ((instr->opc == OPC_LDL) && (n == 0))
+				return false;
+
+			if ((instr->opc == OPC_STL) && (n != 2))
+				return false;
+
+			if (instr->opc == OPC_STLW && n == 0)
+				return false;
+
+			if (instr->opc == OPC_LDLW && n == 0)
+				return false;
+
+			/* disallow immediates in anything but the SSBO slot argument for
+			 * cat6 instructions:
+			 */
+			if (is_atomic(instr->opc) && (n != 0))
+				return false;
+
+			if (is_atomic(instr->opc) && !(instr->flags & IR3_INSTR_G))
+				return false;
+
+			if (instr->opc == OPC_STG && (instr->flags & IR3_INSTR_G) && (n != 2))
+				return false;
+
+			/* as with atomics, these cat6 instrs can only have an immediate
+			 * for SSBO/IBO slot argument
+			 */
+			switch (instr->opc) {
+			case OPC_LDIB:
+			case OPC_LDC:
+			case OPC_RESINFO:
+				if (n != 0)
+					return false;
+				break;
+			default:
+				break;
+			}
+		}
+
+		break;
+	}
+
+	return true;
 }

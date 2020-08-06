@@ -21,7 +21,6 @@
 inc_util = include_directories('.')
 
 subdir('format')
-subdir('xmlpool')
 
 files_mesa_util = files(
   'anon_file.h',
@@ -159,15 +158,24 @@ deps_for_libmesa_util = [
   dep_m,
   dep_valgrind,
   dep_zstd,
+  dep_dl,
+  dep_unwind,
 ]
 
 if with_platform_android
   deps_for_libmesa_util += dep_android
+  files_debug_stack = files('u_debug_stack_android.cpp')
+ else
+  files_debug_stack = files(
+    'u_debug_stack.c',
+    'u_debug_symbol.c',
+    'u_debug_symbol.h',
+  )
 endif
 
 _libmesa_util = static_library(
   'mesa_util',
-  [files_mesa_util, format_srgb],
+  [files_mesa_util, files_debug_stack, format_srgb],
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   dependencies : deps_for_libmesa_util,
   link_with: libmesa_format,
@@ -201,7 +209,7 @@ _libxmlconfig = static_library(
 )
 
 idep_xmlconfig = declare_dependency(
-  dependencies : [idep_xmlconfig_headers, dep_expat],
+  dependencies : dep_expat,
   link_with : _libxmlconfig,
 )
 
@@ -278,6 +286,18 @@ if with_tests
        include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
        dependencies : [idep_mesautil, idep_gtest],
      ),
+     suite : ['util'],
+  )
+
+  test(
+    'u_debug_stack',
+    executable(
+      'u_debug_stack_test',
+      files('u_debug_stack_test.cpp'),
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+      dependencies : [idep_mesautil, idep_gtest],
+      c_args : [c_msvc_compat_args],
+    ),
      suite : ['util'],
   )
 

@@ -30,6 +30,7 @@
 
 #include <stdbool.h>
 #include "util/format/u_format.h"
+#include "compiler/shader_enums.h"
 #include "panfrost-job.h"
 #include "pan_bo.h"
 
@@ -52,6 +53,20 @@ struct panfrost_slice {
         bool initialized;
 };
 
+struct pan_image {
+        /* Format and size */
+        uint16_t width0, height0, depth0, array_size;
+        enum pipe_format format;
+        enum mali_texture_type type;
+        unsigned first_level, last_level;
+        unsigned first_layer, last_layer;
+        unsigned nr_samples;
+        struct panfrost_bo *bo;
+        struct panfrost_slice *slices;
+        unsigned cubemap_stride;
+        enum mali_texture_layout layout;
+};
+
 unsigned
 panfrost_compute_checksum_size(
         struct panfrost_slice *slice,
@@ -72,6 +87,7 @@ unsigned
 panfrost_estimate_texture_payload_size(
                 unsigned first_level, unsigned last_level,
                 unsigned first_layer, unsigned last_layer,
+                unsigned nr_samples,
                 enum mali_texture_type type, enum mali_texture_layout layout);
 
 void
@@ -84,6 +100,7 @@ panfrost_new_texture(
         enum mali_texture_layout layout,
         unsigned first_level, unsigned last_level,
         unsigned first_layer, unsigned last_layer,
+        unsigned nr_samples,
         unsigned cube_stride,
         unsigned swizzle,
         mali_ptr base,
@@ -99,6 +116,7 @@ panfrost_new_texture_bifrost(
         enum mali_texture_layout layout,
         unsigned first_level, unsigned last_level,
         unsigned first_layer, unsigned last_layer,
+        unsigned nr_samples,
         unsigned cube_stride,
         unsigned swizzle,
         mali_ptr base,
@@ -110,7 +128,7 @@ unsigned
 panfrost_get_layer_stride(struct panfrost_slice *slices, bool is_3d, unsigned cube_stride, unsigned level);
 
 unsigned
-panfrost_texture_offset(struct panfrost_slice *slices, bool is_3d, unsigned cube_stride, unsigned level, unsigned face);
+panfrost_texture_offset(struct panfrost_slice *slices, bool is_3d, unsigned cube_stride, unsigned level, unsigned face, unsigned sample);
 
 /* Formats */
 
@@ -160,5 +178,21 @@ panfrost_bifrost_swizzle(unsigned components)
 
 enum mali_format
 panfrost_format_to_bifrost_blend(const struct util_format_description *desc);
+
+struct pan_pool;
+struct pan_scoreboard;
+
+void
+panfrost_init_blit_shaders(struct panfrost_device *dev);
+
+void
+panfrost_load_midg(
+                struct pan_pool *pool,
+                struct pan_scoreboard *scoreboard,
+                mali_ptr blend_shader,
+                mali_ptr fbd,
+                mali_ptr coordinates, unsigned vertex_count,
+                struct pan_image *image,
+                unsigned loc);
 
 #endif

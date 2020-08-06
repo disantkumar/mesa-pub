@@ -184,11 +184,13 @@ enum
    DBG_CHECK_VM,
    DBG_RESERVE_VMID,
    DBG_ZERO_VRAM,
+   DBG_SHADOW_REGS,
 
    /* 3D engine options: */
    DBG_NO_GFX,
    DBG_NO_NGG,
-   DBG_ALWAYS_NGG_CULLING,
+   DBG_ALWAYS_NGG_CULLING_ALL,
+   DBG_ALWAYS_NGG_CULLING_TESS,
    DBG_NO_NGG_CULLING,
    DBG_ALWAYS_PD,
    DBG_PD,
@@ -431,7 +433,7 @@ struct si_mmio_counter {
 };
 
 union si_mmio_counters {
-   struct {
+   struct si_mmio_counters_named {
       /* For global GPU load including SDMA. */
       struct si_mmio_counter gpu;
 
@@ -462,7 +464,8 @@ union si_mmio_counters {
       struct si_mmio_counter cp_dma;
       struct si_mmio_counter scratch_ram;
    } named;
-   unsigned array[0];
+
+   unsigned array[sizeof(struct si_mmio_counters_named) / sizeof(unsigned)];
 };
 
 struct si_memory_object {
@@ -517,7 +520,8 @@ struct si_screen {
    bool llvm_has_working_vgpr_indexing;
    bool use_ngg;
    bool use_ngg_culling;
-   bool always_use_ngg_culling;
+   bool always_use_ngg_culling_all;
+   bool always_use_ngg_culling_tess;
    bool use_ngg_streamout;
 
    struct {
@@ -909,6 +913,7 @@ struct si_context {
    struct u_log_context *log;
    void *query_result_shader;
    void *sh_query_result_shader;
+   struct si_resource *shadowed_regs;
 
    void (*emit_cache_flush)(struct si_context *ctx);
 
@@ -1011,9 +1016,9 @@ struct si_context {
    struct pipe_scissor_state window_rectangles[4];
 
    /* Precomputed states. */
-   struct si_pm4_state *init_config;
-   struct si_pm4_state *init_config_gs_rings;
-   bool init_config_has_vgt_flush;
+   struct si_pm4_state *cs_preamble_state;
+   struct si_pm4_state *cs_preamble_gs_rings;
+   bool cs_preamble_has_vgt_flush;
    struct si_pm4_state *vgt_shader_config[SI_NUM_VGT_STAGES_STATES];
 
    /* shaders */
@@ -1365,6 +1370,9 @@ void si_cp_copy_data(struct si_context *sctx, struct radeon_cmdbuf *cs, unsigned
                      struct si_resource *dst, unsigned dst_offset, unsigned src_sel,
                      struct si_resource *src, unsigned src_offset);
 
+/* si_cp_reg_shadowing.c */
+void si_init_cp_reg_shadowing(struct si_context *sctx);
+
 /* si_debug.c */
 void si_save_cs(struct radeon_winsys *ws, struct radeon_cmdbuf *cs, struct radeon_saved_cs *saved,
                 bool get_buffer_list);
@@ -1412,7 +1420,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen);
 void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_handle **fence);
 void si_allocate_gds(struct si_context *ctx);
 void si_set_tracked_regs_to_clear_state(struct si_context *ctx);
-void si_begin_new_gfx_cs(struct si_context *ctx);
+void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs);
 void si_need_gfx_cs_space(struct si_context *ctx);
 void si_unref_sdma_uploads(struct si_context *sctx);
 
@@ -1880,12 +1888,14 @@ static inline bool si_compute_prim_discard_enabled(struct si_context *sctx)
 
 static inline unsigned si_get_wave_size(struct si_screen *sscreen,
                                         enum pipe_shader_type shader_type, bool ngg, bool es,
-                                        bool prim_discard_cs)
+                                        bool gs_fast_launch, bool prim_discard_cs)
 {
    if (shader_type == PIPE_SHADER_COMPUTE)
       return sscreen->compute_wave_size;
    else if (shader_type == PIPE_SHADER_FRAGMENT)
       return sscreen->ps_wave_size;
+   else if (gs_fast_launch)
+      return 32; /* GS fast launch hangs with Wave64, so always use Wave32. */
    else if ((shader_type == PIPE_SHADER_VERTEX && prim_discard_cs) || /* only Wave64 implemented */
             (shader_type == PIPE_SHADER_VERTEX && es && !ngg) ||
             (shader_type == PIPE_SHADER_TESS_EVAL && es && !ngg) ||
@@ -1898,7 +1908,9 @@ static inline unsigned si_get_wave_size(struct si_screen *sscreen,
 static inline unsigned si_get_shader_wave_size(struct si_shader *shader)
 {
    return si_get_wave_size(shader->selector->screen, shader->selector->type, shader->key.as_ngg,
-                           shader->key.as_es, shader->key.opt.vs_as_prim_discard_cs);
+                           shader->key.as_es,
+                           shader->key.opt.ngg_culling & SI_NGG_CULL_GS_FAST_LAUNCH_ALL,
+                           shader->key.opt.vs_as_prim_discard_cs);
 }
 
 #define PRINT_ERR(fmt, args...)                                                                    \

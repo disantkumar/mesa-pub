@@ -65,7 +65,7 @@
  * befast, suitable for calling every draw to avoid wacky dirty
  * tracking paths. If the cache hits, boom, done. */
 
-static struct panfrost_blend_shader *
+struct panfrost_blend_shader *
 panfrost_get_blend_shader(
         struct panfrost_context *ctx,
         struct panfrost_blend_state *blend,
@@ -107,7 +107,6 @@ panfrost_create_blend_state(struct pipe_context *pipe,
         so->base = *blend;
 
         /* TODO: The following features are not yet implemented */
-        assert(!blend->alpha_to_coverage);
         assert(!blend->alpha_to_one);
 
         for (unsigned c = 0; c < PIPE_MAX_COLOR_BUFS; ++c) {

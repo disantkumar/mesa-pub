@@ -478,6 +478,7 @@ typedef enum {
         midgard_op_ld_vary_32i = 0x9B,
 
         /* Old version of midgard_op_ld_color_buffer_as_fp16, for T720 */
+        midgard_op_ld_color_buffer_as_fp32_old = 0x9C,
         midgard_op_ld_color_buffer_as_fp16_old = 0x9D,
         midgard_op_ld_color_buffer_32u_old = 0x9E,
 
@@ -496,6 +497,7 @@ typedef enum {
         midgard_op_ld_ubo_int4   = 0xB0,
 
         /* New-style blending ops. Works on T760/T860 */
+        midgard_op_ld_color_buffer_as_fp32 = 0xB8,
         midgard_op_ld_color_buffer_as_fp16 = 0xB9,
         midgard_op_ld_color_buffer_32u = 0xBA,
 
@@ -517,6 +519,7 @@ typedef enum {
 } midgard_load_store_op;
 
 typedef enum {
+        midgard_interp_sample = 0,
         midgard_interp_centroid = 1,
         midgard_interp_default = 2
 } midgard_interpolation;
@@ -713,7 +716,7 @@ __attribute__((__packed__))
 
         unsigned mask : 4;
 
-        /* Intriguingly, textures can take an outmod just like textures. Int
+        /* Intriguingly, textures can take an outmod just like alu ops. Int
          * outmods are not supported as far as I can tell, so this is only
          * meaningful for float samplers */
         midgard_outmod_float outmod  : 2;

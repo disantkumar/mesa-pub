@@ -185,6 +185,13 @@ public:
       return false;
    }
 
+   bool is_empty_or_blocked(PhysReg start) {
+      if (regs[start] == 0xF0000000) {
+         return subdword_regs[start][start.byte()] + 1 <= 1;
+      }
+      return regs[start] + 1 <= 1;
+   }
+
    void clear(PhysReg start, RegClass rc) {
       if (rc.is_subdword())
          fill_subdword(start, rc.bytes(), 0);
@@ -212,6 +219,10 @@ public:
 
    void clear(Definition def) {
       clear(def.physReg(), def.regClass());
+   }
+
+   unsigned get_id(PhysReg reg) {
+      return regs[reg] == 0xF0000000 ? subdword_regs[reg][reg.byte()] : regs[reg];
    }
 
 private:
@@ -307,6 +318,9 @@ void print_regs(ra_ctx& ctx, bool vgprs, RegisterFile& reg_file)
 
 unsigned get_subdword_operand_stride(chip_class chip, const aco_ptr<Instruction>& instr, unsigned idx, RegClass rc)
 {
+   /* v_readfirstlane_b32 cannot use SDWA */
+   if (instr->opcode == aco_opcode::p_as_uniform)
+      return 4;
    if (instr->format == Format::PSEUDO && chip >= GFX8)
       return rc.bytes() % 2 == 0 ? 2 : 1;
 
@@ -429,7 +443,7 @@ std::pair<unsigned, unsigned> get_subdword_definition_info(Program *program, con
    if (can_use_SDWA(chip, instr)) {
       return std::make_pair(rc.bytes(), rc.bytes());
    } else if (rc.bytes() == 2 && can_use_opsel(chip, instr->opcode, -1, 1)) {
-      return std::make_pair(2u, chip >= GFX10 ? 2u : 4u);
+      return std::make_pair(2u, bytes_written);
    }
 
    switch (instr->opcode) {
@@ -580,7 +594,7 @@ std::pair<PhysReg, bool> get_reg_simple(ra_ctx& ctx,
    RegClass rc = info.rc;
 
    if (stride == 1) {
-
+      info.rc = RegClass(rc.type(), size);
       for (unsigned stride = 8; stride > 1; stride /= 2) {
          if (size % stride)
             continue;
@@ -766,12 +780,13 @@ bool get_regs_for_copies(ra_ctx& ctx,
             PhysReg reg(def_reg_lo);
             for (unsigned i = 0; i < instr->operands.size(); i++) {
                if (instr->operands[i].isTemp() && instr->operands[i].tempId() == id) {
-                  assert(!reg_file.test(reg, var.rc.bytes()));
-                  res = {reg, !var.rc.is_subdword() || (reg.byte() % info.stride == 0)};
+                  res = {reg, (!var.rc.is_subdword() || (reg.byte() % info.stride == 0)) && !reg_file.test(reg, var.rc.bytes())};
                   break;
                }
                reg.reg_b += instr->operands[i].bytes();
             }
+            if (!res.second)
+               res = {var.reg, !reg_file.test(var.reg, var.rc.bytes())};
          } else {
             info.lb = def_reg_lo;
             info.ub = def_reg_hi + 1;
@@ -942,9 +957,11 @@ std::pair<PhysReg, bool> get_reg_impl(ra_ctx& ctx,
    unsigned reg_hi = lb + size - 1;
    for (reg_lo = lb, reg_hi = lb + size - 1; reg_hi < ub; reg_lo += stride, reg_hi += stride) {
       /* first check the edges: this is what we have to fix to allow for num_moves > size */
-      if (reg_lo > lb && reg_file[reg_lo] != 0 && reg_file[reg_lo] == reg_file[reg_lo - 1])
+      if (reg_lo > lb && !reg_file.is_empty_or_blocked(PhysReg(reg_lo)) &&
+          reg_file.get_id(PhysReg(reg_lo)) == reg_file.get_id(PhysReg(reg_lo).advance(-1)))
          continue;
-      if (reg_hi < ub - 1 && reg_file[reg_hi] != 0 && reg_file[reg_hi] == reg_file[reg_hi + 1])
+      if (reg_hi < ub - 1 && !reg_file.is_empty_or_blocked(PhysReg(reg_hi).advance(3)) &&
+          reg_file.get_id(PhysReg(reg_hi).advance(3)) == reg_file.get_id(PhysReg(reg_hi).advance(4)))
          continue;
 
       /* second, check that we have at most k=num_moves elements in the window
@@ -1300,9 +1317,9 @@ PhysReg get_reg_create_vector(ra_ctx& ctx,
       // TODO: this can be improved */
       if (reg_lo < lb || reg_hi >= ub || reg_lo % stride != 0)
          continue;
-      if (reg_lo > lb && reg_file[reg_lo] != 0 && reg_file[reg_lo] == reg_file[reg_lo - 1])
+      if (reg_lo > lb && reg_file[reg_lo] != 0 && reg_file.get_id(PhysReg(reg_lo)) == reg_file.get_id(PhysReg(reg_lo).advance(-1)))
          continue;
-      if (reg_hi < ub - 1 && reg_file[reg_hi] != 0 && reg_file[reg_hi] == reg_file[reg_hi + 1])
+      if (reg_hi < ub - 1 && reg_file[reg_hi] != 0 && reg_file.get_id(PhysReg(reg_hi).advance(3)) == reg_file.get_id(PhysReg(reg_hi).advance(4)))
          continue;
 
       /* count variables to be moved and check war_hint */
@@ -1360,19 +1377,21 @@ PhysReg get_reg_create_vector(ra_ctx& ctx,
    /* collect variables to be moved */
    std::set<std::pair<unsigned, unsigned>> vars = collect_vars(ctx, reg_file, PhysReg{best_pos}, size);
 
-   /* GFX9+: move killed operands which aren't yet at the correct position
-    * Moving all killed operands generally leads to more register swaps.
-    * This is only done on GFX9+ because of the cheap v_swap instruction.
-    */
-   if (ctx.program->chip_class >= GFX9) {
-      for (unsigned i = 0, offset = 0; i < instr->operands.size(); offset += instr->operands[i].bytes(), i++) {
-         if (instr->operands[i].isTemp() &&
-             instr->operands[i].isFirstKillBeforeDef() &&
-             instr->operands[i].getTemp().type() == rc.type() &&
-             instr->operands[i].physReg().reg_b != best_pos * 4 + offset) {
-            vars.emplace(instr->operands[i].bytes(), instr->operands[i].tempId());
-            reg_file.clear(instr->operands[i]);
-         }
+   for (unsigned i = 0, offset = 0; i < instr->operands.size(); offset += instr->operands[i].bytes(), i++) {
+      if (!instr->operands[i].isTemp() || !instr->operands[i].isFirstKillBeforeDef() ||
+          instr->operands[i].getTemp().type() != rc.type())
+         continue;
+      bool correct_pos = instr->operands[i].physReg().reg_b == best_pos * 4 + offset;
+      /* GFX9+: move killed operands which aren't yet at the correct position
+       * Moving all killed operands generally leads to more register swaps.
+       * This is only done on GFX9+ because of the cheap v_swap instruction.
+       */
+      if (ctx.program->chip_class >= GFX9 && !correct_pos) {
+         vars.emplace(instr->operands[i].bytes(), instr->operands[i].tempId());
+         reg_file.clear(instr->operands[i]);
+      /* fill operands which are in the correct position to avoid overwriting */
+      } else if (correct_pos) {
+         reg_file.fill(instr->operands[i]);
       }
    }
    ASSERTED bool success = false;
@@ -1734,7 +1753,11 @@ void register_allocation(Program *program, std::vector<TempSet>& live_out_per_bl
                Operand op = Operand();
                if (!def.isFixed() && instr->opcode == aco_opcode::p_parallelcopy)
                   op = instr->operands[i];
-               else if (instr->opcode == aco_opcode::v_mad_f32 && !instr->usesModifiers())
+               else if ((instr->opcode == aco_opcode::v_mad_f32 ||
+                        (instr->opcode == aco_opcode::v_fma_f32 && program->chip_class >= GFX10) ||
+                        instr->opcode == aco_opcode::v_mad_f16 ||
+                        instr->opcode == aco_opcode::v_mad_legacy_f16 ||
+                        (instr->opcode == aco_opcode::v_fma_f16 && program->chip_class >= GFX10)) && !instr->usesModifiers())
                   op = instr->operands[2];
 
                if (op.isTemp() && op.isFirstKillBeforeDef() && def.regClass() == op.regClass()) {
@@ -2009,26 +2032,52 @@ void register_allocation(Program *program, std::vector<TempSet>& live_out_per_bl
          }
 
          /* try to optimize v_mad_f32 -> v_mac_f32 */
-         if (instr->opcode == aco_opcode::v_mad_f32 &&
+         if ((instr->opcode == aco_opcode::v_mad_f32 ||
+              (instr->opcode == aco_opcode::v_fma_f32 && program->chip_class >= GFX10) ||
+              instr->opcode == aco_opcode::v_mad_f16 ||
+              instr->opcode == aco_opcode::v_mad_legacy_f16 ||
+              (instr->opcode == aco_opcode::v_fma_f16 && program->chip_class >= GFX10)) &&
              instr->operands[2].isTemp() &&
              instr->operands[2].isKillBeforeDef() &&
              instr->operands[2].getTemp().type() == RegType::vgpr &&
              instr->operands[1].isTemp() &&
              instr->operands[1].getTemp().type() == RegType::vgpr &&
-             !instr->usesModifiers()) {
+             !instr->usesModifiers() &&
+             instr->operands[0].physReg().byte() == 0 &&
+             instr->operands[1].physReg().byte() == 0 &&
+             instr->operands[2].physReg().byte() == 0) {
             unsigned def_id = instr->definitions[0].tempId();
             auto it = ctx.affinities.find(def_id);
             if (it == ctx.affinities.end() || !ctx.assignments[it->second].assigned ||
                 instr->operands[2].physReg() == ctx.assignments[it->second].reg ||
                 register_file.test(ctx.assignments[it->second].reg, instr->operands[2].bytes())) {
                instr->format = Format::VOP2;
-               instr->opcode = aco_opcode::v_mac_f32;
+               switch (instr->opcode) {
+               case aco_opcode::v_mad_f32:
+                  instr->opcode = aco_opcode::v_mac_f32;
+                  break;
+               case aco_opcode::v_fma_f32:
+                  instr->opcode = aco_opcode::v_fmac_f32;
+                  break;
+               case aco_opcode::v_mad_f16:
+               case aco_opcode::v_mad_legacy_f16:
+                  instr->opcode = aco_opcode::v_mac_f16;
+                  break;
+               case aco_opcode::v_fma_f16:
+                  instr->opcode = aco_opcode::v_fmac_f16;
+                  break;
+               default:
+                  break;
+               }
             }
          }
 
          /* handle definitions which must have the same register as an operand */
          if (instr->opcode == aco_opcode::v_interp_p2_f32 ||
              instr->opcode == aco_opcode::v_mac_f32 ||
+             instr->opcode == aco_opcode::v_fmac_f32 ||
+             instr->opcode == aco_opcode::v_mac_f16 ||
+             instr->opcode == aco_opcode::v_fmac_f16 ||
              instr->opcode == aco_opcode::v_writelane_b32 ||
              instr->opcode == aco_opcode::v_writelane_b32_e64) {
             instr->definitions[0].setFixed(instr->operands[2].physReg());
@@ -2055,7 +2104,7 @@ void register_allocation(Program *program, std::vector<TempSet>& live_out_per_bl
 
             adjust_max_used_regs(ctx, definition.regClass(), definition.physReg());
             /* check if the target register is blocked */
-            if (register_file[definition.physReg().reg()] != 0) {
+            if (register_file.test(definition.physReg(), definition.bytes())) {
                /* create parallelcopy pair to move blocking vars */
                std::set<std::pair<unsigned, unsigned>> vars = collect_vars(ctx, register_file, definition.physReg(), definition.size());
 

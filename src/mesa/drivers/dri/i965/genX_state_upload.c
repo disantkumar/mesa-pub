@@ -671,9 +671,9 @@ genX(emit_vertices)(struct brw_context *brw)
             upload_format_size(upload_format) : glformat->Size;
 
          switch (size) {
-            case 0: comp0 = VFCOMP_STORE_0;
-            case 1: comp1 = VFCOMP_STORE_0;
-            case 2: comp2 = VFCOMP_STORE_0;
+            case 0: comp0 = VFCOMP_STORE_0; /* fallthrough */
+            case 1: comp1 = VFCOMP_STORE_0; /* fallthrough */
+            case 2: comp2 = VFCOMP_STORE_0; /* fallthrough */
             case 3:
                if (GEN_GEN >= 8 && glformat->Doubles) {
                   comp3 = VFCOMP_STORE_0;
@@ -2843,7 +2843,8 @@ set_blend_entry_bits(struct brw_context *brw, BLEND_ENTRY_GENXML *entry, int i,
          entry->LogicOpEnable = true;
          entry->LogicOpFunction = ctx->Color._LogicOp;
       }
-   } else if (blend_enabled && !ctx->Color._AdvancedBlendMode
+   } else if (blend_enabled &&
+              ctx->Color._AdvancedBlendMode == BLEND_NONE
               && (GEN_GEN <= 5 || !integer)) {
       GLenum eqRGB = ctx->Color.Blend[i].EquationRGB;
       GLenum eqA = ctx->Color.Blend[i].EquationA;

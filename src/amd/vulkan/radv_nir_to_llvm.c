@@ -1271,7 +1271,7 @@ handle_vs_input_decl(struct radv_shader_context *ctx,
 		 * access are detected. Only GFX6 and GFX10 are affected.
 		 */
 		bool unaligned_vertex_fetches = false;
-		if ((ctx->ac.chip_class == GFX6 || ctx->ac.chip_class == GFX10) &&
+		if ((ctx->ac.chip_class == GFX6 || ctx->ac.chip_class >= GFX10) &&
 		    vtx_info->chan_format != data_format &&
 		    ((attrib_offset % vtx_info->element_size) ||
 		     (attrib_stride % vtx_info->element_size)))
@@ -1282,7 +1282,7 @@ handle_vs_input_decl(struct radv_shader_context *ctx,
 			LLVMValueRef values[4];
 
 			assert(ctx->ac.chip_class == GFX6 ||
-			       ctx->ac.chip_class == GFX10);
+			       ctx->ac.chip_class >= GFX10);
 
 			for (unsigned chan  = 0; chan < num_channels; chan++) {
 				unsigned chan_offset = attrib_offset + chan * vtx_info->chan_byte_size;
@@ -1367,7 +1367,7 @@ handle_vs_input_decl(struct radv_shader_context *ctx,
 static void
 handle_vs_inputs(struct radv_shader_context *ctx,
                  struct nir_shader *nir) {
-	nir_foreach_variable(variable, &nir->inputs)
+	nir_foreach_shader_in_variable(variable, nir)
 		handle_vs_input_decl(ctx, variable);
 }
 
@@ -1377,7 +1377,7 @@ prepare_interp_optimize(struct radv_shader_context *ctx,
 {
 	bool uses_center = false;
 	bool uses_centroid = false;
-	nir_foreach_variable(variable, &nir->inputs) {
+	nir_foreach_shader_in_variable(variable, nir) {
 		if (glsl_get_base_type(glsl_without_array(variable->type)) != GLSL_TYPE_FLOAT ||
 		    variable->data.sample)
 			continue;
@@ -1551,6 +1551,30 @@ si_llvm_init_export_args(struct radv_shader_context *ctx,
 		case V_028714_SPI_SHADER_32_ABGR:
 			memcpy(&args->out[0], values, sizeof(values[0]) * 4);
 			break;
+		}
+
+		/* Replace NaN by zero (only 32-bit) to fix game bugs if
+		 * requested.
+		 */
+		if (ctx->args->options->enable_mrt_output_nan_fixup &&
+		    !is_16bit &&
+		    (col_format == V_028714_SPI_SHADER_32_R ||
+		     col_format == V_028714_SPI_SHADER_32_GR ||
+		     col_format == V_028714_SPI_SHADER_32_AR ||
+		     col_format == V_028714_SPI_SHADER_32_ABGR ||
+		     col_format == V_028714_SPI_SHADER_FP16_ABGR)) {
+			for (unsigned i = 0; i < 4; i++) {
+				LLVMValueRef args[2] = {
+					values[i],
+					LLVMConstInt(ctx->ac.i32, S_NAN | Q_NAN, false)
+				};
+				LLVMValueRef isnan =
+					ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.class.f32", ctx->ac.i1,
+		                                           args, 2, AC_FUNC_ATTR_READNONE);
+				values[i] = LLVMBuildSelect(ctx->ac.builder, isnan,
+							    ctx->ac.f32_0,
+							    values[i], "");
+			}
 		}
 
 		/* Pack f16 or norm_i16/u16. */
@@ -4066,7 +4090,7 @@ LLVMModuleRef ac_translate_nir_to_llvm(struct ac_llvm_compiler *ac_llvm,
 			ac_emit_barrier(&ctx.ac, ctx.stage);
 		}
 
-		nir_foreach_variable(variable, &shaders[i]->outputs)
+		nir_foreach_shader_out_variable(variable, shaders[i])
 			scan_shader_output_decl(&ctx, variable, shaders[i], shaders[i]->info.stage);
 
 		ac_setup_rings(&ctx);
@@ -4118,8 +4142,9 @@ LLVMModuleRef ac_translate_nir_to_llvm(struct ac_llvm_compiler *ac_llvm,
 			unsigned tcs_num_outputs = util_last_bit64(ctx.args->shader_info->tcs.outputs_written);
 			unsigned tcs_num_patch_outputs = util_last_bit64(ctx.args->shader_info->tcs.patch_outputs_written);
 			args->shader_info->tcs.num_patches = ctx.tcs_num_patches;
-			args->shader_info->tcs.lds_size =
+			args->shader_info->tcs.num_lds_blocks =
 				calculate_tess_lds_size(
+					ctx.args->options->chip_class,
 					ctx.args->options->key.tcs.input_vertices,
 					ctx.shader->info.tess.tcs_vertices_out,
 					ctx.tcs_num_inputs,
@@ -4384,7 +4409,7 @@ radv_compile_gs_copy_shader(struct ac_llvm_compiler *ac_llvm,
 
 	ac_setup_rings(&ctx);
 
-	nir_foreach_variable(variable, &geom_shader->outputs) {
+	nir_foreach_shader_out_variable(variable, geom_shader) {
 		scan_shader_output_decl(&ctx, variable, geom_shader, MESA_SHADER_VERTEX);
 		ac_handle_shader_output_decl(&ctx.ac, &ctx.abi, geom_shader,
 					     variable, MESA_SHADER_VERTEX);
@@ -4416,8 +4441,6 @@ llvm_compile_shader(struct radv_device *device,
 	tm_options |= AC_TM_SUPPORTS_SPILL;
 	if (args->options->check_ir)
 		tm_options |= AC_TM_CHECK_IR;
-	if (device->instance->debug_flags & RADV_DEBUG_NO_LOAD_STORE_OPT)
-		tm_options |= AC_TM_NO_LOAD_STORE_OPT;
 
 	thread_compiler = !(device->instance->debug_flags & RADV_DEBUG_NOTHREADLLVM);
 

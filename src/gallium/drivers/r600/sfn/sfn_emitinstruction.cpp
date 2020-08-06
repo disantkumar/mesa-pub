@@ -93,9 +93,9 @@ EmitInstruction::get_deref_location(const nir_src& v) const
    return m_proc.get_deref_location(v);
 }
 
-PValue EmitInstruction::from_nir_with_fetch_constant(const nir_src& src, unsigned component)
+PValue EmitInstruction::from_nir_with_fetch_constant(const nir_src& src, unsigned component, int channel)
 {
-   return m_proc.from_nir_with_fetch_constant(src, component);
+   return m_proc.from_nir_with_fetch_constant(src, component, channel);
 }
 
 GPRVector EmitInstruction::vec_from_nir_with_fetch_constant(const nir_src& src, unsigned mask,
@@ -138,9 +138,9 @@ EmitInstruction::get_literal_register(const nir_src& src) const
       return nullptr;
 }
 
-PValue EmitInstruction::get_temp_register()
+PValue EmitInstruction::get_temp_register(int channel)
 {
-   return m_proc.get_temp_register();
+   return m_proc.get_temp_register(channel);
 }
 
 GPRVector EmitInstruction::get_temp_vec4()

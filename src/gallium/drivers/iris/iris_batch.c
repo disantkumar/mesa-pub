@@ -105,11 +105,11 @@ dump_validation_list(struct iris_batch *batch)
       uint64_t flags = batch->validation_list[i].flags;
       assert(batch->validation_list[i].handle ==
              batch->exec_bos[i]->gem_handle);
-      fprintf(stderr, "[%2d]: %2d %-14s @ 0x%016llx (%"PRIu64"B)\t %2d refs %s\n",
+      fprintf(stderr, "[%2d]: %2d %-14s @ 0x%"PRIx64" (%"PRIu64"B)\t %2d refs %s\n",
               i,
               batch->validation_list[i].handle,
               batch->exec_bos[i]->name,
-              batch->validation_list[i].offset,
+              (uint64_t)batch->validation_list[i].offset,
               batch->exec_bos[i]->size,
               batch->exec_bos[i]->refcount,
               (flags & EXEC_OBJECT_WRITE) ? " (write)" : "");
@@ -673,12 +673,6 @@ batch_name_to_string(enum iris_batch_name name)
 /**
  * Flush the batch buffer, submitting it to the GPU and resetting it so
  * we're ready to emit the next batch.
- *
- * \param in_fence_fd is ignored if -1.  Otherwise, this function takes
- * ownership of the fd.
- *
- * \param out_fence_fd is ignored if NULL.  Otherwise, the caller must
- * take ownership of the returned fd.
  */
 void
 _iris_batch_flush(struct iris_batch *batch, const char *file, int line)

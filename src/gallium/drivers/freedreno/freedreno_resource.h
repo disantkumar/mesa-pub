@@ -197,6 +197,16 @@ fd_resource_layer_stride(struct fd_resource *rsc, unsigned level)
 	return fdl_layer_stride(&rsc->layout, level);
 }
 
+/* get pitch (in bytes) for specified mipmap level */
+static inline uint32_t
+fd_resource_pitch(struct fd_resource *rsc, unsigned level)
+{
+	if (is_a2xx(fd_screen(rsc->base.screen)))
+		return fdl2_pitch(&rsc->layout, level);
+
+	return fdl_pitch(&rsc->layout, level);
+}
+
 /* get offset for specified mipmap level and texture/array layer */
 static inline uint32_t
 fd_resource_offset(struct fd_resource *rsc, unsigned level, unsigned layer)

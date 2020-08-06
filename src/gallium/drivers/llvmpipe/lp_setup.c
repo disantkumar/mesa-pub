@@ -741,7 +741,7 @@ lp_setup_set_fs_images(struct lp_setup_context *setup,
    for (; i < ARRAY_SIZE(setup->images); i++) {
       util_copy_image_view(&setup->images[i].current, NULL);
    }
-   setup->dirty |= LP_SETUP_NEW_IMAGES;
+   setup->dirty |= LP_SETUP_NEW_FS;
 }
 
 void
@@ -1201,7 +1201,7 @@ try_update_scene_state( struct lp_setup_context *setup )
             current_data = (ubyte *) setup->constants[i].current.user_buffer;
          }
 
-         if (current_data) {
+         if (current_data && current_size >= sizeof(float)) {
             current_data += setup->constants[i].current.buffer_offset;
 
             /* TODO: copy only the actually used constants? */
@@ -1235,7 +1235,7 @@ try_update_scene_state( struct lp_setup_context *setup )
          }
 
          num_constants =
-            DIV_ROUND_UP(setup->constants[i].stored_size, (sizeof(float) * 4));
+            DIV_ROUND_UP(setup->constants[i].stored_size, lp_get_constant_buffer_stride(scene->pipe->screen));
          setup->fs.current.jit_context.num_constants[i] = num_constants;
          setup->dirty |= LP_SETUP_NEW_FS;
       }

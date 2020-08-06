@@ -198,10 +198,45 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
    struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
    struct anv_dynamic_state *d = &cmd_buffer->state.gfx.dynamic;
 
+   static const uint32_t vk_to_gen_cullmode[] = {
+      [VK_CULL_MODE_NONE]                       = CULLMODE_NONE,
+      [VK_CULL_MODE_FRONT_BIT]                  = CULLMODE_FRONT,
+      [VK_CULL_MODE_BACK_BIT]                   = CULLMODE_BACK,
+      [VK_CULL_MODE_FRONT_AND_BACK]             = CULLMODE_BOTH
+   };
+   static const uint32_t vk_to_gen_front_face[] = {
+      [VK_FRONT_FACE_COUNTER_CLOCKWISE]         = 1,
+      [VK_FRONT_FACE_CLOCKWISE]                 = 0
+   };
+
+   static const uint32_t vk_to_gen_compare_op[] = {
+      [VK_COMPARE_OP_NEVER]                        = PREFILTEROPNEVER,
+      [VK_COMPARE_OP_LESS]                         = PREFILTEROPLESS,
+      [VK_COMPARE_OP_EQUAL]                        = PREFILTEROPEQUAL,
+      [VK_COMPARE_OP_LESS_OR_EQUAL]                = PREFILTEROPLEQUAL,
+      [VK_COMPARE_OP_GREATER]                      = PREFILTEROPGREATER,
+      [VK_COMPARE_OP_NOT_EQUAL]                    = PREFILTEROPNOTEQUAL,
+      [VK_COMPARE_OP_GREATER_OR_EQUAL]             = PREFILTEROPGEQUAL,
+      [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROPALWAYS,
+   };
+
+   static const uint32_t vk_to_gen_stencil_op[] = {
+      [VK_STENCIL_OP_KEEP]                         = STENCILOP_KEEP,
+      [VK_STENCIL_OP_ZERO]                         = STENCILOP_ZERO,
+      [VK_STENCIL_OP_REPLACE]                      = STENCILOP_REPLACE,
+      [VK_STENCIL_OP_INCREMENT_AND_CLAMP]          = STENCILOP_INCRSAT,
+      [VK_STENCIL_OP_DECREMENT_AND_CLAMP]          = STENCILOP_DECRSAT,
+      [VK_STENCIL_OP_INVERT]                       = STENCILOP_INVERT,
+      [VK_STENCIL_OP_INCREMENT_AND_WRAP]           = STENCILOP_INCR,
+      [VK_STENCIL_OP_DECREMENT_AND_WRAP]           = STENCILOP_DECR,
+   };
+
    if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
                                       ANV_CMD_DIRTY_RENDER_TARGETS |
                                       ANV_CMD_DIRTY_DYNAMIC_LINE_WIDTH |
-                                      ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS)) {
+                                      ANV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS |
+                                      ANV_CMD_DIRTY_DYNAMIC_CULL_MODE |
+                                      ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE)) {
       uint32_t sf_dw[GENX(3DSTATE_SF_length)];
       struct GENX(3DSTATE_SF) sf = {
          GENX(3DSTATE_SF_header),
@@ -209,7 +244,9 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
          .LineWidth = d->line_width,
          .GlobalDepthOffsetConstant = d->depth_bias.bias,
          .GlobalDepthOffsetScale = d->depth_bias.slope,
-         .GlobalDepthOffsetClamp = d->depth_bias.clamp
+         .GlobalDepthOffsetClamp = d->depth_bias.clamp,
+         .FrontWinding            = vk_to_gen_front_face[d->front_face],
+         .CullMode                = vk_to_gen_cullmode[d->cull_mode],
       };
       GENX(3DSTATE_SF_pack)(NULL, sf_dw, &sf);
 
@@ -249,7 +286,12 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
    if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
                                       ANV_CMD_DIRTY_RENDER_TARGETS |
                                       ANV_CMD_DIRTY_DYNAMIC_STENCIL_COMPARE_MASK |
-                                      ANV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK)) {
+                                      ANV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK |
+                                      ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE |
+                                      ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE |
+                                      ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP |
+                                      ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE |
+                                      ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP)) {
       uint32_t depth_stencil_dw[GENX(DEPTH_STENCIL_STATE_length)];
 
       struct GENX(DEPTH_STENCIL_STATE) depth_stencil = {
@@ -261,7 +303,20 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
 
          .StencilBufferWriteEnable =
             (d->stencil_write_mask.front || d->stencil_write_mask.back) &&
-            pipeline->writes_stencil,
+            d->stencil_test_enable,
+
+         .DepthTestEnable = d->depth_test_enable,
+         .DepthBufferWriteEnable = d->depth_test_enable && d->depth_write_enable,
+         .DepthTestFunction = vk_to_gen_compare_op[d->depth_compare_op],
+         .StencilTestEnable = d->stencil_test_enable,
+         .StencilFailOp = vk_to_gen_stencil_op[d->stencil_op.front.fail_op],
+         .StencilPassDepthPassOp = vk_to_gen_stencil_op[d->stencil_op.front.pass_op],
+         .StencilPassDepthFailOp = vk_to_gen_stencil_op[d->stencil_op.front.depth_fail_op],
+         .StencilTestFunction = vk_to_gen_compare_op[d->stencil_op.front.compare_op],
+         .BackfaceStencilFailOp = vk_to_gen_stencil_op[d->stencil_op.back.fail_op],
+         .BackfaceStencilPassDepthPassOp = vk_to_gen_stencil_op[d->stencil_op.back.pass_op],
+         .BackfaceStencilPassDepthFailOp = vk_to_gen_stencil_op[d->stencil_op.back.depth_fail_op],
+         .BackfaceStencilTestFunction = vk_to_gen_compare_op[d->stencil_op.back.compare_op],
       };
       GENX(DEPTH_STENCIL_STATE_pack)(NULL, depth_stencil_dw, &depth_stencil);
 
@@ -302,6 +357,30 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
          ib.BufferEndingAddress        = anv_address_add(buffer->address,
                                                          buffer->size);
       }
+   }
+
+   static const uint32_t vk_to_gen_primitive_type[] = {
+      [VK_PRIMITIVE_TOPOLOGY_POINT_LIST]                    = _3DPRIM_POINTLIST,
+      [VK_PRIMITIVE_TOPOLOGY_LINE_LIST]                     = _3DPRIM_LINELIST,
+      [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP]                    = _3DPRIM_LINESTRIP,
+      [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST]                 = _3DPRIM_TRILIST,
+      [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP]                = _3DPRIM_TRISTRIP,
+      [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN]                  = _3DPRIM_TRIFAN,
+      [VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY]      = _3DPRIM_LINELIST_ADJ,
+      [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY]     = _3DPRIM_LINESTRIP_ADJ,
+      [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY]  = _3DPRIM_TRILIST_ADJ,
+      [VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY] = _3DPRIM_TRISTRIP_ADJ,
+   };
+
+   if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
+                                      ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY)) {
+      uint32_t topology;
+      if (anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
+         topology = d->primitive_topology;
+      else
+         topology = vk_to_gen_primitive_type[d->primitive_topology];
+
+      cmd_buffer->state.gfx.primitive_topology = topology;
    }
 
    cmd_buffer->state.gfx.dirty = 0;

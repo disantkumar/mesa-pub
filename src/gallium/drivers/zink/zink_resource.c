@@ -122,6 +122,12 @@ resource_create(struct pipe_screen *pscreen,
       if (templ->bind & PIPE_BIND_COMMAND_ARGS_BUFFER)
          bci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
+      if (templ->bind == (PIPE_BIND_STREAM_OUTPUT | PIPE_BIND_CUSTOM)) {
+         bci.usage |= VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT;
+      } else if (templ->bind & PIPE_BIND_STREAM_OUTPUT) {
+         bci.usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT;
+      }
+
       if (vkCreateBuffer(screen->dev, &bci, NULL, &res->buffer) !=
           VK_SUCCESS) {
          FREE(res);
@@ -171,7 +177,7 @@ resource_create(struct pipe_screen *pscreen,
       ici.extent.height = templ->height0;
       ici.extent.depth = templ->depth0;
       ici.mipLevels = templ->last_level + 1;
-      ici.arrayLayers = templ->array_size;
+      ici.arrayLayers = MAX2(templ->array_size, 1);
       ici.samples = templ->nr_samples ? templ->nr_samples : VK_SAMPLE_COUNT_1_BIT;
       ici.tiling = templ->bind & PIPE_BIND_LINEAR ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL;
 

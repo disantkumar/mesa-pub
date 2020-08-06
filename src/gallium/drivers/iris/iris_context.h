@@ -422,6 +422,8 @@ struct iris_binding_table {
  * (iris_uncompiled_shader), due to state-based recompiles (brw_*_prog_key).
  */
 struct iris_compiled_shader {
+   struct list_head link;
+
    /** Reference to the uploaded assembly. */
    struct iris_state_ref assembly;
 
@@ -594,6 +596,9 @@ struct iris_context {
       struct iris_compiled_shader *prog[MESA_SHADER_STAGES];
       struct brw_vue_map *last_vue_map;
 
+      /** List of shader variants whose deletion has been deferred for now */
+      struct list_head deleted_variants[MESA_SHADER_STAGES];
+
       struct u_upload_mgr *uploader;
       struct hash_table *cache;
 
@@ -669,9 +674,6 @@ struct iris_context {
       enum isl_aux_usage draw_aux_usage[BRW_MAX_DRAW_BUFFERS];
 
       enum gen_urb_deref_block_size urb_deref_block_size;
-
-      /** Bitfield of whether color blending is enabled for RT[i] */
-      uint8_t blend_enables;
 
       /** Are depth writes enabled?  (Depth buffer may or may not exist.) */
       bool depth_writes_enabled;
@@ -885,6 +887,8 @@ struct iris_compiled_shader *iris_upload_shader(struct iris_context *ice,
 const void *iris_find_previous_compile(const struct iris_context *ice,
                                        enum iris_program_cache_id cache_id,
                                        unsigned program_string_id);
+void iris_delete_shader_variants(struct iris_context *ice,
+                                 struct iris_uncompiled_shader *ish);
 bool iris_blorp_lookup_shader(struct blorp_batch *blorp_batch,
                               const void *key,
                               uint32_t key_size,

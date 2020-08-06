@@ -28,6 +28,7 @@ v3d_libs = []
 if with_gallium_v3d
   subdir('compiler')
   subdir('qpu')
+  subdir('simulator')
 endif
 
 if with_tools.contains('drm-shim')

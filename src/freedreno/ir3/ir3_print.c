@@ -114,7 +114,7 @@ static void print_instr_name(struct ir3_instruction *instr, bool flags)
 		printf(".%s%s", type_name(instr->cat1.src_type),
 				type_name(instr->cat1.dst_type));
 	} else {
-		printf("%s", ir3_instr_name(instr));
+		printf("%s", disasm_a3xx_instr_name(instr->opc));
 		if (instr->flags & IR3_INSTR_3D)
 			printf(".3d");
 		if (instr->flags & IR3_INSTR_A)
@@ -169,6 +169,9 @@ static void print_reg_name(struct ir3_register *reg)
 		printf("(neg)");
 	else if (reg->flags & (IR3_REG_FABS | IR3_REG_SABS))
 		printf("(abs)");
+
+	if (reg->flags & IR3_REG_R)
+		printf("(r)");
 
 	if (reg->flags & IR3_REG_HIGH)
 		printf("H");

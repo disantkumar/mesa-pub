@@ -237,7 +237,7 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
       assert(reg.file != BRW_IMMEDIATE_VALUE);
       assert(reg.address_mode == BRW_ADDRESS_DIRECT);
       assert(reg.subnr == 0);
-      assert(brw_inst_exec_size(devinfo, inst) == BRW_EXECUTE_1 ||
+      assert(has_scalar_region(reg) ||
              (reg.hstride == BRW_HORIZONTAL_STRIDE_1 &&
               reg.vstride == reg.width + 1));
       assert(!reg.negate && !reg.abs);
@@ -249,8 +249,9 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
       assert(reg.file == BRW_GENERAL_REGISTER_FILE);
       assert(reg.address_mode == BRW_ADDRESS_DIRECT);
       assert(reg.subnr % 16 == 0);
-      assert(reg.hstride == BRW_HORIZONTAL_STRIDE_1 &&
-             reg.vstride == reg.width + 1);
+      assert(has_scalar_region(reg) ||
+             (reg.hstride == BRW_HORIZONTAL_STRIDE_1 &&
+              reg.vstride == reg.width + 1));
       assert(!reg.negate && !reg.abs);
       brw_inst_set_src0_da_reg_nr(devinfo, inst, reg.nr);
       brw_inst_set_src0_da16_subreg_nr(devinfo, inst, reg.subnr / 16);
@@ -357,7 +358,7 @@ brw_set_src1(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
              reg.file == BRW_ARCHITECTURE_REGISTER_FILE);
       assert(reg.address_mode == BRW_ADDRESS_DIRECT);
       assert(reg.subnr == 0);
-      assert(brw_inst_exec_size(devinfo, inst) == BRW_EXECUTE_1 ||
+      assert(has_scalar_region(reg) ||
              (reg.hstride == BRW_HORIZONTAL_STRIDE_1 &&
               reg.vstride == reg.width + 1));
       assert(!reg.negate && !reg.abs);
@@ -890,7 +891,7 @@ brw_alu3(struct brw_codegen *p, unsigned opcode, struct brw_reg dest,
                                             dest.file == BRW_MESSAGE_REGISTER_FILE);
       }
       brw_inst_set_3src_dst_reg_nr(devinfo, inst, dest.nr);
-      brw_inst_set_3src_a16_dst_subreg_nr(devinfo, inst, dest.subnr / 16);
+      brw_inst_set_3src_a16_dst_subreg_nr(devinfo, inst, dest.subnr / 4);
       brw_inst_set_3src_a16_dst_writemask(devinfo, inst, dest.writemask);
 
       assert(src0.file == BRW_GENERAL_REGISTER_FILE);
@@ -1035,6 +1036,7 @@ ALU3(CSEL)
 ALU1(FRC)
 ALU1(RNDD)
 ALU1(RNDE)
+ALU1(RNDU)
 ALU1(RNDZ)
 ALU2(MAC)
 ALU2(MACH)

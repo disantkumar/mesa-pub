@@ -1,7 +1,11 @@
 import argparse
+import base64
+import datetime
 import enum
 import glob
 import hashlib
+import hmac
+import json
 import os
 import requests
 import sys
@@ -9,7 +13,9 @@ import tempfile
 import time
 import yaml
 import shutil
+import xml.etree.ElementTree as ET
 
+from email.utils import formatdate
 from pathlib import Path
 from PIL import Image
 from urllib import parse
@@ -18,6 +24,10 @@ import dump_trace_images
 
 TRACES_DB_PATH = "./traces-db/"
 RESULTS_PATH = "./results/"
+MINIO_HOST = "minio-packet.freedesktop.org"
+DASHBOARD_URL = "https://tracie.freedesktop.org/dashboard"
+
+minio_credentials = None
 
 def replay(trace_path, device_name):
     success = dump_trace_images.dump_from_trace(trace_path, [], device_name)
@@ -36,73 +46,100 @@ def replay(trace_path, device_name):
         log_file = files[0]
         return hashlib.md5(Image.open(image_file).tobytes()).hexdigest(), image_file, log_file
 
-def gitlab_download_metadata(project_url, repo_commit, trace_path):
-    url = parse.urlparse(project_url)
-
-    url_path = url.path
-    if url_path.startswith("/"):
-        url_path = url_path[1:]
-
-    gitlab_api_url = url.scheme + "://" + url.netloc + "/api/v4/projects/" + parse.quote_plus(url_path)
-
-    r = requests.get(gitlab_api_url + "/repository/files/%s/raw?ref=%s" % (parse.quote_plus(trace_path), repo_commit))
-    metadata_raw = r.text.strip().split('\n')
-    metadata = dict(line.split(' ', 1) for line in metadata_raw[1:])
-    oid = metadata["oid"][7:] if metadata["oid"].startswith('sha256:') else metadata["oid"]
-    size = int(metadata['size'])
-
-    return oid, size
-
-def gitlfs_download_trace(repo_url, repo_commit, trace_path, oid, size):
-    headers = {
-        "Accept": "application/vnd.git-lfs+json",
-        "Content-Type": "application/vnd.git-lfs+json"
-    }
-    json = {
-        "operation": "download",
-        "transfers": [ "basic" ],
-        "ref": { "name": "refs/heads/%s" % repo_commit },
-        "objects": [
-            {
-                "oid": oid,
-                "size": size
-            }
-        ]
-    }
-
-    r = requests.post(repo_url + "/info/lfs/objects/batch", headers=headers, json=json)
-    url = r.json()["objects"][0]["actions"]["download"]["href"]
-    open(TRACES_DB_PATH + trace_path, "wb").write(requests.get(url).content)
-
-def checksum(filename, hash_factory=hashlib.sha256, chunk_num_blocks=128):
-    h = hash_factory()
-    with open(filename,'rb') as f:
-        for chunk in iter(lambda: f.read(chunk_num_blocks*h.block_size), b''):
-            h.update(chunk)
-    return h.hexdigest()
-
-def gitlab_ensure_trace(project_url, repo_commit, trace):
+def gitlab_ensure_trace(project_url, trace):
     trace_path = TRACES_DB_PATH + trace['path']
     if project_url is None:
-        assert(repo_commit is None)
-        assert(os.path.exists(trace_path))
+        if not os.path.exists(trace_path):
+            print("{} missing".format(trace_path))
+            sys.exit(1)
         return
 
     os.makedirs(os.path.dirname(trace_path), exist_ok=True)
 
     if os.path.exists(trace_path):
-        local_oid = checksum(trace_path)
+        return
 
-    remote_oid, size = gitlab_download_metadata(project_url, repo_commit, trace['path'])
+    print("[check_image] Downloading trace %s" % (trace['path']), end=" ", flush=True)
+    download_time = time.time()
+    r = requests.get(project_url + trace['path'])
+    open(trace_path, "wb").write(r.content)
+    print("took %ds." % (time.time() - download_time), flush=True)
 
-    if not os.path.exists(trace_path) or local_oid != remote_oid:
-        print("[check_image] Downloading trace %s" % (trace['path']), end=" ", flush=True)
-        download_time = time.time()
-        gitlfs_download_trace(project_url + ".git", repo_commit, trace['path'], remote_oid, size)
-        print("took %ds." % (time.time() - download_time), flush=True)
+def sign_with_hmac(key, message):
+    key = key.encode("UTF-8")
+    message = message.encode("UTF-8")
 
-def gitlab_check_trace(project_url, repo_commit, device_name, trace, expectation):
-    gitlab_ensure_trace(project_url, repo_commit, trace)
+    signature = hmac.new(key, message, hashlib.sha1).digest()
+
+    return base64.encodebytes(signature).strip().decode()
+
+def ensure_minio_credentials():
+    global minio_credentials
+
+    if minio_credentials is None:
+        minio_credentials = {}
+
+    params = {'Action': 'AssumeRoleWithWebIdentity',
+              'Version': '2011-06-15',
+              'RoleArn': 'arn:aws:iam::123456789012:role/FederatedWebIdentityRole',
+              'RoleSessionName': '%s:%s' % (os.environ['CI_PROJECT_PATH'], os.environ['CI_JOB_ID']),
+              'DurationSeconds': 900,
+              'WebIdentityToken': os.environ['CI_JOB_JWT']}
+    r = requests.post('https://%s' % (MINIO_HOST), params=params)
+    if r.status_code >= 400:
+        print(r.text)
+    r.raise_for_status()
+
+    root = ET.fromstring(r.text)
+    for attr in root.iter():
+        if attr.tag == '{https://sts.amazonaws.com/doc/2011-06-15/}AccessKeyId':
+            minio_credentials['AccessKeyId'] = attr.text
+        elif attr.tag == '{https://sts.amazonaws.com/doc/2011-06-15/}SecretAccessKey':
+            minio_credentials['SecretAccessKey'] = attr.text
+        elif attr.tag == '{https://sts.amazonaws.com/doc/2011-06-15/}SessionToken':
+            minio_credentials['SessionToken'] = attr.text
+
+def upload_to_minio(file_name, resource, content_type):
+    ensure_minio_credentials()
+
+    minio_key = minio_credentials['AccessKeyId']
+    minio_secret = minio_credentials['SecretAccessKey']
+    minio_token = minio_credentials['SessionToken']
+
+    date = formatdate(timeval=None, localtime=False, usegmt=True)
+    url = 'https://%s%s' % (MINIO_HOST, resource)
+    to_sign = "PUT\n\n%s\n%s\nx-amz-security-token:%s\n%s" % (content_type, date, minio_token, resource)
+    signature = sign_with_hmac(minio_secret, to_sign)
+
+    with open(file_name, 'rb') as data:
+        headers = {'Host': MINIO_HOST,
+                   'Date': date,
+                   'Content-Type': content_type,
+                   'Authorization': 'AWS %s:%s' % (minio_key, signature),
+                   'x-amz-security-token': minio_token}
+        print("Uploading artifact to %s" % url);
+        r = requests.put(url, headers=headers, data=data)
+        if r.status_code >= 400:
+            print(r.text)
+        r.raise_for_status()
+
+def upload_artifact(file_name, key, content_type):
+    resource = '/artifacts/%s/%s/%s/%s' % (os.environ['CI_PROJECT_PATH'],
+                                           os.environ['CI_PIPELINE_ID'],
+                                           os.environ['CI_JOB_ID'],
+                                           key)
+    upload_to_minio(file_name, resource, content_type)
+
+def ensure_reference_image(file_name, checksum):
+    resource = '/mesa-tracie-results/%s/%s.png' % (os.environ['CI_PROJECT_PATH'], checksum)
+    url = 'https://%s%s' % (MINIO_HOST, resource)
+    r = requests.head(url, allow_redirects=True)
+    if r.status_code == 200:
+        return
+    upload_to_minio(file_name, resource, 'image/png')
+
+def gitlab_check_trace(project_url, device_name, trace, expectation):
+    gitlab_ensure_trace(project_url, trace)
 
     result = {}
     result[trace['path']] = {}
@@ -121,6 +158,13 @@ def gitlab_check_trace(project_url, repo_commit, device_name, trace, expectation
                 (trace['path'], expectation['checksum'], checksum))
         print("[check_image] For more information see "
                 "https://gitlab.freedesktop.org/mesa/mesa/blob/master/.gitlab-ci/tracie/README.md")
+        image_diff_url = "%s/imagediff/%s/%s/%s/%s/%s" % (DASHBOARD_URL,
+                                                       os.environ['CI_PROJECT_PATH'],
+                                                       os.environ['CI_PIPELINE_ID'],
+                                                       os.environ['CI_JOB_ID'],
+                                                       expectation['checksum'],
+                                                       checksum)
+        print("[check_image] %s" % image_diff_url)
         ok = False
 
     trace_dir = os.path.split(trace['path'])[0]
@@ -128,6 +172,12 @@ def gitlab_check_trace(project_url, repo_commit, device_name, trace, expectation
     results_path = os.path.join(RESULTS_PATH, dir_in_results)
     os.makedirs(results_path, exist_ok=True)
     shutil.move(log_file, os.path.join(results_path, os.path.split(log_file)[1]))
+    if os.environ.get('TRACIE_UPLOAD_TO_MINIO', '0') == '1':
+        if ok:
+            if os.environ['CI_PROJECT_PATH'] == 'mesa/mesa':
+                ensure_reference_image(image_file, checksum)
+        else:
+            upload_artifact(image_file, 'traces/%s.png' % checksum, 'image/png')
     if not ok or os.environ.get('TRACIE_STORE_IMAGES', '0') == '1':
         image_name = os.path.split(image_file)[1]
         shutil.move(image_file, os.path.join(results_path, image_name))
@@ -143,11 +193,9 @@ def run(filename, device_name):
         y = yaml.safe_load(f)
 
     if "traces-db" in y:
-        project_url = y["traces-db"]["gitlab-project-url"]
-        commit_id = y["traces-db"]["commit"]
+        project_url = y["traces-db"]["download-url"]
     else:
         project_url = None
-        commit_id = None
 
     traces = y['traces'] or []
     all_ok = True
@@ -155,7 +203,7 @@ def run(filename, device_name):
     for trace in traces:
         for expectation in trace['expectations']:
             if expectation['device'] == device_name:
-                ok, result = gitlab_check_trace(project_url, commit_id,
+                ok, result = gitlab_check_trace(project_url,
                                                 device_name, trace,
                                                 expectation)
                 all_ok = all_ok and ok
@@ -164,6 +212,8 @@ def run(filename, device_name):
     os.makedirs(RESULTS_PATH, exist_ok=True)
     with open(os.path.join(RESULTS_PATH, 'results.yml'), 'w') as f:
         yaml.safe_dump(results, f, default_flow_style=False)
+    if os.environ.get('TRACIE_UPLOAD_TO_MINIO', '0') == '1':
+        upload_artifact(os.path.join(RESULTS_PATH, 'results.yml'), 'traces/results.yml', 'text/yaml')
 
     return all_ok
 

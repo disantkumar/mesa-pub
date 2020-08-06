@@ -171,7 +171,6 @@ struct gen_perf_query_counter {
    enum gen_perf_counter_units units;
    uint64_t raw_max;
    size_t offset;
-   uint64_t query_mask;
 
    union {
       uint64_t (*oa_counter_read_uint64)(struct gen_perf_config *perf,
@@ -191,13 +190,13 @@ struct gen_perf_query_register_prog {
 
 /* Register programming for a given query */
 struct gen_perf_registers {
-   struct gen_perf_query_register_prog *flex_regs;
+   const struct gen_perf_query_register_prog *flex_regs;
    uint32_t n_flex_regs;
 
-   struct gen_perf_query_register_prog *mux_regs;
+   const struct gen_perf_query_register_prog *mux_regs;
    uint32_t n_mux_regs;
 
-   struct gen_perf_query_register_prog *b_counter_regs;
+   const struct gen_perf_query_register_prog *b_counter_regs;
    uint32_t n_b_counter_regs;
 };
 
@@ -228,6 +227,21 @@ struct gen_perf_query_info {
    struct gen_perf_registers config;
 };
 
+struct gen_perf_query_counter_info {
+   struct gen_perf_query_counter *counter;
+
+   uint64_t query_mask;
+
+   /**
+    * Each counter can be a part of many groups, each time at different index.
+    * This struct stores one of those locations.
+    */
+   struct {
+      int group_idx; /* query/group number */
+      int counter_idx; /* index inside of query/group */
+   } location;
+};
+
 struct gen_perf_config {
    /* Whether i915 has DRM_I915_QUERY_PERF_CONFIG support. */
    bool i915_query_supported;
@@ -241,7 +255,7 @@ struct gen_perf_config {
    struct gen_perf_query_info *queries;
    int n_queries;
 
-   struct gen_perf_query_counter **counters;
+   struct gen_perf_query_counter_info *counter_infos;
    int n_counters;
 
    /* Variables referenced in the XML meta data for OA performance

@@ -557,7 +557,6 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd_resource *rsc = fd_resource(prsc);
-	struct fdl_slice *slice = fd_resource_slice(rsc, level);
 	struct fd_transfer *trans;
 	struct pipe_transfer *ptrans;
 	enum pipe_format format = prsc->format;
@@ -586,7 +585,7 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 	ptrans->level = level;
 	ptrans->usage = usage;
 	ptrans->box = *box;
-	ptrans->stride = slice->pitch;
+	ptrans->stride = fd_resource_pitch(rsc, level);
 	ptrans->layer_stride = fd_resource_layer_stride(rsc, level);
 
 	/* we always need a staging texture for tiled buffers:
@@ -600,11 +599,9 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 
 		staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
 		if (staging_rsc) {
-			struct fdl_slice *staging_slice =
-				fd_resource_slice(staging_rsc, 0);
 			// TODO for PIPE_TRANSFER_READ, need to do untiling blit..
 			trans->staging_prsc = &staging_rsc->base;
-			trans->base.stride = staging_slice->pitch;
+			trans->base.stride = fd_resource_pitch(staging_rsc, 0);
 			trans->base.layer_stride = fd_resource_layer_stride(staging_rsc, 0);
 			trans->staging_box = *box;
 			trans->staging_box.x = 0;
@@ -702,10 +699,8 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 				 */
 				staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
 				if (staging_rsc) {
-					struct fdl_slice *staging_slice =
-						fd_resource_slice(staging_rsc, 0);
 					trans->staging_prsc = &staging_rsc->base;
-					trans->base.stride = staging_slice->pitch;
+					trans->base.stride = fd_resource_pitch(staging_rsc, 0);
 					trans->base.layer_stride =
 						fd_resource_layer_stride(staging_rsc, 0);
 					trans->staging_box = *box;
@@ -803,7 +798,7 @@ fd_resource_get_handle(struct pipe_screen *pscreen,
 	handle->modifier = fd_resource_modifier(rsc);
 
 	return fd_screen_bo_get_handle(pscreen, rsc->bo, rsc->scanout,
-			fd_resource_slice(rsc, 0)->pitch, handle);
+			fd_resource_pitch(rsc, 0), handle);
 }
 
 /* special case to resize query buf after allocated.. */
@@ -825,6 +820,8 @@ fd_resource_layout_init(struct pipe_resource *prsc)
 {
 	struct fd_resource *rsc = fd_resource(prsc);
 	struct fdl_layout *layout = &rsc->layout;
+
+	layout->format = prsc->format;
 
 	layout->width0 = prsc->width0;
 	layout->height0 = prsc->height0;
@@ -1026,18 +1023,27 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 		goto fail;
 
 	rsc->internal_format = tmpl->format;
-	slice->pitch = handle->stride;
+	rsc->layout.pitch0 = handle->stride;
 	slice->offset = handle->offset;
 	slice->size0 = handle->stride * prsc->height0;
 
-	uint32_t pitchalign = fd_screen(pscreen)->gmem_alignw * rsc->layout.cpp;
+	/* use a pitchalign of gmem_alignw pixels, because GMEM resolve for
+	 * lower alignments is not implemented (but possible for a6xx at least)
+	 *
+	 * for UBWC-enabled resources, layout_resource_for_modifier will further
+	 * validate the pitch and set the right pitchalign
+	 */
+	rsc->layout.pitchalign =
+		fdl_cpp_shift(&rsc->layout) + util_logbase2(screen->gmem_alignw);
 
-	/* use 64 pitchalign on a6xx where gmem_alignw is not right */
-	if (is_a6xx(screen))
-		pitchalign = 64 * rsc->layout.cpp;
+	/* apply the minimum pitchalign (note: actually 4 for a3xx but doesn't matter) */
+	if (is_a6xx(screen) || is_a5xx(screen))
+		rsc->layout.pitchalign = MAX2(rsc->layout.pitchalign, 6);
+	else
+		rsc->layout.pitchalign = MAX2(rsc->layout.pitchalign, 5);
 
-	if ((slice->pitch < align(prsc->width0 * rsc->layout.cpp, pitchalign)) ||
-			(slice->pitch & (pitchalign - 1)))
+	if (rsc->layout.pitch0 < (prsc->width0 * rsc->layout.cpp) ||
+		fd_resource_pitch(rsc, 0) != rsc->layout.pitch0)
 		goto fail;
 
 	assert(rsc->layout.cpp);
@@ -1155,6 +1161,12 @@ fd_layout_resource_for_modifier(struct fd_resource *rsc, uint64_t modifier)
 {
 	switch (modifier) {
 	case DRM_FORMAT_MOD_LINEAR:
+		/* The dri gallium frontend will pass DRM_FORMAT_MOD_INVALID to us
+		 * when it's called through any of the non-modifier BO create entry
+		 * points.  Other drivers will determine tiling from the kernel or
+		 * other legacy backchannels, but for freedreno it just means
+		 * LINEAR. */
+	case DRM_FORMAT_MOD_INVALID:
 		return 0;
 	default:
 		return -1;

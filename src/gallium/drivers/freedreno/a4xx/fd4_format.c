@@ -339,7 +339,7 @@ enum a4xx_vtx_fmt
 fd4_pipe2vtx(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return VFMT4_NONE;
 	return formats[format].vtx;
 }
 
@@ -348,7 +348,7 @@ enum a4xx_tex_fmt
 fd4_pipe2tex(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return TFMT4_NONE;
 	return formats[format].tex;
 }
 
@@ -357,7 +357,7 @@ enum a4xx_color_fmt
 fd4_pipe2color(enum pipe_format format)
 {
 	if (!formats[format].present)
-		return ~0;
+		return RB4_NONE;
 	return formats[format].rb;
 }
 
@@ -367,30 +367,6 @@ fd4_pipe2swap(enum pipe_format format)
 	if (!formats[format].present)
 		return WZYX;
 	return formats[format].swap;
-}
-
-enum a4xx_tex_fetchsize
-fd4_pipe2fetchsize(enum pipe_format format)
-{
-	if (format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT)
-		format = PIPE_FORMAT_Z32_FLOAT;
-
-	if (util_format_description(format)->layout == UTIL_FORMAT_LAYOUT_ASTC)
-		return TFETCH4_16_BYTE;
-
-	switch (util_format_get_blocksizebits(format) / util_format_get_blockwidth(format)) {
-	case 8:   return TFETCH4_1_BYTE;
-	case 16:  return TFETCH4_2_BYTE;
-	case 32:  return TFETCH4_4_BYTE;
-	case 64:  return TFETCH4_8_BYTE;
-	case 96:  return TFETCH4_1_BYTE; /* Does this matter? */
-	case 128: return TFETCH4_16_BYTE;
-	default:
-		debug_printf("Unknown block size for format %s: %d\n",
-				util_format_name(format),
-				util_format_get_blocksizebits(format));
-		return TFETCH4_1_BYTE;
-	}
 }
 
 enum a4xx_depth_format

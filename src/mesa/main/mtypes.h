@@ -3211,6 +3211,13 @@ struct gl_shader_compiler_options
    GLboolean LowerPrecisionDerivatives;
 
    /**
+    * This enables lowering of 16b constants.  Some drivers may not
+    * to lower constants to 16b (ie. if the hw can do automatic
+    * narrowing on constant load)
+    */
+   GLboolean LowerPrecisionConstants;
+
+   /**
     * \name Forms of indirect addressing the driver cannot do.
     */
    /*@{*/
@@ -3830,6 +3837,11 @@ struct gl_constants
    GLboolean AllowGLSLExtensionDirectiveMidShader;
 
    /**
+    * Allow a subset of GLSL 1.20 in GLSL 1.10 as needed by SPECviewperf13.
+    */
+   GLboolean AllowGLSL120SubsetIn110;
+
+   /**
     * Allow builtins as part of constant expressions. This was not allowed
     * until GLSL 1.20 this allows it everywhere.
     */
@@ -4179,6 +4191,13 @@ struct gl_constants
 
    /** Whether to allow the fast path for frequently updated VAOs. */
    bool AllowDynamicVAOFastPath;
+
+   /** Whether the driver can support primitive restart with a fixed index.
+    * This is essentially a subset of NV_primitive_restart with enough support
+    * to be able to enable GLES 3.1. Some hardware can support this but not the
+    * full NV extension with arbitrary restart indices.
+    */
+   bool PrimitiveRestartFixedIndex;
 
    /** GL_ARB_gl_spirv */
    struct spirv_supported_capabilities SpirVCapabilities;
