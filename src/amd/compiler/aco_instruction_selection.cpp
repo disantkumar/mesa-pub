@@ -430,10 +430,17 @@ void byte_align_scalar(isel_context *ctx, Temp vec, Operand offset, Temp dst)
          emit_split_vector(ctx, dst, 2);
       else
          emit_extract_vector(ctx, tmp, 0, dst);
-   } else if (vec.size() == 4) {
-      Temp lo = bld.tmp(s2), hi = bld.tmp(s2);
-      bld.pseudo(aco_opcode::p_split_vector, Definition(lo), Definition(hi), vec);
-      hi = bld.pseudo(aco_opcode::p_extract_vector, bld.def(s1), hi, Operand(0u));
+   } else if (vec.size() == 3 || vec.size() == 4) {
+      Temp lo = bld.tmp(s2), hi;
+      if (vec.size() == 3) {
+         /* this can happen if we use VMEM for a uniform load */
+         hi = bld.tmp(s1);
+         bld.pseudo(aco_opcode::p_split_vector, Definition(lo), Definition(hi), vec);
+      } else {
+         hi = bld.tmp(s2);
+         bld.pseudo(aco_opcode::p_split_vector, Definition(lo), Definition(hi), vec);
+         hi = bld.pseudo(aco_opcode::p_extract_vector, bld.def(s1), hi, Operand(0u));
+      }
       if (select != Temp())
          hi = bld.sop2(aco_opcode::s_cselect_b32, bld.def(s1), hi, Operand(0u), bld.scc(select));
       lo = bld.sop2(aco_opcode::s_lshr_b64, bld.def(s2), bld.def(s1, scc), lo, shift);
@@ -2831,12 +2838,18 @@ void visit_alu_instr(isel_context *ctx, nir_alu_instr *instr)
          Temp src0 = bld.tmp(v1);
          Temp src1 = bld.tmp(v1);
          bld.pseudo(aco_opcode::p_split_vector, Definition(src0), Definition(src1), src);
-         if (!ctx->block->fp_mode.care_about_round32 || ctx->block->fp_mode.round32 == fp_round_tz)
+         if (0 && (!ctx->block->fp_mode.care_about_round32 || ctx->block->fp_mode.round32 == fp_round_tz)) {
             bld.vop3(aco_opcode::v_cvt_pkrtz_f16_f32, Definition(dst), src0, src1);
-         else
-            bld.vop3(aco_opcode::v_cvt_pk_u16_u32, Definition(dst),
-                     bld.vop1(aco_opcode::v_cvt_f32_f16, bld.def(v1), src0),
-                     bld.vop1(aco_opcode::v_cvt_f32_f16, bld.def(v1), src1));
+         } else {
+            src0 = bld.vop1(aco_opcode::v_cvt_f16_f32, bld.def(v1), src0);
+            src1 = bld.vop1(aco_opcode::v_cvt_f16_f32, bld.def(v1), src1);
+            if (ctx->program->chip_class >= GFX10) {
+               /* the high bits of v_cvt_f16_f32 isn't zero'd on GFX10 */
+               bld.vop3(aco_opcode::v_pack_b32_f16, Definition(dst), src0, src1);
+            } else {
+               bld.vop3(aco_opcode::v_cvt_pk_u16_u32, Definition(dst), src0, src1);
+            }
+         }
       } else {
          fprintf(stderr, "Unimplemented NIR instr bit size: ");
          nir_print_instr(&instr->instr, stderr);
@@ -2844,8 +2857,10 @@ void visit_alu_instr(isel_context *ctx, nir_alu_instr *instr)
       }
       break;
    }
+   case nir_op_unpack_half_2x16_split_x_flush_to_zero:
    case nir_op_unpack_half_2x16_split_x: {
       if (dst.regClass() == v1) {
+         assert(ctx->block->fp_mode.must_flush_denorms16_64 == (instr->op == nir_op_unpack_half_2x16_split_x_flush_to_zero));
          bld.vop1(aco_opcode::v_cvt_f32_f16, Definition(dst), get_alu_src(ctx, instr->src[0]));
       } else {
          fprintf(stderr, "Unimplemented NIR instr bit size: ");
@@ -2854,8 +2869,10 @@ void visit_alu_instr(isel_context *ctx, nir_alu_instr *instr)
       }
       break;
    }
+   case nir_op_unpack_half_2x16_split_y_flush_to_zero:
    case nir_op_unpack_half_2x16_split_y: {
       if (dst.regClass() == v1) {
+         assert(ctx->block->fp_mode.must_flush_denorms16_64 == (instr->op == nir_op_unpack_half_2x16_split_y_flush_to_zero));
          /* TODO: use SDWA here */
          bld.vop1(aco_opcode::v_cvt_f32_f16, Definition(dst),
                   bld.vop2(aco_opcode::v_lshrrev_b32, bld.def(v1), Operand(16u), as_vgpr(ctx, get_alu_src(ctx, instr->src[0]))));
@@ -4652,7 +4669,7 @@ bool check_vertex_fetch_size(isel_context *ctx, const ac_data_format_info *vtx_i
    unsigned vertex_byte_size = vtx_info->chan_byte_size * channels;
    if (vtx_info->chan_byte_size != 4 && channels == 3)
       return false;
-   return (ctx->options->chip_class != GFX6 && ctx->options->chip_class != GFX10) ||
+   return (ctx->options->chip_class >= GFX7 && ctx->options->chip_class <= GFX9) ||
           (offset % vertex_byte_size == 0 && stride % vertex_byte_size == 0);
 }
 
@@ -5476,7 +5493,7 @@ void visit_discard(isel_context* ctx, nir_intrinsic_instr *instr)
          assert(nir_instr_is_last(&instr->instr));
          ctx->block->kind |= block_kind_uniform;
          ctx->cf_info.has_branch = true;
-         bld.branch(aco_opcode::p_branch);
+         bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
          add_linear_edge(ctx->block->index, linear_target);
          return;
       }
@@ -5489,14 +5506,14 @@ void visit_discard(isel_context* ctx, nir_intrinsic_instr *instr)
       ctx->cf_info.nir_to_aco[instr->instr.block->index] = idx;
 
       /* remove critical edges from linear CFG */
-      bld.branch(aco_opcode::p_branch);
+      bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
       Block* break_block = ctx->program->create_and_insert_block();
       break_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
       break_block->kind |= block_kind_uniform;
       add_linear_edge(idx, break_block);
       add_linear_edge(break_block->index, linear_target);
       bld.reset(break_block);
-      bld.branch(aco_opcode::p_branch);
+      bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
 
       Block* continue_block = ctx->program->create_and_insert_block();
       continue_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
@@ -7206,6 +7223,7 @@ Temp emit_boolean_reduce(isel_context *ctx, nir_op op, unsigned cluster_size, Te
 Temp emit_boolean_exclusive_scan(isel_context *ctx, nir_op op, Temp src)
 {
    Builder bld(ctx->program, ctx->block);
+   assert(src.regClass() == bld.lm);
 
    //subgroupExclusiveAnd(val) -> mbcnt(exec & ~val) == 0
    //subgroupExclusiveOr(val) -> mbcnt(val & exec) != 0
@@ -7214,7 +7232,7 @@ Temp emit_boolean_exclusive_scan(isel_context *ctx, nir_op op, Temp src)
    if (op == nir_op_iand)
       tmp = bld.sop2(Builder::s_andn2, bld.def(bld.lm), bld.def(s1, scc), Operand(exec, bld.lm), src);
    else
-      tmp = bld.sop2(Builder::s_and, bld.def(s2), bld.def(s1, scc), src, Operand(exec, bld.lm));
+      tmp = bld.sop2(Builder::s_and, bld.def(bld.lm), bld.def(s1, scc), src, Operand(exec, bld.lm));
 
    Builder::Result lohi = bld.pseudo(aco_opcode::p_split_vector, bld.def(s1), bld.def(s1), tmp);
    Temp lo = lohi.def(0).getTemp();
@@ -9297,7 +9315,7 @@ void visit_jump(isel_context *ctx, nir_jump_instr *instr)
          /* uniform break - directly jump out of the loop */
          ctx->block->kind |= block_kind_uniform;
          ctx->cf_info.has_branch = true;
-         bld.branch(aco_opcode::p_branch);
+         bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
          add_linear_edge(idx, logical_target);
          return;
       }
@@ -9319,7 +9337,7 @@ void visit_jump(isel_context *ctx, nir_jump_instr *instr)
          /* uniform continue - directly jump to the loop header */
          ctx->block->kind |= block_kind_uniform;
          ctx->cf_info.has_branch = true;
-         bld.branch(aco_opcode::p_branch);
+         bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
          add_linear_edge(idx, logical_target);
          return;
       }
@@ -9337,7 +9355,7 @@ void visit_jump(isel_context *ctx, nir_jump_instr *instr)
    }
 
    /* remove critical edges from linear CFG */
-   bld.branch(aco_opcode::p_branch);
+   bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
    Block* break_block = ctx->program->create_and_insert_block();
    break_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
    break_block->kind |= block_kind_uniform;
@@ -9347,7 +9365,7 @@ void visit_jump(isel_context *ctx, nir_jump_instr *instr)
       logical_target = &ctx->program->blocks[ctx->cf_info.parent_loop.header_idx];
    add_linear_edge(break_block->index, logical_target);
    bld.reset(break_block);
-   bld.branch(aco_opcode::p_branch);
+   bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
 
    Block* continue_block = ctx->program->create_and_insert_block();
    continue_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
@@ -9449,7 +9467,7 @@ static void visit_loop(isel_context *ctx, nir_loop *loop)
    append_logical_end(ctx->block);
    ctx->block->kind |= block_kind_loop_preheader | block_kind_uniform;
    Builder bld(ctx->program, ctx->block);
-   bld.branch(aco_opcode::p_branch);
+   bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
    unsigned loop_preheader_idx = ctx->block->index;
 
    Block loop_exit = Block();
@@ -9484,7 +9502,7 @@ static void visit_loop(isel_context *ctx, nir_loop *loop)
          break_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
          break_block->kind = block_kind_uniform;
          bld.reset(break_block);
-         bld.branch(aco_opcode::p_branch);
+         bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
          add_linear_edge(block_idx, break_block);
          add_linear_edge(break_block->index, &loop_exit);
 
@@ -9492,7 +9510,7 @@ static void visit_loop(isel_context *ctx, nir_loop *loop)
          continue_block->loop_nest_depth = ctx->cf_info.loop_nest_depth;
          continue_block->kind = block_kind_uniform;
          bld.reset(continue_block);
-         bld.branch(aco_opcode::p_branch);
+         bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
          add_linear_edge(block_idx, continue_block);
          add_linear_edge(continue_block->index, &ctx->program->blocks[loop_header_idx]);
 
@@ -9508,7 +9526,7 @@ static void visit_loop(isel_context *ctx, nir_loop *loop)
       }
 
       bld.reset(ctx->block);
-      bld.branch(aco_opcode::p_branch);
+      bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
    }
 
    /* Fixup phis in loop header from unreachable blocks.
@@ -9586,7 +9604,9 @@ static void begin_divergent_if_then(isel_context *ctx, if_context *ic, Temp cond
    /* branch to linear then block */
    assert(cond.regClass() == ctx->program->lane_mask);
    aco_ptr<Pseudo_branch_instruction> branch;
-   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_cbranch_z, Format::PSEUDO_BRANCH, 1, 0));
+   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_cbranch_z, Format::PSEUDO_BRANCH, 1, 1));
+   branch->definitions[0] = {ctx->program->allocateId(), s2};
+   branch->definitions[0].setHint(vcc);
    branch->operands[0] = Operand(cond);
    ctx->block->instructions.push_back(std::move(branch));
 
@@ -9625,7 +9645,9 @@ static void begin_divergent_if_else(isel_context *ctx, if_context *ic)
    append_logical_end(BB_then_logical);
     /* branch from logical then block to invert block */
    aco_ptr<Pseudo_branch_instruction> branch;
-   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 0));
+   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 1));
+   branch->definitions[0] = {ctx->program->allocateId(), s2};
+   branch->definitions[0].setHint(vcc);
    BB_then_logical->instructions.emplace_back(std::move(branch));
    add_linear_edge(BB_then_logical->index, &ic->BB_invert);
    if (!ctx->cf_info.parent_loop.has_divergent_branch)
@@ -9641,7 +9663,9 @@ static void begin_divergent_if_else(isel_context *ctx, if_context *ic)
    BB_then_linear->kind |= block_kind_uniform;
    add_linear_edge(ic->BB_if_idx, BB_then_linear);
    /* branch from linear then block to invert block */
-   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 0));
+   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 1));
+   branch->definitions[0] = {ctx->program->allocateId(), s2};
+   branch->definitions[0].setHint(vcc);
    BB_then_linear->instructions.emplace_back(std::move(branch));
    add_linear_edge(BB_then_linear->index, &ic->BB_invert);
 
@@ -9650,7 +9674,9 @@ static void begin_divergent_if_else(isel_context *ctx, if_context *ic)
    ic->invert_idx = ctx->block->index;
 
    /* branch to linear else block (skip else) */
-   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_cbranch_nz, Format::PSEUDO_BRANCH, 1, 0));
+   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_cbranch_nz, Format::PSEUDO_BRANCH, 1, 1));
+   branch->definitions[0] = {ctx->program->allocateId(), s2};
+   branch->definitions[0].setHint(vcc);
    branch->operands[0] = Operand(ic->cond);
    ctx->block->instructions.push_back(std::move(branch));
 
@@ -9679,7 +9705,9 @@ static void end_divergent_if(isel_context *ctx, if_context *ic)
 
    /* branch from logical else block to endif block */
    aco_ptr<Pseudo_branch_instruction> branch;
-   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 0));
+   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 1));
+   branch->definitions[0] = {ctx->program->allocateId(), s2};
+   branch->definitions[0].setHint(vcc);
    BB_else_logical->instructions.emplace_back(std::move(branch));
    add_linear_edge(BB_else_logical->index, &ic->BB_endif);
    if (!ctx->cf_info.parent_loop.has_divergent_branch)
@@ -9697,7 +9725,9 @@ static void end_divergent_if(isel_context *ctx, if_context *ic)
    add_linear_edge(ic->invert_idx, BB_else_linear);
 
    /* branch from linear else block to endif block */
-   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 0));
+   branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 1));
+   branch->definitions[0] = {ctx->program->allocateId(), s2};
+   branch->definitions[0].setHint(vcc);
    BB_else_linear->instructions.emplace_back(std::move(branch));
    add_linear_edge(BB_else_linear->index, &ic->BB_endif);
 
@@ -9734,7 +9764,9 @@ static void begin_uniform_if_then(isel_context *ctx, if_context *ic, Temp cond)
 
    aco_ptr<Pseudo_branch_instruction> branch;
    aco_opcode branch_opcode = aco_opcode::p_cbranch_z;
-   branch.reset(create_instruction<Pseudo_branch_instruction>(branch_opcode, Format::PSEUDO_BRANCH, 1, 0));
+   branch.reset(create_instruction<Pseudo_branch_instruction>(branch_opcode, Format::PSEUDO_BRANCH, 1, 1));
+   branch->definitions[0] = {ctx->program->allocateId(), s2};
+   branch->definitions[0].setHint(vcc);
    branch->operands[0] = Operand(cond);
    branch->operands[0].setFixed(scc);
    ctx->block->instructions.emplace_back(std::move(branch));
@@ -9766,7 +9798,9 @@ static void begin_uniform_if_else(isel_context *ctx, if_context *ic)
       append_logical_end(BB_then);
       /* branch from then block to endif block */
       aco_ptr<Pseudo_branch_instruction> branch;
-      branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 0));
+      branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 1));
+      branch->definitions[0] = {ctx->program->allocateId(), s2};
+      branch->definitions[0].setHint(vcc);
       BB_then->instructions.emplace_back(std::move(branch));
       add_linear_edge(BB_then->index, &ic->BB_endif);
       if (!ic->then_branch_divergent)
@@ -9793,7 +9827,9 @@ static void end_uniform_if(isel_context *ctx, if_context *ic)
       append_logical_end(BB_else);
       /* branch from then block to endif block */
       aco_ptr<Pseudo_branch_instruction> branch;
-      branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 0));
+      branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch, Format::PSEUDO_BRANCH, 0, 1));
+      branch->definitions[0] = {ctx->program->allocateId(), s2};
+      branch->definitions[0].setHint(vcc);
       BB_else->instructions.emplace_back(std::move(branch));
       add_linear_edge(BB_else->index, &ic->BB_endif);
       if (!ctx->cf_info.parent_loop.has_divergent_branch)
@@ -10036,7 +10072,10 @@ static void create_vs_exports(isel_context *ctx)
 
    if (outinfo->export_prim_id && !(ctx->stage & hw_ngg_gs)) {
       ctx->outputs.mask[VARYING_SLOT_PRIMITIVE_ID] |= 0x1;
-      ctx->outputs.temps[VARYING_SLOT_PRIMITIVE_ID * 4u] = get_arg(ctx, ctx->args->vs_prim_id);
+      if (ctx->stage & sw_tes)
+         ctx->outputs.temps[VARYING_SLOT_PRIMITIVE_ID * 4u] = get_arg(ctx, ctx->args->ac.tes_patch_id);
+      else
+         ctx->outputs.temps[VARYING_SLOT_PRIMITIVE_ID * 4u] = get_arg(ctx, ctx->args->vs_prim_id);
    }
 
    if (ctx->options->key.has_multiview_view_index) {
@@ -11154,7 +11193,7 @@ void select_gs_copy_shader(Program *program, struct nir_shader *gs_shader,
          Temp cond = bld.sopc(aco_opcode::s_cmp_eq_u32, bld.def(s1, scc), stream_id, Operand(stream));
          append_logical_end(ctx.block);
          ctx.block->kind |= block_kind_uniform;
-         bld.branch(aco_opcode::p_cbranch_z, cond);
+         bld.branch(aco_opcode::p_cbranch_z, bld.hint_vcc(bld.def(s2)), cond);
 
          BB_endif.kind |= ctx.block->kind & block_kind_top_level;
 
@@ -11216,7 +11255,7 @@ void select_gs_copy_shader(Program *program, struct nir_shader *gs_shader,
          append_logical_end(ctx.block);
 
          /* branch from then block to endif block */
-         bld.branch(aco_opcode::p_branch);
+         bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
          add_edge(ctx.block->index, &BB_endif);
          ctx.block->kind |= block_kind_uniform;
 
@@ -11238,7 +11277,7 @@ void select_gs_copy_shader(Program *program, struct nir_shader *gs_shader,
 
       append_logical_end(BB_else);
       /* branch from else block to endif block */
-      bld.branch(aco_opcode::p_branch);
+      bld.branch(aco_opcode::p_branch, bld.hint_vcc(bld.def(s2)));
       add_edge(BB_else->index, &BB_endif);
       BB_else->kind |= block_kind_uniform;
 

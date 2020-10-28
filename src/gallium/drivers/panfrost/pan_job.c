@@ -177,6 +177,8 @@ panfrost_free_batch(struct panfrost_batch *batch)
                 panfrost_batch_fence_unreference(*dep);
         }
 
+        util_dynarray_fini(&batch->dependencies);
+
         /* The out_sync fence lifetime is different from the the batch one
          * since other batches might want to wait on a fence of already
          * submitted/signaled batch. All we need to do here is make sure the
@@ -979,7 +981,7 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
 
         if (!out_sync && dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
                 drmSyncobjCreate(dev->fd, 0, &out_sync);
-                our_sync = false;
+                our_sync = true;
         }
 
         submit.out_sync = out_sync;
@@ -1002,6 +1004,9 @@ panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
         if (ret) {
                 if (dev->debug & PAN_DBG_MSGS)
                         fprintf(stderr, "Error submitting: %m\n");
+
+                if (our_sync)
+                        drmSyncobjDestroy(dev->fd, out_sync);
 
                 return errno;
         }

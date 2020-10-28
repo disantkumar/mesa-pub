@@ -1505,13 +1505,38 @@ anv_pipeline_compile_graphics(struct anv_graphics_pipeline *pipeline,
 
       void *stage_ctx = ralloc_context(NULL);
 
+      anv_pipeline_lower_nir(&pipeline->base, stage_ctx, &stages[s], layout);
+
+      if (prev_stage && compiler->glsl_compiler_options[s].NirOptions->unify_interfaces) {
+         prev_stage->nir->info.outputs_written |= stages[s].nir->info.inputs_read &
+                  ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
+         stages[s].nir->info.inputs_read |= prev_stage->nir->info.outputs_written &
+                  ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
+         prev_stage->nir->info.patch_outputs_written |= stages[s].nir->info.patch_inputs_read;
+         stages[s].nir->info.patch_inputs_read |= prev_stage->nir->info.patch_outputs_written;
+      }
+
+      ralloc_free(stage_ctx);
+
+      stages[s].feedback.duration += os_time_get_nano() - stage_start;
+
+      prev_stage = &stages[s];
+   }
+
+   prev_stage = NULL;
+   for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
+      if (!stages[s].entrypoint)
+         continue;
+
+      int64_t stage_start = os_time_get_nano();
+
+      void *stage_ctx = ralloc_context(NULL);
+
       nir_xfb_info *xfb_info = NULL;
       if (s == MESA_SHADER_VERTEX ||
           s == MESA_SHADER_TESS_EVAL ||
           s == MESA_SHADER_GEOMETRY)
          xfb_info = nir_gather_xfb_info(stages[s].nir, stage_ctx);
-
-      anv_pipeline_lower_nir(&pipeline->base, stage_ctx, &stages[s], layout);
 
       switch (s) {
       case MESA_SHADER_VERTEX:
@@ -1883,46 +1908,6 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
          pCreateInfo->pRasterizationState->frontFace;
    }
 
-   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE &&
-       subpass->depth_stencil_attachment) {
-      dynamic->depth_test_enable =
-         pCreateInfo->pDepthStencilState->depthTestEnable;
-   }
-
-   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE &&
-       subpass->depth_stencil_attachment) {
-      dynamic->depth_write_enable =
-         pCreateInfo->pDepthStencilState->depthWriteEnable;
-   }
-
-   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP &&
-       subpass->depth_stencil_attachment) {
-      dynamic->depth_compare_op =
-         pCreateInfo->pDepthStencilState->depthCompareOp;
-   }
-
-   if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE &&
-       subpass->depth_stencil_attachment) {
-      dynamic->depth_bounds_test_enable =
-         pCreateInfo->pDepthStencilState->depthBoundsTestEnable;
-   }
-
-   if (states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE &&
-       subpass->depth_stencil_attachment) {
-      dynamic->stencil_test_enable =
-         pCreateInfo->pDepthStencilState->stencilTestEnable;
-   }
-
-   if (states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP &&
-       subpass->depth_stencil_attachment) {
-      const VkPipelineDepthStencilStateCreateInfo *info =
-         pCreateInfo->pDepthStencilState;
-      memcpy(&dynamic->stencil_op.front, &info->front,
-             sizeof(dynamic->stencil_op.front));
-      memcpy(&dynamic->stencil_op.back, &info->back,
-             sizeof(dynamic->stencil_op.back));
-   }
-
    if (states & ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY) {
       assert(pCreateInfo->pInputAssemblyState);
       bool has_tess = false;
@@ -2006,6 +1991,40 @@ copy_non_dynamic_state(struct anv_graphics_pipeline *pipeline,
             pCreateInfo->pDepthStencilState->front.reference;
          dynamic->stencil_reference.back =
             pCreateInfo->pDepthStencilState->back.reference;
+      }
+
+      if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE) {
+         dynamic->depth_test_enable =
+            pCreateInfo->pDepthStencilState->depthTestEnable;
+      }
+
+      if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE) {
+         dynamic->depth_write_enable =
+            pCreateInfo->pDepthStencilState->depthWriteEnable;
+      }
+
+      if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP) {
+         dynamic->depth_compare_op =
+            pCreateInfo->pDepthStencilState->depthCompareOp;
+      }
+
+      if (states & ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE) {
+         dynamic->depth_bounds_test_enable =
+            pCreateInfo->pDepthStencilState->depthBoundsTestEnable;
+      }
+
+      if (states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE) {
+         dynamic->stencil_test_enable =
+            pCreateInfo->pDepthStencilState->stencilTestEnable;
+      }
+
+      if (states & ANV_CMD_DIRTY_DYNAMIC_STENCIL_OP) {
+         const VkPipelineDepthStencilStateCreateInfo *info =
+            pCreateInfo->pDepthStencilState;
+         memcpy(&dynamic->stencil_op.front, &info->front,
+                sizeof(dynamic->stencil_op.front));
+         memcpy(&dynamic->stencil_op.back, &info->back,
+                sizeof(dynamic->stencil_op.back));
       }
    }
 

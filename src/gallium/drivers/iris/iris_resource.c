@@ -1046,7 +1046,7 @@ iris_resource_from_handle(struct pipe_screen *pscreen,
       else
          tiling = -1;
       res->bo = iris_bo_import_dmabuf(bufmgr, whandle->handle,
-                                      tiling, whandle->stride);
+                                      tiling);
       break;
    case WINSYS_HANDLE_TYPE_SHARED:
       res->bo = iris_bo_gem_create_from_name(bufmgr, "winsys image",
@@ -1276,6 +1276,7 @@ iris_resource_get_handle(struct pipe_screen *pscreen,
 
 #ifndef NDEBUG
    enum isl_aux_usage allowed_usage =
+      usage & PIPE_HANDLE_USAGE_EXPLICIT_FLUSH ? res->aux.usage :
       res->mod_info ? res->mod_info->aux_usage : ISL_AUX_USAGE_NONE;
 
    if (res->aux.usage != allowed_usage) {

@@ -571,7 +571,7 @@ transition_depth_buffer(struct anv_cmd_buffer *cmd_buffer,
        cmd_buffer->device->physical->has_implicit_ccs &&
        cmd_buffer->device->info.has_aux_map) {
       anv_image_init_aux_tt(cmd_buffer, image, VK_IMAGE_ASPECT_DEPTH_BIT,
-                            0, 1, 0, 1);
+                            0, 1, base_layer, layer_count);
    }
 #endif
 
@@ -3263,26 +3263,44 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
    cmd_buffer->state.push_constants_dirty &= ~flushed;
 }
 
-void
-genX(cmd_buffer_emit_clip)(struct anv_cmd_buffer *cmd_buffer)
+static void
+cmd_buffer_emit_clip(struct anv_cmd_buffer *cmd_buffer)
 {
+   const uint32_t clip_states =
+#if GEN_GEN <= 7
+      ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE |
+      ANV_CMD_DIRTY_DYNAMIC_CULL_MODE |
+#endif
+      ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |
+      ANV_CMD_DIRTY_PIPELINE;
+
+   if ((cmd_buffer->state.gfx.dirty & clip_states) == 0)
+      return;
+
+#if GEN_GEN <= 7
+   const struct anv_dynamic_state *d = &cmd_buffer->state.gfx.dynamic;
+#endif
+   struct GENX(3DSTATE_CLIP) clip = {
+      GENX(3DSTATE_CLIP_header),
+#if GEN_GEN <= 7
+      .FrontWinding = genX(vk_to_gen_front_face)[d->front_face],
+      .CullMode     = genX(vk_to_gen_cullmode)[d->cull_mode],
+#endif
+   };
+   uint32_t dwords[GENX(3DSTATE_CLIP_length)];
+
    struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
-
-   if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
-                                      ANV_CMD_DIRTY_DYNAMIC_VIEWPORT)) {
-      uint32_t dwords[GENX(3DSTATE_CLIP_length)];
-      int32_t count =
+   const struct brw_vue_prog_data *last =
+      anv_pipeline_get_last_vue_prog_data(pipeline);
+   if (last->vue_map.slots_valid & VARYING_BIT_VIEWPORT) {
+      clip.MaximumVPIndex =
          cmd_buffer->state.gfx.dynamic.viewport.count > 0 ?
-            cmd_buffer->state.gfx.dynamic.viewport.count - 1 : 0;
-
-      struct GENX(3DSTATE_CLIP) clip = {
-         GENX(3DSTATE_CLIP_header),
-         .MaximumVPIndex = count,
-      };
-      GENX(3DSTATE_CLIP_pack)(NULL, dwords, &clip);
-      anv_batch_emit_merge(&cmd_buffer->batch, dwords,
-                           pipeline->gen7.clip);
+         cmd_buffer->state.gfx.dynamic.viewport.count - 1 : 0;
    }
+
+   GENX(3DSTATE_CLIP_pack)(NULL, dwords, &clip);
+   anv_batch_emit_merge(&cmd_buffer->batch, dwords,
+                        pipeline->gen7.clip);
 }
 
 void
@@ -3326,13 +3344,13 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
          bool dynamic_stride = cmd_buffer->state.gfx.dynamic.dyn_vbo_stride;
          bool dynamic_size = cmd_buffer->state.gfx.dynamic.dyn_vbo_size;
 
-         uint32_t stride = dynamic_stride ?
-            cmd_buffer->state.vertex_bindings[vb].stride : pipeline->vb[vb].stride;
-         uint32_t size = dynamic_size ?
-            cmd_buffer->state.vertex_bindings[vb].size : buffer->size;
-
          struct GENX(VERTEX_BUFFER_STATE) state;
          if (buffer) {
+            uint32_t stride = dynamic_stride ?
+               cmd_buffer->state.vertex_bindings[vb].stride : pipeline->vb[vb].stride;
+            uint32_t size = dynamic_size ?
+               cmd_buffer->state.vertex_bindings[vb].size : buffer->size;
+
             state = (struct GENX(VERTEX_BUFFER_STATE)) {
                .VertexBufferIndex = vb,
 
@@ -3394,7 +3412,7 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
                sob.SurfaceBaseAddress = anv_address_add(xfb->buffer->address,
                                                         xfb->offset);
                /* Size is in DWords - 1 */
-               sob.SurfaceSize = xfb->size / 4 - 1;
+               sob.SurfaceSize = DIV_ROUND_UP(xfb->size, 4) - 1;
             }
          }
       }
@@ -3469,10 +3487,10 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
    if (dirty)
       cmd_buffer_emit_descriptor_pointers(cmd_buffer, dirty);
 
-   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_VIEWPORT) {
-      genX(cmd_buffer_emit_clip)(cmd_buffer);
+   cmd_buffer_emit_clip(cmd_buffer);
+
+   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_VIEWPORT)
       gen8_cmd_buffer_emit_viewport(cmd_buffer);
-   }
 
    if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |
                                   ANV_CMD_DIRTY_PIPELINE)) {
@@ -4619,7 +4637,8 @@ genX(flush_pipeline_select)(struct anv_cmd_buffer *cmd_buffer,
 
    anv_batch_emit(&cmd_buffer->batch, GENX(PIPELINE_SELECT), ps) {
 #if GEN_GEN >= 9
-      ps.MaskBits = 3;
+      ps.MaskBits = GEN_GEN >= 12 ? 0x13 : 3;
+      ps.MediaSamplerDOPClockGateEnable = GEN_GEN >= 12;
 #endif
       ps.PipelineSelection = pipeline;
    }

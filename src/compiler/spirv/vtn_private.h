@@ -35,6 +35,7 @@
 #include "util/u_dynarray.h"
 #include "nir_spirv.h"
 #include "spirv.h"
+#include "vtn_generator_ids.h"
 
 struct vtn_builder;
 struct vtn_decoration;
@@ -183,6 +184,8 @@ struct vtn_if {
 
 struct vtn_case {
    struct vtn_cf_node node;
+
+   struct vtn_block *block;
 
    enum vtn_branch_type type;
    struct list_head body;
@@ -580,6 +583,12 @@ struct vtn_image_pointer {
 
 struct vtn_value {
    enum vtn_value_type value_type;
+
+   /* Workaround for https://gitlab.freedesktop.org/mesa/mesa/-/issues/3406
+    * Only set for OpImage / OpSampledImage. Note that this is in addition
+    * the existence of a NonUniform decoration on this value.*/
+   uint32_t propagated_non_uniform : 1;
+
    const char *name;
    struct vtn_decoration *decoration;
    struct vtn_type *type;
@@ -657,8 +666,16 @@ struct vtn_builder {
    unsigned value_id_bound;
    struct vtn_value *values;
 
+   /* Information on the origin of the SPIR-V */
+   enum vtn_generator generator_id;
+   SpvSourceLanguage source_lang;
+
    /* True if we need to fix up CS OpControlBarrier */
    bool wa_glslang_cs_barrier;
+
+   /* Workaround discard bugs in HLSL -> SPIR-V compilers */
+   bool uses_demote_to_helper_invocation;
+   bool convert_discard_to_demote;
 
    gl_shader_stage entry_point_stage;
    const char *entry_point_name;
@@ -673,6 +690,7 @@ struct vtn_builder {
    unsigned func_param_idx;
 
    bool has_loop_continue;
+   bool has_kill;
 
    /* false by default, set to true by the ContractionOff execution mode */
    bool exact;
