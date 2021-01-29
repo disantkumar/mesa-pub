@@ -296,6 +296,7 @@ dri2_create_image_from_renderbuffer2(__DRIcontext *context,
 
    img->dri_format = driGLFormatToImageFormat(rb->Format);
    img->loader_private = loaderPrivate;
+   img->sPriv = context->driScreenPriv;
 
    pipe_resource_reference(&img->texture, tex);
 
@@ -315,6 +316,17 @@ dri2_create_image_from_renderbuffer(__DRIcontext *context,
 void
 dri2_destroy_image(__DRIimage *img)
 {
+   const __DRIimageLoaderExtension *imgLoader = img->sPriv->image.loader;
+   const __DRIdri2LoaderExtension *dri2Loader = img->sPriv->dri2.loader;
+
+   if (imgLoader && imgLoader->base.version >= 4 &&
+         imgLoader->destroyLoaderImageState) {
+      imgLoader->destroyLoaderImageState(img->loader_private);
+   } else if (dri2Loader && dri2Loader->base.version >= 5 &&
+         dri2Loader->destroyLoaderImageState) {
+      dri2Loader->destroyLoaderImageState(img->loader_private);
+   }
+
    pipe_resource_reference(&img->texture, NULL);
    FREE(img);
 }
@@ -352,7 +364,7 @@ dri2_create_from_texture(__DRIcontext *context, int target, unsigned texture,
       return NULL;
    }
 
-   if (level < obj->BaseLevel || level > obj->_MaxLevel) {
+   if (level < obj->Attrib.BaseLevel || level > obj->_MaxLevel) {
       *error = __DRI_IMAGE_ERROR_BAD_MATCH;
       return NULL;
    }
@@ -373,6 +385,7 @@ dri2_create_from_texture(__DRIcontext *context, int target, unsigned texture,
    img->dri_format = driGLFormatToImageFormat(obj->Image[face][level]->TexFormat);
 
    img->loader_private = loaderPrivate;
+   img->sPriv = context->driScreenPriv;
 
    pipe_resource_reference(&img->texture, tex);
 
@@ -491,11 +504,11 @@ static const struct dri2_format_mapping dri2_format_table[] = {
           { 1, 1, 1, __DRI_IMAGE_FORMAT_GR88, 2 } } },
 
       { DRM_FORMAT_P010,          __DRI_IMAGE_FORMAT_NONE,
-        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_P016, 2,
+        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_P010, 2,
         { { 0, 0, 0, __DRI_IMAGE_FORMAT_R16, 2 },
           { 1, 1, 1, __DRI_IMAGE_FORMAT_GR1616, 4 } } },
       { DRM_FORMAT_P012,          __DRI_IMAGE_FORMAT_NONE,
-        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_P016, 2,
+        __DRI_IMAGE_COMPONENTS_Y_UV,      PIPE_FORMAT_P012, 2,
         { { 0, 0, 0, __DRI_IMAGE_FORMAT_R16, 2 },
           { 1, 1, 1, __DRI_IMAGE_FORMAT_GR1616, 4 } } },
       { DRM_FORMAT_P016,          __DRI_IMAGE_FORMAT_NONE,

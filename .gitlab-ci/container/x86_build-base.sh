@@ -7,18 +7,23 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get install -y \
         ca-certificates \
-        gnupg \
-        python3-pip \
-        python3-setuptools \
-        unzip \
-        wget
+        gnupg
 
 # Upstream LLVM package repository
 apt-key add .gitlab-ci/container/llvm-snapshot.gpg.key
 echo "deb https://apt.llvm.org/buster/ llvm-toolchain-buster-9 main" >/etc/apt/sources.list.d/llvm9.list
+echo "deb https://apt.llvm.org/buster/ llvm-toolchain-buster-10 main" >/etc/apt/sources.list.d/llvm10.list
 
 sed -i -e 's/http:\/\/deb/https:\/\/deb/g' /etc/apt/sources.list
 echo 'deb https://deb.debian.org/debian buster-backports main' >/etc/apt/sources.list.d/backports.list
+
+# Ephemeral packages (installed for this script and removed again at
+# the end)
+STABLE_EPHEMERAL=" \
+        python3-pip \
+        python3-setuptools \
+        unzip \
+        "
 
 apt-get update
 
@@ -26,13 +31,15 @@ apt-get install -y --no-remove \
         $STABLE_EPHEMERAL \
         bison \
         ccache \
-        clang-9 \
+        clang-10 \
         dpkg-cross \
         flex \
         g++ \
         g++-mingw-w64-x86-64 \
         gcc \
         git \
+        kmod \
+        libclang-10-dev \
         libclang-9-dev \
         libclc-dev \
         libelf-dev \
@@ -47,7 +54,6 @@ apt-get install -y --no-remove \
         libvulkan-dev \
         libx11-dev \
         libx11-xcb-dev \
-        libxdamage-dev \
         libxext-dev \
         libxml2-utils \
         libxrandr-dev \
@@ -56,16 +62,17 @@ apt-get install -y --no-remove \
         libxvmc-dev \
         libxxf86vm-dev \
         libz-mingw-w64-dev \
+        llvm-10-dev \
         llvm-9-dev \
         pkg-config \
         python-mako \
         python3-mako \
         python3-pil \
-        python3-pip \
         python3-requests \
-        python3-setuptools \
         qemu-user \
         scons \
+        valgrind \
+        wget \
         wine64-development \
         x11proto-dri2-dev \
         x11proto-gl-dev \
@@ -91,7 +98,7 @@ rm bin/glslangValidator glslang-master-linux-Release.zip
 ############### Uninstall ephemeral packages
 
 apt-get purge -y \
-        gnupg \
-        unzip
+        $STABLE_EPHEMERAL \
+        gnupg
 
 . .gitlab-ci/container/container_post_build.sh

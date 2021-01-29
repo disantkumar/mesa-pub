@@ -5,23 +5,26 @@ set -o xtrace
 
 check_minio()
 {
-    MINIO_PATH="minio-packet.freedesktop.org/mesa-lava/$1/${DISTRIBUTION_TAG}/${DEBIAN_ARCH}"
+    MINIO_PATH="${MINIO_HOST}/mesa-lava/$1/${DISTRIBUTION_TAG}/${DEBIAN_ARCH}"
     if wget -q --method=HEAD "https://${MINIO_PATH}/done"; then
         exit
     fi
 }
 
 # If remote files are up-to-date, skip rebuilding them
-check_minio "mesa/mesa"
+check_minio "${FDO_UPSTREAM_REPO}"
 check_minio "${CI_PROJECT_PATH}"
 
 . .gitlab-ci/container/container_pre_build.sh
+
+# Install rust, which we'll be using for deqp-runner.  It will be cleaned up at the end.
+. .gitlab-ci/build-rust.sh
 
 if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
     GCC_ARCH="aarch64-linux-gnu"
     KERNEL_ARCH="arm64"
     DEFCONFIG="arch/arm64/configs/defconfig"
-    DEVICE_TREES="arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb arch/arm64/boot/dts/qcom/apq8016-sbc.dtb"
+    DEVICE_TREES="arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb arch/arm64/boot/dts/qcom/apq8016-sbc.dtb arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
     KERNEL_IMAGE_NAME="Image"
 elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     GCC_ARCH="arm-linux-gnueabihf"
@@ -43,17 +46,24 @@ if [[ -e /cross_file-$DEBIAN_ARCH.txt ]]; then
     EXTRA_MESON_ARGS="--cross-file /cross_file-$DEBIAN_ARCH.txt"
     EXTRA_CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=/toolchain-$DEBIAN_ARCH.cmake"
 
+    if [ $DEBIAN_ARCH = arm64 ]; then
+        RUST_TARGET="aarch64-unknown-linux-gnu"
+    elif [ $DEBIAN_ARCH = armhf ]; then
+        RUST_TARGET="armv7-unknown-linux-gnueabihf"
+    fi
+    rustup target add $RUST_TARGET
+    export EXTRA_CARGO_ARGS="--target $RUST_TARGET"
+
     export ARCH=${KERNEL_ARCH}
     export CROSS_COMPILE="${GCC_ARCH}-"
 fi
 
 apt-get update
 apt-get install -y automake \
-                   git \
                    bc \
                    cmake \
-                   wget \
                    debootstrap \
+                   git \
                    libboost-dev \
                    libegl1-mesa-dev \
                    libgbm-dev \
@@ -63,44 +73,60 @@ apt-get install -y automake \
                    libpython3-dev \
                    libssl-dev \
                    libvulkan-dev \
+                   libwaffle-dev \
                    libxcb-keysyms1-dev \
+                   libxkbcommon-dev \
+                   patch \
                    python3-dev \
                    python3-distutils \
+                   python3-mako \
+                   python3-numpy \
                    python3-serial \
                    qt5-default \
                    qt5-qmake \
-                   qtbase5-dev
+                   qtbase5-dev \
+                   wget
 
 
 if [[ "$DEBIAN_ARCH" = "armhf" ]]; then
-	apt-get install -y libboost-dev:armhf \
-		libegl1-mesa-dev:armhf \
-		libelf-dev:armhf \
-		libgbm-dev:armhf \
-		libgles2-mesa-dev:armhf \
-		libpcre3-dev:armhf \
-		libpng-dev:armhf \
-		libpython3-dev:armhf \
-		libvulkan-dev:armhf \
-		libxcb-keysyms1-dev:armhf \
-               qtbase5-dev:armhf
+    apt-get install -y libboost-dev:armhf \
+                       libegl1-mesa-dev:armhf \
+                       libelf-dev:armhf \
+                       libgbm-dev:armhf \
+                       libgles2-mesa-dev:armhf \
+                       libpcre3-dev:armhf \
+                       libpng-dev:armhf \
+                       libpython3-dev:armhf \
+                       libvulkan-dev:armhf \
+                       libwaffle-dev:armhf \
+                       libxcb-keysyms1-dev:armhf \
+                       libxkbcommon-dev:armhf \
+                       qtbase5-dev:armhf
 fi
 
+
+############### Building
+STRIP_CMD="${GCC_ARCH}-strip"
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}
+
+
 ############### Build dEQP runner
-. .gitlab-ci/build-cts-runner.sh
+. .gitlab-ci/build-deqp-runner.sh
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin
 mv /usr/local/bin/deqp-runner /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/.
 
 
 ############### Build dEQP
-STRIP_CMD="${GCC_ARCH}-strip"
-if [ -n "$INCLUDE_VK_CTS" ]; then
-   DEQP_TARGET=surfaceless . .gitlab-ci/build-deqp-vk.sh
-else
-   . .gitlab-ci/build-deqp-gl.sh
-fi
+DEQP_TARGET=surfaceless . .gitlab-ci/build-deqp.sh
 
 mv /deqp /lava-files/rootfs-${DEBIAN_ARCH}/.
+
+
+############### Build piglit
+if [ -n "$INCLUDE_PIGLIT" ]; then
+    . .gitlab-ci/build-piglit.sh
+    mv /piglit /lava-files/rootfs-${DEBIAN_ARCH}/.
+fi
 
 
 ############### Build apitrace
@@ -125,23 +151,46 @@ rm -rf /renderdoc
 ############### Build libdrm
 EXTRA_MESON_ARGS+=" -D prefix=/libdrm"
 . .gitlab-ci/build-libdrm.sh
-mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH
-find /libdrm/ -name lib\*\.so\* | xargs cp -t /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH/.
-rm -rf /libdrm
 
 
 ############### Cross-build kernel
 mkdir -p kernel
 wget -qO- ${KERNEL_URL} | tar -xz --strip-components=1 -C kernel
 pushd kernel
+
+# The kernel doesn't like the gold linker (or the old lld in our debians).
+# Sneak in some override symlinks during kernel build until we can update
+# debian (they'll get blown away by the rm of the kernel dir at the end).
+mkdir -p ld-links
+for i in /usr/bin/*-ld /usr/bin/ld; do
+    i=`basename $i`
+    ln -sf /usr/bin/$i.bfd ld-links/$i
+done
+export PATH=`pwd`/ld-links:$PATH
+
+if [ -n "$INSTALL_KERNEL_MODULES" ]; then
+    # Disable all modules in defconfig, so we only build the ones we want
+    sed -i 's/=m/=n/g' ${DEFCONFIG}
+fi
+
+# Force db410c to host mode instead of OTG (which is otherwise selected by
+# default due to our micro cable for fastboot)
+sed -i 's/dr_mode = "otg"/dr_mode = "host"/' arch/arm64/boot/dts/qcom/apq8016-sbc.dtsi
+
 ./scripts/kconfig/merge_config.sh ${DEFCONFIG} ../.gitlab-ci/${KERNEL_ARCH}.config
 make ${KERNEL_IMAGE_NAME}
 for image in ${KERNEL_IMAGE_NAME}; do
     cp arch/${KERNEL_ARCH}/boot/${image} /lava-files/.
 done
+
 if [[ -n ${DEVICE_TREES} ]]; then
     make dtbs
     cp ${DEVICE_TREES} /lava-files/.
+fi
+
+if [ -n "$INSTALL_KERNEL_MODULES" ]; then
+    make modules
+    INSTALL_MOD_PATH=/lava-files/rootfs-${DEBIAN_ARCH}/ make modules_install
 fi
 
 if [[ ${DEBIAN_ARCH} = "arm64" ]] && which mkimage > /dev/null; then
@@ -159,6 +208,9 @@ fi
 popd
 rm -rf kernel
 
+############### Delete rust, since the tests won't be compiling anything.
+rm -rf /root/.rustup /root/.cargo
+
 ############### Create rootfs
 set +e
 debootstrap \
@@ -174,12 +226,24 @@ set -e
 
 cp .gitlab-ci/create-rootfs.sh /lava-files/rootfs-${DEBIAN_ARCH}/.
 cp .gitlab-ci/container/llvm-snapshot.gpg.key /lava-files/rootfs-${DEBIAN_ARCH}/.
-chroot /lava-files/rootfs-${DEBIAN_ARCH} sh /create-rootfs.sh
+chroot /lava-files/rootfs-${DEBIAN_ARCH} \
+    sh -c "INCLUDE_PIGLIT=$INCLUDE_PIGLIT sh /create-rootfs.sh"
 rm /lava-files/rootfs-${DEBIAN_ARCH}/create-rootfs.sh
 rm /lava-files/rootfs-${DEBIAN_ARCH}/llvm-snapshot.gpg.key
+
+
+############### Install the built libdrm
+# Dependencies pulled during the creation of the rootfs may overwrite
+# the built libdrm. Hence, we add it after the rootfs has been already
+# created.
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH
+find /libdrm/ -name lib\*\.so\* | xargs cp -t /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH/.
+rm -rf /libdrm
+
+
 du -ah /lava-files/rootfs-${DEBIAN_ARCH} | sort -h | tail -100
 pushd /lava-files/rootfs-${DEBIAN_ARCH}
-  tar cvzf /lava-files/lava-rootfs.tgz .
+  tar czf /lava-files/lava-rootfs.tgz .
 popd
 
 if [ ${DEBIAN_ARCH} = arm64 ]; then

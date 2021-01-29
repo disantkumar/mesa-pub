@@ -21,17 +21,32 @@ apt-get -y install \
 	flex \
 	g++ \
 	git \
+	kmod \
 	lavacli \
 	libdrm-dev \
 	libelf-dev \
 	libexpat1-dev \
+	libx11-dev \
+	libx11-xcb-dev \
+	libxcb-dri2-0-dev \
+	libxcb-dri3-dev \
+	libxcb-glx0-dev \
+	libxcb-present-dev \
+	libxcb-randr0-dev \
+	libxcb-shm0-dev \
+	libxcb-xfixes0-dev \
+	libxdamage-dev \
+	libxext-dev \
+	libxrandr-dev \
+	libxshmfence-dev \
+	libxxf86vm-dev \
 	llvm-8-dev \
 	pkg-config \
 	python \
 	python3-mako \
 	python3-pil \
-	python3-requests \
 	python3-pip \
+	python3-requests \
 	python3-setuptools \
 	unzip \
 	wget \

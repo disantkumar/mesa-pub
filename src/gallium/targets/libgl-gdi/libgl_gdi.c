@@ -40,10 +40,13 @@
 #include "stw_winsys.h"
 #include "stw_device.h"
 #include "gdi/gdi_sw_winsys.h"
+#include "pipe/p_context.h"
 
+#ifdef GALLIUM_SOFTPIPE
 #include "softpipe/sp_texture.h"
 #include "softpipe/sp_screen.h"
 #include "softpipe/sp_public.h"
+#endif
 
 #ifdef GALLIUM_LLVMPIPE
 #include "llvmpipe/lp_texture.h"
@@ -54,12 +57,29 @@
 #ifdef GALLIUM_SWR
 #include "swr/swr_public.h"
 #endif
+#ifdef GALLIUM_D3D12
+#include "d3d12/wgl/d3d12_wgl_public.h"
+#endif
 
+#ifdef GALLIUM_ZINK
+#include "zink/zink_public.h"
+#endif
+
+#ifdef GALLIUM_LLVMPIPE
 static boolean use_llvmpipe = FALSE;
+#endif
+#ifdef GALLIUM_SWR
 static boolean use_swr = FALSE;
+#endif
+#ifdef GALLIUM_D3D12
+static boolean use_d3d12 = FALSE;
+#endif
+#ifdef GALLIUM_ZINK
+static boolean use_zink = FALSE;
+#endif
 
 static struct pipe_screen *
-gdi_screen_create(void)
+gdi_screen_create(HDC hDC)
 {
    const char *default_driver;
    const char *driver;
@@ -70,12 +90,16 @@ gdi_screen_create(void)
    if(!winsys)
       goto no_winsys;
 
-#ifdef GALLIUM_LLVMPIPE
+#ifdef GALLIUM_D3D12
+   default_driver = "d3d12";
+#elif defined(GALLIUM_LLVMPIPE)
    default_driver = "llvmpipe";
 #elif GALLIUM_SWR
    default_driver = "swr";
-#else
+#elif defined(GALLIUM_SOFTPIPE)
    default_driver = "softpipe";
+#else
+#error "no suitable default-driver"
 #endif
 
    driver = debug_get_option("GALLIUM_DRIVER", default_driver);
@@ -94,13 +118,27 @@ gdi_screen_create(void)
          use_swr = TRUE;
    }
 #endif
+#ifdef GALLIUM_D3D12
+   if (strcmp(driver, "d3d12") == 0) {
+      screen = d3d12_wgl_create_screen( winsys, hDC );
+      if (screen)
+         use_d3d12 = TRUE;
+   }
+#endif
+#ifdef GALLIUM_ZINK
+   if (strcmp(driver, "zink") == 0) {
+       screen = zink_create_screen( winsys );
+       if (screen)
+           use_zink = TRUE;
+   }
+#endif
    (void) driver;
 
-   if (screen == NULL) {
+#ifdef GALLIUM_SOFTPIPE
+   if (screen == NULL)
       screen = softpipe_create_screen( winsys );
-   }
-
-   if(!screen)
+#endif
+   if (!screen)
       goto no_screen;
 
    return screen;
@@ -114,6 +152,7 @@ no_winsys:
 
 static void
 gdi_present(struct pipe_screen *screen,
+            struct pipe_context *ctx,
             struct pipe_resource *res,
             HDC hDC)
 {
@@ -141,24 +180,85 @@ gdi_present(struct pipe_screen *screen,
 
 #ifdef GALLIUM_SWR
    if (use_swr) {
-      swr_gdi_swap(screen, res, hDC);
+      swr_gdi_swap(screen, ctx, res, hDC);
       return;
    }
 #endif
 
+#ifdef GALLIUM_D3D12
+   if (use_d3d12) {
+      d3d12_wgl_present(screen, ctx, res, hDC);
+      return;
+   }
+#endif
+
+#ifdef GALLIUM_ZINK
+   if (use_zink) {
+      screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, NULL);
+      return;
+   }
+#endif
+
+#ifdef GALLIUM_SOFTPIPE
    winsys = softpipe_screen(screen)->winsys,
    dt = softpipe_resource(res)->dt,
    gdi_sw_display(winsys, dt, hDC);
+#endif
+}
+
+
+#if WINVER >= 0xA00
+static boolean
+gdi_get_adapter_luid(struct pipe_screen* screen,
+   HDC hDC,
+   LUID* adapter_luid)
+{
+   if (!stw_dev || !stw_dev->callbacks.pfnGetAdapterLuid)
+      return false;
+
+   stw_dev->callbacks.pfnGetAdapterLuid(hDC, adapter_luid);
+   return true;
+}
+#endif
+
+
+static unsigned
+gdi_get_pfd_flags(struct pipe_screen *screen)
+{
+#ifdef GALLIUM_D3D12
+   if (use_d3d12)
+      return d3d12_wgl_get_pfd_flags(screen);
+#endif
+   return stw_pfd_gdi_support;
+}
+
+
+static struct stw_winsys_framebuffer *
+gdi_create_framebuffer(struct pipe_screen *screen,
+                       HDC hDC,
+                       int iPixelFormat)
+{
+#ifdef GALLIUM_D3D12
+   if (use_d3d12)
+      return d3d12_wgl_create_framebuffer(screen, hDC, iPixelFormat);
+#endif
+   return NULL;
 }
 
 
 static const struct stw_winsys stw_winsys = {
    &gdi_screen_create,
    &gdi_present,
+#if WINVER >= 0xA00
+   &gdi_get_adapter_luid,
+#else
    NULL, /* get_adapter_luid */
+#endif
    NULL, /* shared_surface_open */
    NULL, /* shared_surface_close */
-   NULL  /* compose */
+   NULL, /* compose */
+   &gdi_get_pfd_flags,
+   &gdi_create_framebuffer,
 };
 
 
