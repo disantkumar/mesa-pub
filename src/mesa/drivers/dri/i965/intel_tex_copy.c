@@ -43,12 +43,12 @@
 
 
 static void
-intelCopyTexSubImage(struct gl_context *ctx, GLuint dims,
-                     struct gl_texture_image *texImage,
-                     GLint xoffset, GLint yoffset, GLint slice,
-                     struct gl_renderbuffer *rb,
-                     GLint x, GLint y,
-                     GLsizei width, GLsizei height)
+brw_copytexsubimage(struct gl_context *ctx, GLuint dims,
+                    struct gl_texture_image *texImage,
+                    GLint xoffset, GLint yoffset, GLint slice,
+                    struct gl_renderbuffer *rb,
+                    GLint x, GLint y,
+                    GLsizei width, GLsizei height)
 {
    struct brw_context *brw = brw_context(ctx);
 
@@ -66,7 +66,7 @@ intelCopyTexSubImage(struct gl_context *ctx, GLuint dims,
 
 
 void
-intelInitTextureCopyImageFuncs(struct dd_function_table *functions)
+brw_init_texture_copy_image_functions(struct dd_function_table *functions)
 {
-   functions->CopyTexSubImage = intelCopyTexSubImage;
+   functions->CopyTexSubImage = brw_copytexsubimage;
 }

@@ -50,7 +50,7 @@ gen7_begin_transform_feedback(struct gl_context *ctx, GLenum mode,
 
    /* Reset the SO buffer offsets to 0. */
    if (!can_do_pipelined_register_writes(brw->screen)) {
-      intel_batchbuffer_flush(brw);
+      brw_batch_flush(brw);
       brw->batch.needs_sol_reset = true;
    } else {
       for (int i = 0; i < 4; i++) {
@@ -63,7 +63,7 @@ gen7_begin_transform_feedback(struct gl_context *ctx, GLenum mode,
 
 void
 gen7_end_transform_feedback(struct gl_context *ctx,
-			    struct gl_transform_feedback_object *obj)
+                            struct gl_transform_feedback_object *obj)
 {
    /* After EndTransformFeedback, it's likely that the client program will try
     * to draw using the contents of the transform feedback buffer as vertex

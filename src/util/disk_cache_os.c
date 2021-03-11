@@ -39,6 +39,13 @@
 #include "zstd.h"
 #endif
 
+#include "util/crc32.h"
+
+struct cache_entry_file_data {
+   uint32_t crc32;
+   uint32_t uncompressed_size;
+};
+
 /* 3 is the recomended level, with 22 as the absolute maximum */
 #define ZSTD_COMPRESSION_LEVEL 3
 
@@ -71,7 +78,22 @@ deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest)
       free(out);
       return 0;
    }
-   ssize_t written = write_all(dest, out, ret);
+
+   /* Create CRC of the compressed data. We will read this when restoring the
+    * cache and use it to check for corruption.
+    */
+   struct cache_entry_file_data cf_data;
+   cf_data.crc32 = util_hash_crc32(out, ret);
+   cf_data.uncompressed_size = in_data_size;
+
+   size_t cf_data_size = sizeof(cf_data);
+   ssize_t written = write_all(dest, &cf_data, cf_data_size);
+   if (written == -1) {
+      free(out);
+      return 0;
+   }
+
+   written = write_all(dest, out, ret);
    if (written == -1) {
       free(out);
       return 0;
@@ -79,6 +101,19 @@ deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest)
    free(out);
    return ret;
 #else
+   /* Create CRC of the uncompressed data. We will read this when restoring
+    * the cache and use it to check for corruption.
+    */
+   struct cache_entry_file_data cf_data;
+   cf_data.crc32 = util_hash_crc32(in_data, in_data_size);
+   cf_data.uncompressed_size = in_data_size;
+
+   size_t cf_data_size = sizeof(cf_data);
+   ssize_t written = write_all(dest, &cf_data, cf_data_size);
+   if (written == -1) {
+      return 0;
+   }
+
    unsigned char *out;
 
    /* allocate deflate state */
@@ -119,7 +154,7 @@ deflate_and_write_to_disk(const void *in_data, size_t in_data_size, int dest)
          size_t have = BUFSIZE - strm.avail_out;
          compressed_size += have;
 
-         ssize_t written = write_all(dest, out, have);
+         written = write_all(dest, out, have);
          if (written == -1) {
             (void)deflateEnd(&strm);
             free(out);
@@ -595,16 +630,24 @@ disk_cache_load_item(struct disk_cache *cache, char *filename, size_t *size)
    if (ret == -1)
       goto fail;
 
+#ifdef HAVE_ZSTD
+   /* Check the data for corruption */
+   if (cf_data.crc32 != util_hash_crc32(data, cache_data_size))
+      goto fail;
+#endif
+
    /* Uncompress the cache data */
    uncompressed_data = malloc(cf_data.uncompressed_size);
    if (!inflate_cache_data(data, cache_data_size, uncompressed_data,
                            cf_data.uncompressed_size))
       goto fail;
 
+#ifndef HAVE_ZSTD
    /* Check the data for corruption */
    if (cf_data.crc32 != util_hash_crc32(uncompressed_data,
                                         cf_data.uncompressed_size))
       goto fail;
+#endif
 
    free(data);
    free(filename);
@@ -654,7 +697,6 @@ disk_cache_get_cache_filename(struct disk_cache *cache, const cache_key key)
 
 void
 disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
-                              struct cache_entry_file_data *cf_data,
                               char *filename)
 {
    int fd = -1, fd_final = -1;
@@ -756,13 +798,6 @@ disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
       }
    }
 
-   size_t cf_data_size = sizeof(*cf_data);
-   ret = write_all(fd, cf_data, cf_data_size);
-   if (ret == -1) {
-      unlink(filename_tmp);
-      goto done;
-   }
-
    /* Now, finally, write out the contents to the temporary file, then
     * rename them atomically to the destination filename, and also
     * perform an atomic increment of the total cache size.
@@ -806,14 +841,19 @@ disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
  *   <pwd.pw_dir>/.cache/mesa_shader_cache
  */
 char *
-disk_cache_generate_cache_dir(void *mem_ctx)
+disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
+                              const char *driver_id)
 {
+   char *cache_dir_name = CACHE_DIR_NAME;
+   if (env_var_as_boolean("MESA_DISK_CACHE_SINGLE_FILE", false))
+      cache_dir_name = CACHE_DIR_NAME_SF;
+
    char *path = getenv("MESA_GLSL_CACHE_DIR");
    if (path) {
       if (mkdir_if_needed(path) == -1)
          return NULL;
 
-      path = concatenate_and_mkdir(mem_ctx, path, CACHE_DIR_NAME);
+      path = concatenate_and_mkdir(mem_ctx, path, cache_dir_name);
       if (!path)
          return NULL;
    }
@@ -825,7 +865,7 @@ disk_cache_generate_cache_dir(void *mem_ctx)
          if (mkdir_if_needed(xdg_cache_home) == -1)
             return NULL;
 
-         path = concatenate_and_mkdir(mem_ctx, xdg_cache_home, CACHE_DIR_NAME);
+         path = concatenate_and_mkdir(mem_ctx, xdg_cache_home, cache_dir_name);
          if (!path)
             return NULL;
       }
@@ -861,7 +901,17 @@ disk_cache_generate_cache_dir(void *mem_ctx)
       if (!path)
          return NULL;
 
-      path = concatenate_and_mkdir(mem_ctx, path, CACHE_DIR_NAME);
+      path = concatenate_and_mkdir(mem_ctx, path, cache_dir_name);
+      if (!path)
+         return NULL;
+   }
+
+   if (env_var_as_boolean("MESA_DISK_CACHE_SINGLE_FILE", false)) {
+      path = concatenate_and_mkdir(mem_ctx, path, driver_id);
+      if (!path)
+         return NULL;
+
+      path = concatenate_and_mkdir(mem_ctx, path, gpu_name);
       if (!path)
          return NULL;
    }
@@ -888,16 +938,33 @@ disk_cache_enabled()
    return true;
 }
 
+void *
+disk_cache_load_item_foz(struct disk_cache *cache, const cache_key key,
+                         size_t *size)
+{
+   return foz_read_entry(&cache->foz_db, key, size);
+}
+
+bool
+disk_cache_write_item_to_disk_foz(struct disk_cache_put_job *dc_job)
+{
+   return foz_write_entry(&dc_job->cache->foz_db, dc_job->key, dc_job->data,
+                          dc_job->size);
+}
+
+bool
+disk_cache_load_cache_index(void *mem_ctx, struct disk_cache *cache)
+{
+   /* Load cache index into a hash map (from fossilise files) */
+   return foz_prepare(&cache->foz_db, cache->path);
+}
+
 bool
 disk_cache_mmap_cache_index(void *mem_ctx, struct disk_cache *cache,
                             char *path)
 {
    int fd = -1;
    bool mapped = false;
-
-   cache->path = ralloc_strdup(cache, path);
-   if (cache->path == NULL)
-      goto path_fail;
 
    path = ralloc_asprintf(mem_ctx, "%s/index", cache->path);
    if (path == NULL)

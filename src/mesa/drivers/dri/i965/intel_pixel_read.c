@@ -64,12 +64,12 @@
  * single copy operation.
  */
 static bool
-intel_readpixels_tiled_memcpy(struct gl_context * ctx,
-                              GLint xoffset, GLint yoffset,
-                              GLsizei width, GLsizei height,
-                              GLenum format, GLenum type,
-                              GLvoid * pixels,
-                              const struct gl_pixelstore_attrib *pack)
+brw_readpixels_tiled_memcpy(struct gl_context *ctx,
+                            GLint xoffset, GLint yoffset,
+                            GLsizei width, GLsizei height,
+                            GLenum format, GLenum type,
+                            GLvoid * pixels,
+                            const struct gl_pixelstore_attrib *pack)
 {
    struct brw_context *brw = brw_context(ctx);
    struct gl_renderbuffer *rb = ctx->ReadBuffer->_ColorReadBuffer;
@@ -79,7 +79,7 @@ intel_readpixels_tiled_memcpy(struct gl_context * ctx,
    if (rb == NULL)
       return false;
 
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+   struct brw_renderbuffer *irb = brw_renderbuffer(rb);
    int dst_pitch;
 
    /* The miptree's buffer. */
@@ -124,7 +124,7 @@ intel_readpixels_tiled_memcpy(struct gl_context * ctx,
    if (rb->_BaseFormat == GL_RGB)
       return false;
 
-   copy_type = intel_miptree_get_memcpy_type(rb->Format, format, type, &cpp);
+   copy_type = brw_miptree_get_memcpy_type(rb->Format, format, type, &cpp);
    if (copy_type == ISL_MEMCPY_INVALID)
       return false;
 
@@ -149,13 +149,13 @@ intel_readpixels_tiled_memcpy(struct gl_context * ctx,
    /* Since we are going to read raw data to the miptree, we need to resolve
     * any pending fast color clears before we start.
     */
-   intel_miptree_access_raw(brw, irb->mt, irb->mt_level, irb->mt_layer, false);
+   brw_miptree_access_raw(brw, irb->mt, irb->mt_level, irb->mt_layer, false);
 
    bo = irb->mt->bo;
 
    if (brw_batch_references(&brw->batch, bo)) {
       perf_debug("Flushing before mapping a referenced bo.\n");
-      intel_batchbuffer_flush(brw);
+      brw_batch_flush(brw);
    }
 
    void *map = brw_bo_map(brw, bo, MAP_READ | MAP_RAW);
@@ -165,7 +165,7 @@ intel_readpixels_tiled_memcpy(struct gl_context * ctx,
    }
 
    unsigned slice_offset_x, slice_offset_y;
-   intel_miptree_get_image_offset(irb->mt, irb->mt_level, irb->mt_layer,
+   brw_miptree_get_image_offset(irb->mt, irb->mt_level, irb->mt_layer,
                                   &slice_offset_x, &slice_offset_y);
    xoffset += slice_offset_x;
    yoffset += slice_offset_y;
@@ -214,18 +214,18 @@ intel_readpixels_tiled_memcpy(struct gl_context * ctx,
 }
 
 static bool
-intel_readpixels_blorp(struct gl_context *ctx,
-                       unsigned x, unsigned y,
-                       unsigned w, unsigned h,
-                       GLenum format, GLenum type, const void *pixels,
-                       const struct gl_pixelstore_attrib *packing)
+brw_readpixels_blorp(struct gl_context *ctx,
+                     unsigned x, unsigned y,
+                     unsigned w, unsigned h,
+                     GLenum format, GLenum type, const void *pixels,
+                     const struct gl_pixelstore_attrib *packing)
 {
    struct brw_context *brw = brw_context(ctx);
    struct gl_renderbuffer *rb = ctx->ReadBuffer->_ColorReadBuffer;
    if (!rb)
       return false;
 
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+   struct brw_renderbuffer *irb = brw_renderbuffer(rb);
 
    /* _mesa_get_readpixels_transfer_ops() includes the cases of read
     * color clamping along with the ctx->_ImageTransferState.
@@ -253,10 +253,10 @@ intel_readpixels_blorp(struct gl_context *ctx,
 }
 
 void
-intelReadPixels(struct gl_context * ctx,
-                GLint x, GLint y, GLsizei width, GLsizei height,
-                GLenum format, GLenum type,
-                const struct gl_pixelstore_attrib *pack, GLvoid * pixels)
+brw_readpixels(struct gl_context *ctx,
+               GLint x, GLint y, GLsizei width, GLsizei height,
+               GLenum format, GLenum type,
+               const struct gl_pixelstore_attrib *pack, GLvoid *pixels)
 {
    bool ok;
 
@@ -266,22 +266,22 @@ intelReadPixels(struct gl_context * ctx,
    DBG("%s\n", __func__);
 
    /* Reading pixels wont dirty the front buffer, so reset the dirty
-    * flag after calling intel_prepare_render().
+    * flag after calling brw_prepare_render().
     */
    dirty = brw->front_buffer_dirty;
-   intel_prepare_render(brw);
+   brw_prepare_render(brw);
    brw->front_buffer_dirty = dirty;
 
    if (pack->BufferObj) {
-      if (intel_readpixels_blorp(ctx, x, y, width, height,
-                                 format, type, pixels, pack))
+      if (brw_readpixels_blorp(ctx, x, y, width, height,
+                               format, type, pixels, pack))
          return;
 
       perf_debug("%s: fallback to CPU mapping in PBO case\n", __func__);
    }
 
-   ok = intel_readpixels_tiled_memcpy(ctx, x, y, width, height,
-                                      format, type, pixels, pack);
+   ok = brw_readpixels_tiled_memcpy(ctx, x, y, width, height,
+                                    format, type, pixels, pack);
    if(ok)
       return;
 
@@ -295,6 +295,6 @@ intelReadPixels(struct gl_context * ctx,
 
    _mesa_readpixels(ctx, x, y, width, height, format, type, pack, pixels);
 
-   /* There's an intel_prepare_render() call in intelSpanRenderStart(). */
+   /* There's an brw_prepare_render() call in intelSpanRenderStart(). */
    brw->front_buffer_dirty = dirty;
 }

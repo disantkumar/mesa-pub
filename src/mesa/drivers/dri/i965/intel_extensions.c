@@ -34,7 +34,7 @@
  * extensions for a context.
  */
 void
-intelInitExtensions(struct gl_context *ctx)
+brw_init_extensions(struct gl_context *ctx)
 {
    struct brw_context *brw = brw_context(ctx);
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
@@ -96,6 +96,7 @@ intelInitExtensions(struct gl_context *ctx)
    ctx->Extensions.EXT_blend_equation_separate = true;
    ctx->Extensions.EXT_blend_func_separate = true;
    ctx->Extensions.EXT_blend_minmax = true;
+   ctx->Extensions.EXT_color_buffer_half_float = true;
    ctx->Extensions.EXT_draw_buffers2 = true;
    ctx->Extensions.EXT_EGL_image_storage = true;
    ctx->Extensions.EXT_float_blend = true;
@@ -180,7 +181,7 @@ intelInitExtensions(struct gl_context *ctx)
 
    if (devinfo->gen >= 6) {
       ctx->Extensions.ARB_blend_func_extended =
-         !driQueryOptionb(&brw->optionCache, "disable_blend_func_extended");
+         !driQueryOptionb(&brw->screen->optionCache, "disable_blend_func_extended");
       ctx->Extensions.ARB_conditional_render_inverted = true;
       ctx->Extensions.ARB_cull_distance = true;
       ctx->Extensions.ARB_draw_buffers_blend = true;

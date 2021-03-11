@@ -41,6 +41,7 @@
 static void
 fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 		unsigned flags)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct pipe_fence_handle *fence = NULL;
@@ -52,6 +53,42 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 	fd_batch_reference(&batch, ctx->batch);
 
 	DBG("%p: flush: flags=%x", batch, flags);
+
+	if (fencep && !batch) {
+		batch = fd_context_batch(ctx);
+	} else if (!batch) {
+		fd_bc_dump(ctx->screen, "%p: NULL batch, remaining:\n", ctx);
+		return;
+	}
+
+	/* With TC_FLUSH_ASYNC, the fence will have been pre-created from
+	 * the front-end thread.  But not yet associated with a batch,
+	 * because we cannot safely access ctx->batch outside of the driver
+	 * thread.  So instead, replace the existing batch->fence with the
+	 * one created earlier
+	 */
+	if ((flags & TC_FLUSH_ASYNC) && fencep) {
+		/* We don't currently expect async+flush in the fence-fd
+		 * case.. for that to work properly we'd need TC to tell
+		 * us in the create_fence callback that it needs an fd.
+		 */
+		assert(!(flags & PIPE_FLUSH_FENCE_FD));
+
+		fd_fence_set_batch(*fencep, batch);
+		fd_fence_ref(&batch->fence, *fencep);
+
+		/* We (a) cannot substitute the provided fence with last_fence,
+		 * and (b) need fd_fence_populate() to be eventually called on
+		 * the fence that was pre-created in frontend-thread:
+		 */
+		fd_fence_ref(&ctx->last_fence, NULL);
+
+		/* async flush is not compatible with deferred flush, since
+		 * nothing triggers the batch flush which fence_flush() would
+		 * be waiting for
+		 */
+		flags &= ~PIPE_FLUSH_DEFERRED;
+	}
 
 	/* In some sequence of events, we can end up with a last_fence that is
 	 * not an "fd" fence, which results in eglDupNativeFenceFDANDROID()
@@ -68,13 +105,6 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 		fd_fence_ref(&fence, ctx->last_fence);
 		fd_bc_dump(ctx->screen, "%p: reuse last_fence, remaining:\n", ctx);
 		goto out;
-	}
-
-	if (fencep && !batch) {
-		batch = fd_context_batch(ctx);
-	} else if (!batch) {
-		fd_bc_dump(ctx->screen, "%p: NULL batch, remaining:\n", ctx);
-		return;
 	}
 
 	/* Take a ref to the batch's fence (batch can be unref'd when flushed: */
@@ -112,6 +142,7 @@ out:
 
 static void
 fd_texture_barrier(struct pipe_context *pctx, unsigned flags)
+	in_dt
 {
 	if (flags == PIPE_TEXTURE_BARRIER_FRAMEBUFFER) {
 		struct fd_context *ctx = fd_context(pctx);
@@ -189,6 +220,7 @@ fd_emit_string5(struct fd_ringbuffer *ring,
  */
 static void
 fd_emit_string_marker(struct pipe_context *pctx, const char *string, int len)
+	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 
@@ -245,6 +277,8 @@ struct fd_batch *
 fd_context_batch(struct fd_context *ctx)
 {
 	struct fd_batch *batch = NULL;
+
+	tc_assert_driver_thread(ctx->tc);
 
 	fd_batch_reference(&batch, ctx->batch);
 
@@ -322,6 +356,7 @@ fd_context_destroy(struct pipe_context *pctx)
 		util_primconvert_destroy(ctx->primconvert);
 
 	slab_destroy_child(&ctx->transfer_pool);
+	slab_destroy_child(&ctx->transfer_pool_unsync);
 
 	for (i = 0; i < ARRAY_SIZE(ctx->vsc_pipe_bo); i++) {
 		if (!ctx->vsc_pipe_bo[i])
@@ -336,8 +371,8 @@ fd_context_destroy(struct pipe_context *pctx)
 
 	u_trace_context_fini(&ctx->trace_context);
 
-	if (fd_mesa_debug & (FD_DBG_BSTAT | FD_DBG_MSGS)) {
-		printf("batch_total=%u, batch_sysmem=%u, batch_gmem=%u, batch_nondraw=%u, batch_restore=%u\n",
+	if (FD_DBG(BSTAT) || FD_DBG(MSGS)) {
+		mesa_logi("batch_total=%u, batch_sysmem=%u, batch_gmem=%u, batch_nondraw=%u, batch_restore=%u\n",
 			(uint32_t)ctx->stats.batch_total, (uint32_t)ctx->stats.batch_sysmem,
 			(uint32_t)ctx->stats.batch_gmem, (uint32_t)ctx->stats.batch_nondraw,
 			(uint32_t)ctx->stats.batch_restore);
@@ -375,6 +410,11 @@ fd_get_device_reset_status(struct pipe_context *pctx)
 	int global_faults  = fd_get_reset_count(ctx, false);
 	enum pipe_reset_status status;
 
+	/* Not called in driver thread, but threaded_context syncs
+	 * before calling this:
+	 */
+	fd_context_access_begin(ctx);
+
 	if (context_faults != ctx->context_reset_count) {
 		status = PIPE_GUILTY_CONTEXT_RESET;
 	} else if (global_faults != ctx->global_reset_count) {
@@ -385,6 +425,8 @@ fd_get_device_reset_status(struct pipe_context *pctx)
 
 	ctx->context_reset_count = context_faults;
 	ctx->global_reset_count = global_faults;
+
+	fd_context_access_end(ctx);
 
 	return status;
 }
@@ -509,6 +551,7 @@ fd_context_cleanup_common_vbos(struct fd_context *ctx)
 struct pipe_context *
 fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 		const uint8_t *primtypes, void *priv, unsigned flags)
+	disable_thread_safety_analysis
 {
 	struct fd_screen *screen = fd_screen(pscreen);
 	struct pipe_context *pctx;
@@ -516,7 +559,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	int i;
 
 	/* lower numerical value == higher priority: */
-	if (fd_mesa_debug & FD_DBG_HIPRIO)
+	if (FD_DBG(HIPRIO))
 		prio = 0;
 	else if (flags & PIPE_CONTEXT_HIGH_PRIORITY)
 		prio = 0;
@@ -566,6 +609,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	pctx->const_uploader = pctx->stream_uploader;
 
 	slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
+	slab_create_child(&ctx->transfer_pool_unsync, &screen->transfer_pool);
 
 	fd_draw_init(pctx);
 	fd_resource_context_init(pctx);
@@ -599,4 +643,30 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 fail:
 	pctx->destroy(pctx);
 	return NULL;
+}
+
+struct pipe_context *
+fd_context_init_tc(struct pipe_context *pctx, unsigned flags)
+{
+	struct fd_context *ctx = fd_context(pctx);
+
+	if (!(flags & PIPE_CONTEXT_PREFER_THREADED))
+		return pctx;
+
+	/* Clover (compute-only) is unsupported. */
+	if (flags & PIPE_CONTEXT_COMPUTE_ONLY)
+		return pctx;
+
+	struct pipe_context *tc = threaded_context_create(pctx,
+			&ctx->screen->transfer_pool,
+			fd_replace_buffer_storage,
+			fd_fence_create_unflushed,
+			&ctx->tc);
+
+	uint64_t total_ram;
+	if (tc && tc != pctx && os_get_total_physical_memory(&total_ram)) {
+		((struct threaded_context *) tc)->bytes_mapped_limit = total_ram / 16;
+	}
+
+	return tc;
 }

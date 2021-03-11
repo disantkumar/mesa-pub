@@ -233,6 +233,10 @@
    DRI_CONF_OPT_B(disable_protected_content_check, def, \
                   "Don't reject image import if protected_content attribute doesn't match")
 
+#define DRI_CONF_IGNORE_MAP_UNSYNCHRONIZED(def) \
+   DRI_CONF_OPT_B(ignore_map_unsynchronized, def, \
+                  "Ignore GL_MAP_UNSYNCHRONIZED_BIT, workaround for games that use it incorrectly")
+
 /**
  * \brief Image quality-related options
  */
@@ -387,7 +391,7 @@
                   "Whether to make d3d's presentation mode DISCARD (games usually use that mode) Tear Free. If rendering above screen refresh, some frames will get skipped. false by default.")
 
 #define DRI_CONF_NINE_CSMT(def) \
-   DRI_CONF_OPT_I(csmt_int, def, 0, 0, \
+   DRI_CONF_OPT_I(csmt_force, def, 0, 0, \
                   "If set to 1, force gallium nine CSMT. If set to 0, disable it. By default (-1) CSMT is enabled on known thread-safe drivers.")
 
 #define DRI_CONF_NINE_DYNAMICTEXTUREWORKAROUND(def) \
@@ -397,6 +401,10 @@
 #define DRI_CONF_NINE_SHADERINLINECONSTANTS(def) \
    DRI_CONF_OPT_B(shader_inline_constants, def, \
                   "If set to true, recompile shaders with integer or boolean constants when the values are known. Can cause stutter, but can increase slightly performance.")
+
+#define DRI_CONF_NINE_SHMEM_LIMIT() \
+   DRI_CONF_OPT_I(texture_memory_limit, 512, 0, 0, \
+                  "In MB the limit of virtual memory used for textures until shmem files are unmapped (default 512MB, 32bits only). If negative disables shmem. Set to a low amount to reduce virtual memory usage, but can inccur a small perf hit if too low.")
 
 /**
  * \brief radeonsi specific configuration options
@@ -449,6 +457,10 @@
 #define DRI_CONF_RADV_NO_DYNAMIC_BOUNDS(def) \
    DRI_CONF_OPT_B(radv_no_dynamic_bounds, def, \
                   "Disabling bounds checking for dynamic buffer descriptors")
+
+#define DRI_CONF_RADV_DISABLE_SHRINK_IMAGE_STORE(def) \
+   DRI_CONF_OPT_B(radv_disable_shrink_image_store, def, \
+                  "Disabling shrinking of image stores based on the format")
 
 #define DRI_CONF_RADV_OVERRIDE_UNIFORM_OFFSET_ALIGNMENT(def) \
    DRI_CONF_OPT_I(radv_override_uniform_offset_alignment, def, 0, 128, \

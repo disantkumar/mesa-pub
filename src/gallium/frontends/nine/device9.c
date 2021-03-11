@@ -36,6 +36,7 @@
 #include "volumetexture9.h"
 #include "nine_buffer_upload.h"
 #include "nine_helpers.h"
+#include "nine_memory_helper.h"
 #include "nine_pipe.h"
 #include "nine_ff.h"
 #include "nine_dump.h"
@@ -233,17 +234,16 @@ NineDevice9_ctor( struct NineDevice9 *This,
     if (!This->cso_sw) { return E_OUTOFMEMORY; }
 
     /* Create first, it messes up our state. */
-    This->hud = hud_create(This->context.cso, NULL); /* NULL result is fine */
+    This->hud = hud_create(This->context.cso, NULL, NULL); /* NULL result is fine */
+
+    This->allocator = nine_allocator_create(This, pCTX->memfd_virtualsizelimit);
 
     /* Available memory counter. Updated only for allocations with this device
      * instance. This is the Win 7 behavior.
      * Win XP shares this counter across multiple devices. */
     This->available_texture_mem = This->screen->get_param(This->screen, PIPE_CAP_VIDEO_MEMORY);
     This->available_texture_mem <<= 20;
-#ifdef PIPE_ARCH_X86
-    /* To prevent overflows for 32bits apps - Not sure about this one */
-    This->available_texture_limit = MAX2(This->available_texture_limit, UINT_MAX - (64 << 20));
-#endif
+
     /* We cap texture memory usage to 95% of what is reported free initially
      * This helps get closer Win behaviour. For example VertexBuffer allocation
      * still succeeds when texture allocation fails. */
@@ -602,6 +602,9 @@ NineDevice9_dtor( struct NineDevice9 *This )
     if (This->buffer_upload)
         nine_upload_destroy(This->buffer_upload);
 
+    if (This->allocator)
+        nine_allocator_destroy(This->allocator);
+
     /* Destroy cso first */
     if (This->context.cso) { cso_destroy_context(This->context.cso); }
     if (This->cso_sw) { cso_destroy_context(This->cso_sw); }
@@ -671,7 +674,8 @@ NineDevice9_TestCooperativeLevel( struct NineDevice9 *This )
 UINT NINE_WINAPI
 NineDevice9_GetAvailableTextureMem( struct NineDevice9 *This )
 {
-    return This->available_texture_mem;
+    /* To prevent overflows - Not sure how this should be handled */
+    return (UINT)MIN2(This->available_texture_mem, (long long)(UINT_MAX - (64 << 20))); /* 64 MB margin */
 }
 
 void
@@ -1484,8 +1488,8 @@ NineDevice9_UpdateTexture( struct NineDevice9 *This,
      * That should satisfy the constraints (and instead of crashing for some cases we return D3D_OK)
      */
 
-    last_src_level = (srcb->base.usage & D3DUSAGE_AUTOGENMIPMAP) ? 0 : srcb->base.info.last_level;
-    last_dst_level = (dstb->base.usage & D3DUSAGE_AUTOGENMIPMAP) ? 0 : dstb->base.info.last_level;
+    last_src_level = srcb->level_count-1;
+    last_dst_level = dstb->level_count-1;
 
     for (m = 0; m <= last_src_level; ++m) {
         unsigned w = u_minify(srcb->base.info.width0, m);

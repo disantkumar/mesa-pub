@@ -933,6 +933,7 @@ static int gfx6_compute_level(ADDR_HANDLE addrlib, const struct ac_surf_config *
          surf->htile_size = AddrHtileOut->htileBytes;
          surf->htile_slice_size = AddrHtileOut->sliceSize;
          surf->htile_alignment = AddrHtileOut->baseAlign;
+         surf->num_htile_levels = level + 1;
       }
    }
 
@@ -1566,6 +1567,23 @@ static int gfx9_get_preferred_swizzle_mode(ADDR_HANDLE addrlib, struct radeon_su
          sin.preferredSwSet.sw_R = 1;
    }
 
+   if (in->resourceType == ADDR_RSRC_TEX_3D && in->numSlices > 1) {
+      /* 3D textures should use S swizzle modes for the best performance.
+       * THe only exception is 3D render targets, which prefer 64KB_D_X.
+       *
+       * 3D texture sampler performance with a very large 3D texture:
+       *   ADDR_SW_64KB_R_X = 19 FPS (DCC on), 26 FPS (DCC off)
+       *   ADDR_SW_64KB_Z_X = 25 FPS
+       *   ADDR_SW_64KB_D_X = 53 FPS
+       *   ADDR_SW_4KB_S    = 53 FPS
+       *   ADDR_SW_64KB_S   = 53 FPS
+       *   ADDR_SW_64KB_S_T = 61 FPS
+       *   ADDR_SW_4KB_S_X  = 63 FPS
+       *   ADDR_SW_64KB_S_X = 62 FPS
+       */
+      sin.preferredSwSet.sw_S = 1;
+   }
+
    ret = Addr2GetPreferredSurfaceSetting(addrlib, &sin, &sout);
    if (ret != ADDR_OK)
       return ret;
@@ -1754,9 +1772,11 @@ static int gfx9_compute_miptree(struct ac_addrlib *addrlib, const struct radeon_
       /* HTILE */
       ADDR2_COMPUTE_HTILE_INFO_INPUT hin = {0};
       ADDR2_COMPUTE_HTILE_INFO_OUTPUT hout = {0};
+      ADDR2_META_MIP_INFO meta_mip_info[RADEON_SURF_MAX_LEVELS] = {0};
 
       hin.size = sizeof(ADDR2_COMPUTE_HTILE_INFO_INPUT);
       hout.size = sizeof(ADDR2_COMPUTE_HTILE_INFO_OUTPUT);
+      hout.pMipInfo = meta_mip_info;
 
       assert(in->flags.metaPipeUnaligned == 0);
       assert(in->flags.metaRbUnaligned == 0);
@@ -1778,6 +1798,24 @@ static int gfx9_compute_miptree(struct ac_addrlib *addrlib, const struct radeon_
       surf->htile_size = hout.htileBytes;
       surf->htile_slice_size = hout.sliceSize;
       surf->htile_alignment = hout.baseAlign;
+      surf->num_htile_levels = in->numMipLevels;
+
+      for (unsigned i = 0; i < in->numMipLevels; i++) {
+         surf->u.gfx9.htile_levels[i].offset = meta_mip_info[i].offset;
+         surf->u.gfx9.htile_levels[i].size = meta_mip_info[i].sliceSize;
+
+         if (meta_mip_info[i].inMiptail) {
+            /* GFX10 can only compress the first level
+             * in the mip tail.
+             */
+            surf->num_htile_levels = i + 1;
+            break;
+         }
+      }
+
+      if (!surf->num_htile_levels)
+         surf->htile_size = 0;
+
       return 0;
    }
 
@@ -2437,7 +2475,7 @@ int ac_compute_surface(struct ac_addrlib *addrlib, const struct radeon_info *inf
    if (r)
       return r;
 
-   if (info->chip_class >= GFX9)
+   if (info->family_id >= FAMILY_AI)
       r = gfx9_compute_surface(addrlib, info, config, mode, surf);
    else
       r = gfx6_compute_surface(addrlib->handle, info, config, mode, surf);
@@ -2657,9 +2695,9 @@ static uint32_t ac_get_umd_metadata_word1(const struct radeon_info *info)
 /* This should be called after ac_compute_surface. */
 bool ac_surface_set_umd_metadata(const struct radeon_info *info, struct radeon_surf *surf,
                                  unsigned num_storage_samples, unsigned num_mipmap_levels,
-                                 unsigned size_metadata, uint32_t metadata[64])
+                                 unsigned size_metadata, const uint32_t metadata[64])
 {
-   uint32_t *desc = &metadata[2];
+   const uint32_t *desc = &metadata[2];
    uint64_t offset;
 
    if (surf->modifier != DRM_FORMAT_MOD_INVALID)
@@ -2951,6 +2989,28 @@ uint64_t ac_surface_get_plane_stride(enum chip_class chip_class,
    default:
       unreachable("Invalid plane index");
    }
+}
+
+uint64_t ac_surface_get_plane_size(const struct radeon_surf *surf,
+                                   unsigned plane)
+{
+   switch (plane) {
+   case 0:
+      return surf->surf_size;
+   case 1:
+      return surf->display_dcc_offset ?
+             surf->u.gfx9.display_dcc_size : surf->dcc_size;
+   case 2:
+      return surf->dcc_size;
+   default:
+      unreachable("Invalid plane index");
+   }
+}
+
+uint32_t ac_surface_get_retile_map_size(const struct radeon_surf *surf)
+{
+   return surf->u.gfx9.dcc_retile_num_elements *
+          (surf->u.gfx9.dcc_retile_use_uint16 ? 2 : 4);
 }
 
 void ac_surface_print_info(FILE *out, const struct radeon_info *info,

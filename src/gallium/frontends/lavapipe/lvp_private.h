@@ -26,8 +26,6 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
-#include <strings.h>
-#include <pthread.h>
 #include <assert.h>
 #include <stdint.h>
 
@@ -50,9 +48,10 @@ typedef uint32_t xcb_window_t;
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_icd.h>
 
-#include "lvp_extensions.h"
 #include "lvp_entrypoints.h"
-#include "vk_object.h"
+#include "vk_device.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 
 #include "wsi_common.h"
 
@@ -65,7 +64,11 @@ extern "C" {
 #define MAX_PUSH_CONSTANTS_SIZE 128
 #define MAX_PUSH_DESCRIPTORS 32
 
+#ifdef _WIN32
+#define lvp_printflike(a, b)
+#else
 #define lvp_printflike(a, b) __attribute__((__format__(__printf__, a, b)))
+#endif
 
 int lvp_get_instance_entrypoint_index(const char *name);
 int lvp_get_device_entrypoint_index(const char *name);
@@ -76,14 +79,12 @@ const char *lvp_get_physical_device_entry_name(int index);
 const char *lvp_get_device_entry_name(int index);
 
 bool lvp_instance_entrypoint_is_enabled(int index, uint32_t core_version,
-                                         const struct lvp_instance_extension_table *instance);
+                                         const struct vk_instance_extension_table *instance);
 bool lvp_physical_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                                const struct lvp_instance_extension_table *instance);
+                                                const struct vk_instance_extension_table *instance);
 bool lvp_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                       const struct lvp_instance_extension_table *instance,
-                                       const struct lvp_device_extension_table *device);
-
-void *lvp_lookup_entrypoint(const char *name);
+                                       const struct vk_instance_extension_table *instance,
+                                       const struct vk_device_extension_table *device);
 
 #define LVP_DEFINE_HANDLE_CASTS(__lvp_type, __VkType)                      \
                                                                            \
@@ -198,25 +199,21 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 #define lvp_foreach_stage(stage, stage_bits)                         \
    for (gl_shader_stage stage,                                       \
         __tmp = (gl_shader_stage)((stage_bits) & LVP_STAGE_MASK);    \
-        stage = __builtin_ffs(__tmp) - 1, __tmp;                     \
+        stage = ffs(__tmp) - 1, __tmp;                     \
         __tmp &= ~(1 << (stage)))
 
 struct lvp_physical_device {
-   VK_LOADER_DATA                              _loader_data;
-   struct lvp_instance *                       instance;
+   struct vk_physical_device vk;
 
    struct pipe_loader_device *pld;
    struct pipe_screen *pscreen;
    uint32_t max_images;
 
    struct wsi_device                       wsi_device;
-   struct lvp_device_extension_table supported_extensions;
 };
 
 struct lvp_instance {
-   struct vk_object_base base;
-
-   VkAllocationCallbacks alloc;
+   struct vk_instance vk;
 
    uint32_t apiVersion;
    int physicalDeviceCount;
@@ -226,18 +223,11 @@ struct lvp_instance {
 
    struct pipe_loader_device *devs;
    int num_devices;
-
-   struct lvp_instance_extension_table enabled_extensions;
-   struct lvp_instance_dispatch_table dispatch;
-   struct lvp_physical_device_dispatch_table physical_device_dispatch;
-   struct lvp_device_dispatch_table device_dispatch;
 };
 
 VkResult lvp_init_wsi(struct lvp_physical_device *physical_device);
 void lvp_finish_wsi(struct lvp_physical_device *physical_device);
 
-bool lvp_instance_extension_supported(const char *name);
-uint32_t lvp_physical_device_api_version(struct lvp_physical_device *dev);
 bool lvp_physical_device_extension_supported(struct lvp_physical_device *dev,
                                               const char *name);
 
@@ -251,7 +241,7 @@ struct lvp_queue {
    mtx_t m;
    cnd_t new_work;
    struct list_head workqueue;
-   uint32_t count;
+   volatile int count;
 };
 
 struct lvp_queue_work {
@@ -276,8 +266,6 @@ struct lvp_device {
    struct pipe_screen *pscreen;
 
    mtx_t fence_lock;
-   struct lvp_device_extension_table enabled_extensions;
-   struct lvp_device_dispatch_table dispatch;
 };
 
 void lvp_device_get_cache_uuid(void *uuid);
@@ -427,6 +415,11 @@ struct lvp_descriptor_set_binding_layout {
 
 struct lvp_descriptor_set_layout {
    struct vk_object_base base;
+
+   const VkAllocationCallbacks *alloc;
+   /* Descriptor set layouts can be destroyed at almost any time */
+   uint32_t ref_cnt;
+
    /* Number of bindings in this descriptor set */
    uint16_t binding_count;
 
@@ -451,6 +444,25 @@ struct lvp_descriptor_set_layout {
    struct lvp_descriptor_set_binding_layout binding[0];
 };
 
+void lvp_descriptor_set_layout_destroy(struct lvp_device *device,
+                                       struct lvp_descriptor_set_layout *layout);
+
+static inline void
+lvp_descriptor_set_layout_ref(struct lvp_descriptor_set_layout *layout)
+{
+   assert(layout && layout->ref_cnt >= 1);
+   p_atomic_inc(&layout->ref_cnt);
+}
+
+static inline void
+lvp_descriptor_set_layout_unref(struct lvp_device *device,
+                                struct lvp_descriptor_set_layout *layout)
+{
+   assert(layout && layout->ref_cnt >= 1);
+   if (p_atomic_dec_zero(&layout->ref_cnt))
+      lvp_descriptor_set_layout_destroy(device, layout);
+}
+
 union lvp_descriptor_info {
    struct {
       struct lvp_sampler *sampler;
@@ -473,7 +485,7 @@ struct lvp_descriptor {
 
 struct lvp_descriptor_set {
    struct vk_object_base base;
-   const struct lvp_descriptor_set_layout *layout;
+   struct lvp_descriptor_set_layout *layout;
    struct list_head link;
    struct lvp_descriptor descriptors[0];
 };
@@ -499,7 +511,7 @@ struct lvp_descriptor_update_template {
 
 VkResult
 lvp_descriptor_set_create(struct lvp_device *device,
-                          const struct lvp_descriptor_set_layout *layout,
+                          struct lvp_descriptor_set_layout *layout,
                           struct lvp_descriptor_set **out_set);
 
 void
@@ -664,6 +676,17 @@ enum lvp_cmds {
    LVP_CMD_BEGIN_TRANSFORM_FEEDBACK,
    LVP_CMD_END_TRANSFORM_FEEDBACK,
    LVP_CMD_DRAW_INDIRECT_BYTE_COUNT,
+   LVP_CMD_BEGIN_CONDITIONAL_RENDERING,
+   LVP_CMD_END_CONDITIONAL_RENDERING,
+   LVP_CMD_SET_CULL_MODE,
+   LVP_CMD_SET_FRONT_FACE,
+   LVP_CMD_SET_PRIMITIVE_TOPOLOGY,
+   LVP_CMD_SET_DEPTH_TEST_ENABLE,
+   LVP_CMD_SET_DEPTH_WRITE_ENABLE,
+   LVP_CMD_SET_DEPTH_COMPARE_OP,
+   LVP_CMD_SET_DEPTH_BOUNDS_TEST_ENABLE,
+   LVP_CMD_SET_STENCIL_TEST_ENABLE,
+   LVP_CMD_SET_STENCIL_OP,
 };
 
 struct lvp_cmd_bind_pipeline {
@@ -709,7 +732,7 @@ struct lvp_cmd_set_stencil_vals {
 
 struct lvp_cmd_bind_descriptor_sets {
    VkPipelineBindPoint bind_point;
-   struct lvp_pipeline_layout *layout;
+   struct lvp_descriptor_set_layout *set_layout[MAX_SETS];
    uint32_t first;
    uint32_t count;
    struct lvp_descriptor_set **sets;
@@ -728,6 +751,8 @@ struct lvp_cmd_bind_vertex_buffers {
    uint32_t binding_count;
    struct lvp_buffer **buffers;
    const VkDeviceSize *offsets;
+   const VkDeviceSize *sizes;
+   const VkDeviceSize *strides;
 };
 
 struct lvp_cmd_draw {
@@ -987,6 +1012,52 @@ struct lvp_cmd_draw_indirect_byte_count {
    uint32_t vertex_stride;
 };
 
+struct lvp_cmd_begin_conditional_rendering {
+   struct lvp_buffer *buffer;
+   VkDeviceSize offset;
+   bool inverted;
+};
+
+struct lvp_cmd_set_cull_mode {
+   VkCullModeFlags cull_mode;
+};
+
+struct lvp_cmd_set_front_face {
+   VkFrontFace front_face;
+};
+
+struct lvp_cmd_set_primitive_topology {
+   VkPrimitiveTopology prim;
+};
+
+struct lvp_cmd_set_depth_test_enable {
+   VkBool32 depth_test_enable;
+};
+
+struct lvp_cmd_set_depth_write_enable {
+   VkBool32 depth_write_enable;
+};
+
+struct lvp_cmd_set_depth_bounds_test_enable {
+   VkBool32 depth_bounds_test_enable;
+};
+
+struct lvp_cmd_set_depth_compare_op {
+   VkCompareOp depth_op;
+};
+
+struct lvp_cmd_set_stencil_test_enable {
+   VkBool32 stencil_test_enable;
+};
+
+struct lvp_cmd_set_stencil_op {
+   VkStencilFaceFlags face_mask;
+   VkStencilOp fail_op;
+   VkStencilOp pass_op;
+   VkStencilOp depth_fail_op;
+   VkCompareOp compare_op;
+};
+
 struct lvp_cmd_buffer_entry {
    struct list_head cmd_link;
    uint32_t cmd_type;
@@ -1033,6 +1104,16 @@ struct lvp_cmd_buffer_entry {
       struct lvp_cmd_begin_transform_feedback begin_transform_feedback;
       struct lvp_cmd_end_transform_feedback end_transform_feedback;
       struct lvp_cmd_draw_indirect_byte_count draw_indirect_byte_count;
+      struct lvp_cmd_begin_conditional_rendering begin_conditional_rendering;
+      struct lvp_cmd_set_cull_mode set_cull_mode;
+      struct lvp_cmd_set_front_face set_front_face;
+      struct lvp_cmd_set_primitive_topology set_primitive_topology;
+      struct lvp_cmd_set_depth_test_enable set_depth_test_enable;
+      struct lvp_cmd_set_depth_write_enable set_depth_write_enable;
+      struct lvp_cmd_set_depth_compare_op set_depth_compare_op;
+      struct lvp_cmd_set_depth_bounds_test_enable set_depth_bounds_test_enable;
+      struct lvp_cmd_set_stencil_test_enable set_stencil_test_enable;
+      struct lvp_cmd_set_stencil_op set_stencil_op;
    } u;
 };
 

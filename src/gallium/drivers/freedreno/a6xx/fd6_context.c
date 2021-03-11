@@ -43,6 +43,7 @@
 
 static void
 fd6_context_destroy(struct pipe_context *pctx)
+	in_dt
 {
 	struct fd6_context *fd6_ctx = fd6_context(fd_context(pctx));
 
@@ -127,6 +128,7 @@ fd6_vertex_state_delete(struct pipe_context *pctx, void *hwcso)
 
 struct pipe_context *
 fd6_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
+	disable_thread_safety_analysis
 {
 	struct fd_screen *screen = fd_screen(pscreen);
 	struct fd6_context *fd6_ctx = CALLOC_STRUCT(fd6_context);
@@ -140,6 +142,7 @@ fd6_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
 	fd6_ctx->base.dev = fd_device_ref(screen->dev);
 	fd6_ctx->base.screen = fd_screen(pscreen);
+	fd6_ctx->base.last.key = &fd6_ctx->last_key;
 
 	pctx->destroy = fd6_context_destroy;
 	pctx->create_blend_state = fd6_blend_state_create;
@@ -189,7 +192,7 @@ fd6_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 	fd6_blitter_init(pctx);
 
 	fd6_ctx->border_color_uploader = u_upload_create(pctx, 4096, 0,
-                                                         PIPE_USAGE_STREAM, 0);
+			PIPE_USAGE_STREAM, 0);
 
-	return pctx;
+	return fd_context_init_tc(pctx, flags);
 }

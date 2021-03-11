@@ -72,9 +72,9 @@ brw_nir_lower_uniforms(nir_shader *nir, bool is_scalar)
    }
 }
 
-static struct gl_program *brwNewProgram(struct gl_context *ctx,
-                                        gl_shader_stage stage,
-                                        GLuint id, bool is_arb_asm);
+static struct gl_program *brw_new_program(struct gl_context *ctx,
+                                          gl_shader_stage stage,
+                                          GLuint id, bool is_arb_asm);
 
 nir_shader *
 brw_create_nir(struct brw_context *brw,
@@ -129,7 +129,7 @@ brw_create_nir(struct brw_context *brw,
    if (stage == MESA_SHADER_TESS_CTRL) {
       /* Lower gl_PatchVerticesIn from a sys. value to a uniform on Gen8+. */
       static const gl_state_index16 tokens[STATE_LENGTH] =
-         { STATE_INTERNAL, STATE_TCS_PATCH_VERTICES_IN };
+         { STATE_TCS_PATCH_VERTICES_IN };
       nir_lower_patch_vertices(nir, 0, devinfo->gen >= 8 ? tokens : NULL);
    }
 
@@ -142,13 +142,13 @@ brw_create_nir(struct brw_context *brw,
       uint32_t static_patch_vertices =
          tcs ? tcs->Program->nir->info.tess.tcs_vertices_out : 0;
       static const gl_state_index16 tokens[STATE_LENGTH] =
-         { STATE_INTERNAL, STATE_TES_PATCH_VERTICES_IN };
+         { STATE_TES_PATCH_VERTICES_IN };
       nir_lower_patch_vertices(nir, static_patch_vertices, tokens);
    }
 
    if (stage == MESA_SHADER_FRAGMENT) {
       static const struct nir_lower_wpos_ytransform_options wpos_options = {
-         .state_tokens = {STATE_INTERNAL, STATE_FB_WPOS_Y_TRANSFORM, 0, 0},
+         .state_tokens = {STATE_FB_WPOS_Y_TRANSFORM, 0, 0},
          .fs_coord_pixel_center_integer = 1,
          .fs_coord_origin_upper_left = 1,
       };
@@ -183,8 +183,8 @@ brw_nir_lower_resources(nir_shader *nir, struct gl_shader_program *shader_prog,
 {
    NIR_PASS_V(nir, brw_nir_lower_uniforms, nir->options->lower_to_scalar);
    NIR_PASS_V(prog->nir, gl_nir_lower_samplers, shader_prog);
-   prog->info.textures_used = prog->nir->info.textures_used;
-   prog->info.textures_used_by_txf = prog->nir->info.textures_used_by_txf;
+   BITSET_COPY(prog->info.textures_used, prog->nir->info.textures_used);
+   BITSET_COPY(prog->info.textures_used_by_txf, prog->nir->info.textures_used_by_txf);
 
    NIR_PASS_V(prog->nir, brw_nir_lower_image_load_store, devinfo, NULL);
 
@@ -215,14 +215,15 @@ brw_shader_gather_info(nir_shader *nir, struct gl_program *prog)
 }
 
 static unsigned
-get_new_program_id(struct intel_screen *screen)
+get_new_program_id(struct brw_screen *screen)
 {
    return p_atomic_inc_return(&screen->program_id);
 }
 
-static struct gl_program *brwNewProgram(struct gl_context *ctx,
-                                        gl_shader_stage stage,
-                                        GLuint id, bool is_arb_asm)
+static struct gl_program *
+brw_new_program(struct gl_context *ctx,
+                gl_shader_stage stage,
+                GLuint id, bool is_arb_asm)
 {
    struct brw_context *brw = brw_context(ctx);
    struct brw_program *prog = rzalloc(NULL, struct brw_program);
@@ -236,8 +237,8 @@ static struct gl_program *brwNewProgram(struct gl_context *ctx,
    return NULL;
 }
 
-static void brwDeleteProgram( struct gl_context *ctx,
-			      struct gl_program *prog )
+static void
+brw_delete_program(struct gl_context *ctx, struct gl_program *prog)
 {
    struct brw_context *brw = brw_context(ctx);
 
@@ -274,9 +275,9 @@ static void brwDeleteProgram( struct gl_context *ctx,
 
 
 static GLboolean
-brwProgramStringNotify(struct gl_context *ctx,
-		       GLenum target,
-		       struct gl_program *prog)
+brw_program_string_notify(struct gl_context *ctx,
+                          GLenum target,
+                          struct gl_program *prog)
 {
    assert(target == GL_VERTEX_PROGRAM_ARB || !prog->arb.IsPositionInvariant);
 
@@ -290,7 +291,7 @@ brwProgramStringNotify(struct gl_context *ctx,
          brw_program_const(brw->programs[MESA_SHADER_FRAGMENT]);
 
       if (newFP == curFP)
-	 brw->ctx.NewDriverState |= BRW_NEW_FRAGMENT_PROGRAM;
+         brw->ctx.NewDriverState |= BRW_NEW_FRAGMENT_PROGRAM;
       _mesa_program_fragment_position_to_sysval(&newFP->program);
       newFP->id = get_new_program_id(brw->screen);
 
@@ -309,9 +310,9 @@ brwProgramStringNotify(struct gl_context *ctx,
          brw_program_const(brw->programs[MESA_SHADER_VERTEX]);
 
       if (newVP == curVP)
-	 brw->ctx.NewDriverState |= BRW_NEW_VERTEX_PROGRAM;
+         brw->ctx.NewDriverState |= BRW_NEW_VERTEX_PROGRAM;
       if (newVP->program.arb.IsPositionInvariant) {
-	 _mesa_insert_mvp_code(ctx, &newVP->program);
+         _mesa_insert_mvp_code(ctx, &newVP->program);
       }
       newVP->id = get_new_program_id(brw->screen);
 
@@ -403,7 +404,7 @@ brw_framebuffer_fetch_barrier(struct gl_context *ctx)
 
 void
 brw_get_scratch_bo(struct brw_context *brw,
-		   struct brw_bo **scratch_bo, int size)
+                   struct brw_bo **scratch_bo, int size)
 {
    struct brw_bo *old_bo = *scratch_bo;
 
@@ -529,13 +530,14 @@ brw_alloc_stage_scratch(struct brw_context *brw,
                    per_thread_size * thread_count, BRW_MEMZONE_SCRATCH);
 }
 
-void brwInitFragProgFuncs( struct dd_function_table *functions )
+void
+brw_init_frag_prog_functions(struct dd_function_table *functions)
 {
    assert(functions->ProgramStringNotify == _tnl_program_string);
 
-   functions->NewProgram = brwNewProgram;
-   functions->DeleteProgram = brwDeleteProgram;
-   functions->ProgramStringNotify = brwProgramStringNotify;
+   functions->NewProgram = brw_new_program;
+   functions->DeleteProgram = brw_delete_program;
+   functions->ProgramStringNotify = brw_program_string_notify;
 
    functions->LinkShader = brw_link_shader;
 

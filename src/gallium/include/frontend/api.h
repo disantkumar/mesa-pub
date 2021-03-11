@@ -147,6 +147,15 @@ enum st_attachment_type {
 #define ST_FLUSH_FENCE_FD                 (1 << 3)
 
 /**
+ * State invalidation flags to notify frontends that states have been changed
+ * behind their back.
+ */
+#define ST_INVALIDATE_FS_SAMPLER_VIEWS    (1 << 0)
+#define ST_INVALIDATE_FS_CONSTBUF0        (1 << 1)
+#define ST_INVALIDATE_VS_CONSTBUF0        (1 << 2)
+#define ST_INVALIDATE_VERTEX_BUFFERS      (1 << 3)
+
+/**
  * Value to st_manager->get_param function.
  */
 enum st_manager_param {
@@ -233,6 +242,7 @@ struct st_config_options
    bool allow_glsl_cross_stage_interpolation_mismatch;
    bool allow_draw_out_of_order;
    bool allow_incorrect_primitive_id;
+   bool ignore_map_unsynchronized;
    bool force_integer_tex_nearest;
    bool force_gl_names_reuse;
    char *force_gl_vendor;
@@ -430,6 +440,12 @@ struct st_context_iface
     * Called from the main thread.
     */
    void (*thread_finish)(struct st_context_iface *stctxi);
+
+   /**
+    * Invalidate states to notify the frontend that states have been changed
+    * behind its back.
+    */
+   void (*invalidate_state)(struct st_context_iface *stctxi, unsigned flags);
 };
 
 

@@ -826,7 +826,8 @@ wrap_type_in_array(const struct glsl_type *type,
 }
 
 static bool
-vtn_type_needs_explicit_layout(struct vtn_builder *b, enum vtn_variable_mode mode)
+vtn_type_needs_explicit_layout(struct vtn_builder *b, struct vtn_type *type,
+                               enum vtn_variable_mode mode)
 {
    /* For OpenCL we never want to strip the info from the types, and it makes
     * type comparisons easier in later stages.
@@ -848,6 +849,9 @@ vtn_type_needs_explicit_layout(struct vtn_builder *b, enum vtn_variable_mode mod
    case vtn_variable_mode_push_constant:
    case vtn_variable_mode_shader_record:
       return true;
+
+   case vtn_variable_mode_workgroup:
+      return b->options->caps.workgroup_memory_explicit_layout;
 
    default:
       return false;
@@ -922,7 +926,7 @@ vtn_type_get_nir_type(struct vtn_builder *b, struct vtn_type *type,
     * to allow SPIR-V generators perform type deduplication.  Discard
     * unnecessary ones when passing to NIR.
     */
-   if (!vtn_type_needs_explicit_layout(b, mode))
+   if (!vtn_type_needs_explicit_layout(b, type, mode))
       return glsl_get_bare_type(type->type);
 
    return type->type;
@@ -1575,16 +1579,20 @@ vtn_handle_type(struct vtn_builder *b, SpvOp opcode,
 
          val->type->deref = deref_type;
 
-         /* Only certain storage classes use ArrayStride.  The others (in
-          * particular Workgroup) are expected to be laid out by the driver.
-          */
+         /* Only certain storage classes use ArrayStride. */
          switch (storage_class) {
+         case SpvStorageClassWorkgroup:
+            if (!b->options->caps.workgroup_memory_explicit_layout)
+               break;
+            FALLTHROUGH;
+
          case SpvStorageClassUniform:
          case SpvStorageClassPushConstant:
          case SpvStorageClassStorageBuffer:
          case SpvStorageClassPhysicalStorageBuffer:
             vtn_foreach_decoration(b, val, array_stride_decoration_cb, NULL);
             break;
+
          default:
             /* Nothing to do. */
             break;
@@ -2159,6 +2167,7 @@ vtn_handle_constant(struct vtn_builder *b, SpvOp opcode,
 
    case SpvOpConstantNull:
       val->constant = vtn_null_constant(b, val->type);
+      val->is_null_constant = true;
       break;
 
    default:
@@ -2613,22 +2622,22 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
    case SpvOpImageQuerySizeLod:
    case SpvOpImageQuerySize:
       texop = nir_texop_txs;
-      dest_type = nir_type_int;
+      dest_type = nir_type_int32;
       break;
 
    case SpvOpImageQueryLod:
       texop = nir_texop_lod;
-      dest_type = nir_type_float;
+      dest_type = nir_type_float32;
       break;
 
    case SpvOpImageQueryLevels:
       texop = nir_texop_query_levels;
-      dest_type = nir_type_int;
+      dest_type = nir_type_int32;
       break;
 
    case SpvOpImageQuerySamples:
       texop = nir_texop_texture_samples;
-      dest_type = nir_type_int;
+      dest_type = nir_type_int32;
       break;
 
    case SpvOpFragmentFetchAMD:
@@ -2637,7 +2646,7 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
 
    case SpvOpFragmentMaskFetchAMD:
       texop = nir_texop_fragment_mask_fetch;
-      dest_type = nir_type_uint;
+      dest_type = nir_type_uint32;
       break;
 
    default:
@@ -2941,14 +2950,7 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
       vtn_fail_if(sampler_base != ret_base && sampler_base != GLSL_TYPE_VOID,
                   "SPIR-V return type mismatches image type. This is only valid "
                   "for untyped images (OpenCL).");
-      switch (ret_base) {
-      case GLSL_TYPE_FLOAT:   dest_type = nir_type_float;   break;
-      case GLSL_TYPE_INT:     dest_type = nir_type_int;     break;
-      case GLSL_TYPE_UINT:    dest_type = nir_type_uint;    break;
-      case GLSL_TYPE_BOOL:    dest_type = nir_type_bool;    break;
-      default:
-         vtn_fail("Invalid base type for sampler result");
-      }
+      dest_type = nir_get_nir_type_for_glsl_base_type(ret_base);
    }
 
    instr->dest_type = dest_type;
@@ -4186,6 +4188,13 @@ vtn_handle_entry_point(struct vtn_builder *b, const uint32_t *w,
 
    vtn_assert(b->entry_point == NULL);
    b->entry_point = entry_point;
+
+   /* Entry points enumerate which global variables are used. */
+   size_t start = 3 + name_words;
+   b->interface_ids_count = count - start;
+   b->interface_ids = ralloc_array(b, uint32_t, b->interface_ids_count);
+   memcpy(b->interface_ids, &w[start], b->interface_ids_count * 4);
+   qsort(b->interface_ids, b->interface_ids_count, 4, cmp_uint32_t);
 }
 
 static bool
@@ -4544,6 +4553,20 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
 
       case SpvCapabilityFragmentShadingRateKHR:
          spv_check_supported(fragment_shading_rate, cap);
+         break;
+
+      case SpvCapabilityWorkgroupMemoryExplicitLayoutKHR:
+         spv_check_supported(workgroup_memory_explicit_layout, cap);
+         break;
+
+      case SpvCapabilityWorkgroupMemoryExplicitLayout8BitAccessKHR:
+         spv_check_supported(workgroup_memory_explicit_layout, cap);
+         spv_check_supported(storage_8bit, cap);
+         break;
+
+      case SpvCapabilityWorkgroupMemoryExplicitLayout16BitAccessKHR:
+         spv_check_supported(workgroup_memory_explicit_layout, cap);
+         spv_check_supported(storage_16bit, cap);
          break;
 
       default:
@@ -5701,8 +5724,10 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
       vtn_err("words[0] was 0x%x, want 0x%x", words[0], SpvMagicNumber);
       goto fail;
    }
-   if (words[1] < 0x10000) {
-      vtn_err("words[1] was 0x%x, want >= 0x10000", words[1]);
+
+   b->version = words[1];
+   if (b->version < 0x10000) {
+      vtn_err("version was 0x%x, want >= 0x10000", b->version);
       goto fail;
    }
 
@@ -5728,7 +5753,7 @@ vtn_create_builder(const uint32_t *words, size_t word_count,
    b->value_id_bound = value_id_bound;
    b->values = rzalloc_array(b, struct vtn_value, value_id_bound);
 
-   if (b->options->environment == NIR_SPIRV_VULKAN)
+   if (b->options->environment == NIR_SPIRV_VULKAN && b->version < 0x10400)
       b->vars_used_indirectly = _mesa_pointer_set_create(b);
 
    return b;
@@ -5741,7 +5766,7 @@ static nir_function *
 vtn_emit_kernel_entry_point_wrapper(struct vtn_builder *b,
                                     nir_function *entry_point)
 {
-   vtn_assert(entry_point == b->entry_point->func->impl->function);
+   vtn_assert(entry_point == b->entry_point->func->nir_func);
    vtn_fail_if(!entry_point->name, "entry points are required to have a name");
    const char *func_name =
       ralloc_asprintf(b->shader, "__wrapped_%s", entry_point->name);
@@ -5934,7 +5959,7 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
 
    if (!options->create_library) {
       vtn_assert(b->entry_point->value_type == vtn_value_type_function);
-      nir_function *entry_point = b->entry_point->func->impl->function;
+      nir_function *entry_point = b->entry_point->func->nir_func;
       vtn_assert(entry_point);
 
       /* post process entry_points with input params */
@@ -5948,32 +5973,66 @@ spirv_to_nir(const uint32_t *words, size_t word_count,
    nir_lower_goto_ifs(b->shader);
 
    /* A SPIR-V module can have multiple shaders stages and also multiple
-    * shaders of the same stage.  Global variables are declared per-module, so
-    * they are all collected when parsing a single shader.  These dead
-    * variables can result in invalid NIR, e.g.
+    * shaders of the same stage.  Global variables are declared per-module.
     *
-    * - TCS outputs must be per-vertex arrays (or decorated 'patch'), while VS
-    *   output variables wouldn't be;
-    * - Two vertex shaders have two different typed blocks associated to the
-    *   same Binding.
-    *
-    * Before cleaning the dead variables, we must lower any constant
-    * initializers on outputs so nir_remove_dead_variables sees that they're
-    * written to.
+    * Starting in SPIR-V 1.4 the list of global variables is part of
+    * OpEntryPoint, so only valid ones will be created.  Previous versions
+    * only have Input and Output variables listed, so remove dead variables to
+    * clean up the remaining ones.
     */
-   nir_lower_variable_initializers(b->shader, nir_var_shader_out |
-                                              nir_var_system_value);
-   const nir_remove_dead_variables_options dead_opts = {
-      .can_remove_var = can_remove,
-      .can_remove_var_data = b->vars_used_indirectly,
-   };
-   nir_remove_dead_variables(b->shader, ~nir_var_function_temp,
-                             b->vars_used_indirectly ? &dead_opts : NULL);
+   if (!options->create_library && b->version < 0x10400) {
+      const nir_remove_dead_variables_options dead_opts = {
+         .can_remove_var = can_remove,
+         .can_remove_var_data = b->vars_used_indirectly,
+      };
+      nir_remove_dead_variables(b->shader, ~(nir_var_function_temp |
+                                             nir_var_shader_out |
+                                             nir_var_shader_in |
+                                             nir_var_system_value),
+                                b->vars_used_indirectly ? &dead_opts : NULL);
+   }
+
+   nir_foreach_variable_in_shader(var, b->shader) {
+      switch (var->data.mode) {
+      case nir_var_mem_ubo:
+         b->shader->info.num_ubos++;
+         break;
+      case nir_var_mem_ssbo:
+         b->shader->info.num_ssbos++;
+         break;
+      case nir_var_mem_push_const:
+         vtn_assert(b->shader->num_uniforms == 0);
+         b->shader->num_uniforms =
+            glsl_get_explicit_size(glsl_without_array(var->type), false);
+         break;
+      }
+   }
 
    /* We sometimes generate bogus derefs that, while never used, give the
     * validator a bit of heartburn.  Run dead code to get rid of them.
     */
    nir_opt_dce(b->shader);
+
+   /* Per SPV_KHR_workgroup_storage_explicit_layout, if one shared variable is
+    * a Block, all of them will be and Blocks are explicitly laid out.
+    */
+   nir_foreach_variable_with_modes(var, b->shader, nir_var_mem_shared) {
+      if (glsl_type_is_interface(var->type)) {
+         assert(b->options->caps.workgroup_memory_explicit_layout);
+         b->shader->info.cs.shared_memory_explicit_layout = true;
+         break;
+      }
+   }
+   if (b->shader->info.cs.shared_memory_explicit_layout) {
+      unsigned size = 0;
+      nir_foreach_variable_with_modes(var, b->shader, nir_var_mem_shared) {
+         assert(glsl_type_is_interface(var->type));
+         const bool align_to_stride = false;
+         size = MAX2(size, glsl_get_explicit_size(var->type, align_to_stride));
+      }
+      b->shader->info.cs.shared_size = size;
+      b->shader->shared_size = size;
+   }
 
    /* Unparent the shader from the vtn_builder before we delete the builder */
    ralloc_steal(NULL, b->shader);

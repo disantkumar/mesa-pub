@@ -416,17 +416,14 @@ wait_imm check_instr(Instruction* instr, wait_ctx& ctx)
             continue;
 
          /* Vector Memory reads and writes return in the order they were issued */
-         bool has_sampler = instr->format == Format::MIMG && !instr->operands[1].isUndefined() && instr->operands[1].regClass() == s4;
+         bool has_sampler = instr->isMIMG() && !instr->operands[1].isUndefined() && instr->operands[1].regClass() == s4;
          if (instr->isVMEM() && ((it->second.events & vm_events) == event_vmem) &&
              it->second.has_vmem_nosampler == !has_sampler && it->second.has_vmem_sampler == has_sampler)
             continue;
 
          /* LDS reads and writes return in the order they were issued. same for GDS */
-         if (instr->format == Format::DS) {
-            bool gds = static_cast<DS_instruction*>(instr)->gds;
-            if ((it->second.events & lgkm_events) == (gds ? event_gds : event_lds))
-               continue;
-         }
+         if (instr->isDS() && (it->second.events & lgkm_events) == (instr->ds().gds ? event_gds : event_lds))
+            continue;
 
          wait.combine(it->second.imm);
       }
@@ -440,10 +437,10 @@ wait_imm parse_wait_instr(wait_ctx& ctx, Instruction *instr)
    if (instr->opcode == aco_opcode::s_waitcnt_vscnt &&
        instr->definitions[0].physReg() == sgpr_null) {
       wait_imm imm;
-      imm.vs = std::min<uint8_t>(imm.vs, static_cast<SOPK_instruction*>(instr)->imm);
+      imm.vs = std::min<uint8_t>(imm.vs, instr->sopk().imm);
       return imm;
    } else if (instr->opcode == aco_opcode::s_waitcnt) {
-      return wait_imm(ctx.chip_class, static_cast<SOPP_instruction*>(instr)->imm);
+      return wait_imm(ctx.chip_class, instr->sopp().imm);
    }
    return wait_imm();
 }
@@ -464,8 +461,8 @@ wait_imm perform_barrier(wait_ctx& ctx, memory_sync_info sync, unsigned semantic
          if (bar_scope_lds <= subgroup_scope)
             events &= ~event_lds;
 
-         /* in non-WGP, the L1/L0 cache keeps all memory operations in-order for the same workgroup */
-         if (ctx.chip_class < GFX10 && sync.scope <= scope_workgroup)
+         /* in non-WGP, the L1 (L0 on GFX10+) cache keeps all memory operations in-order for the same workgroup */
+         if (!ctx.program->wgp_mode && sync.scope <= scope_workgroup)
             events &= ~(event_vmem | event_vmem_store | event_smem);
 
          if (events)
@@ -516,27 +513,23 @@ wait_imm kill(Instruction* instr, wait_ctx& ctx, memory_sync_info sync_info)
       imm.lgkm = 0;
    }
 
-   if (ctx.chip_class >= GFX10 && instr->format == Format::SMEM) {
+   if (ctx.chip_class >= GFX10 && instr->isSMEM()) {
       /* GFX10: A store followed by a load at the same address causes a problem because
        * the load doesn't load the correct values unless we wait for the store first.
        * This is NOT mitigated by an s_nop.
        *
        * TODO: Refine this when we have proper alias analysis.
        */
-      SMEM_instruction *smem = static_cast<SMEM_instruction *>(instr);
       if (ctx.pending_s_buffer_store &&
-          !smem->definitions.empty() &&
-          !smem->sync.can_reorder()) {
+          !instr->smem().definitions.empty() &&
+          !instr->smem().sync.can_reorder()) {
          imm.lgkm = 0;
       }
    }
 
-   if (ctx.program->early_rast &&
-       instr->opcode == aco_opcode::exp) {
-
-      Export_instruction *exp = static_cast<Export_instruction *>(instr);
-      if (exp->dest >= V_008DFC_SQ_EXP_POS &&
-          exp->dest < V_008DFC_SQ_EXP_PRIM) {
+   if (ctx.program->early_rast && instr->opcode == aco_opcode::exp) {
+      if (instr->exp().dest >= V_008DFC_SQ_EXP_POS &&
+          instr->exp().dest < V_008DFC_SQ_EXP_PRIM) {
 
          /* With early_rast, the HW will start clipping and rasterization after the 1st DONE pos export.
           * Wait for all stores (and atomics) to complete, so PS can read them.
@@ -550,7 +543,7 @@ wait_imm kill(Instruction* instr, wait_ctx& ctx, memory_sync_info sync_info)
    }
 
    if (instr->opcode == aco_opcode::p_barrier)
-      imm.combine(perform_barrier(ctx, static_cast<Pseudo_barrier_instruction *>(instr)->sync, semantic_acqrel));
+      imm.combine(perform_barrier(ctx, instr->barrier().sync, semantic_acqrel));
    else
       imm.combine(perform_barrier(ctx, sync_info, semantic_release));
 
@@ -767,12 +760,12 @@ void gen(Instruction* instr, wait_ctx& ctx)
 {
    switch (instr->format) {
    case Format::EXP: {
-      Export_instruction* exp_instr = static_cast<Export_instruction*>(instr);
+      Export_instruction& exp_instr = instr->exp();
 
       wait_event ev;
-      if (exp_instr->dest <= 9)
+      if (exp_instr.dest <= 9)
          ev = event_exp_mrt_null;
-      else if (exp_instr->dest <= 15)
+      else if (exp_instr.dest <= 15)
          ev = event_exp_pos;
       else
          ev = event_exp_param;
@@ -781,10 +774,10 @@ void gen(Instruction* instr, wait_ctx& ctx)
       /* insert new entries for exported vgprs */
       for (unsigned i = 0; i < 4; i++)
       {
-         if (exp_instr->enabled_mask & (1 << i)) {
-            unsigned idx = exp_instr->compressed ? i >> 1 : i;
-            assert(idx < exp_instr->operands.size());
-            insert_wait_entry(ctx, exp_instr->operands[idx], ev);
+         if (exp_instr.enabled_mask & (1 << i)) {
+            unsigned idx = exp_instr.compressed ? i >> 1 : i;
+            assert(idx < exp_instr.operands.size());
+            insert_wait_entry(ctx, exp_instr.operands[idx], ev);
 
          }
       }
@@ -792,38 +785,38 @@ void gen(Instruction* instr, wait_ctx& ctx)
       break;
    }
    case Format::FLAT: {
-      FLAT_instruction *flat = static_cast<FLAT_instruction*>(instr);
+      FLAT_instruction& flat = instr->flat();
       if (ctx.chip_class < GFX10 && !instr->definitions.empty())
-         update_counters_for_flat_load(ctx, flat->sync);
+         update_counters_for_flat_load(ctx, flat.sync);
       else
-         update_counters(ctx, event_flat, flat->sync);
+         update_counters(ctx, event_flat, flat.sync);
 
       if (!instr->definitions.empty())
          insert_wait_entry(ctx, instr->definitions[0], event_flat);
       break;
    }
    case Format::SMEM: {
-      SMEM_instruction *smem = static_cast<SMEM_instruction*>(instr);
-      update_counters(ctx, event_smem, smem->sync);
+      SMEM_instruction& smem = instr->smem();
+      update_counters(ctx, event_smem, smem.sync);
 
       if (!instr->definitions.empty())
          insert_wait_entry(ctx, instr->definitions[0], event_smem);
       else if (ctx.chip_class >= GFX10 &&
-               !smem->sync.can_reorder())
+               !smem.sync.can_reorder())
          ctx.pending_s_buffer_store = true;
 
       break;
    }
    case Format::DS: {
-      DS_instruction *ds = static_cast<DS_instruction*>(instr);
-      update_counters(ctx, ds->gds ? event_gds : event_lds, ds->sync);
-      if (ds->gds)
+      DS_instruction& ds = instr->ds();
+      update_counters(ctx, ds.gds ? event_gds : event_lds, ds.sync);
+      if (ds.gds)
          update_counters(ctx, event_gds_gpr_lock);
 
       if (!instr->definitions.empty())
-         insert_wait_entry(ctx, instr->definitions[0], ds->gds ? event_gds : event_lds);
+         insert_wait_entry(ctx, instr->definitions[0], ds.gds ? event_gds : event_lds);
 
-      if (ds->gds) {
+      if (ds.gds) {
          for (const Operand& op : instr->operands)
             insert_wait_entry(ctx, op, event_gds_gpr_lock);
          insert_wait_entry(ctx, exec, s2, event_gds_gpr_lock, false);
@@ -837,7 +830,7 @@ void gen(Instruction* instr, wait_ctx& ctx)
       wait_event ev = !instr->definitions.empty() || ctx.chip_class < GFX10 ? event_vmem : event_vmem_store;
       update_counters(ctx, ev, get_sync_info(instr));
 
-      bool has_sampler = instr->format == Format::MIMG && !instr->operands[1].isUndefined() && instr->operands[1].regClass() == s4;
+      bool has_sampler = instr->isMIMG() && !instr->operands[1].isUndefined() && instr->operands[1].regClass() == s4;
 
       if (!instr->definitions.empty())
          insert_wait_entry(ctx, instr->definitions[0], ev, has_sampler);
@@ -849,11 +842,11 @@ void gen(Instruction* instr, wait_ctx& ctx)
          update_counters(ctx, event_vmem_gpr_lock);
          insert_wait_entry(ctx, instr->operands[3], event_vmem_gpr_lock);
       } else if (ctx.chip_class == GFX6 &&
-                 instr->format == Format::MIMG &&
-                 instr->operands.size() >= 4) {
+                 instr->isMIMG() &&
+                 !instr->operands[2].isUndefined()) {
          ctx.exp_cnt++;
          update_counters(ctx, event_vmem_gpr_lock);
-         insert_wait_entry(ctx, instr->operands[3], event_vmem_gpr_lock);
+         insert_wait_entry(ctx, instr->operands[2], event_vmem_gpr_lock);
       }
 
       break;

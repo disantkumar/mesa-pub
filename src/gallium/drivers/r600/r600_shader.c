@@ -179,8 +179,8 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 		pipe_shader_type_from_mesa(sel->nir->info.stage);
 	
 	bool dump = r600_can_dump_shader(&rctx->screen->b, processor);
-	unsigned use_sb = !(rctx->screen->b.debug_flags & DBG_NO_SB) &&
-		!(rscreen->b.debug_flags & DBG_NIR);
+	unsigned use_sb = !(rctx->screen->b.debug_flags & DBG_NO_SB) /*&&
+		!(rscreen->b.debug_flags & DBG_NIR)*/;
 	unsigned sb_disasm;
 	unsigned export_shader;
 	
@@ -1702,7 +1702,7 @@ static void tgsi_src(struct r600_shader_ctx *ctx,
 			(tgsi_src->Register.SwizzleX == tgsi_src->Register.SwizzleW)) {
 
 			index = tgsi_src->Register.Index * 4 + tgsi_src->Register.SwizzleX;
-			r600_bytecode_special_constants(ctx->literals[index], &r600_src->sel, &r600_src->neg, r600_src->abs);
+			r600_bytecode_special_constants(ctx->literals[index], &r600_src->sel);
 			if (r600_src->sel != V_SQ_ALU_SRC_LITERAL)
 				return;
 		}

@@ -49,19 +49,19 @@
 
 static bool
 do_blit_drawpixels(struct gl_context * ctx,
-		   GLint x, GLint y, GLsizei width, GLsizei height,
-		   GLenum format, GLenum type,
-		   const struct gl_pixelstore_attrib *unpack,
-		   const GLvoid * pixels)
+                   GLint x, GLint y, GLsizei width, GLsizei height,
+                   GLenum format, GLenum type,
+                   const struct gl_pixelstore_attrib *unpack,
+                   const GLvoid * pixels)
 {
    struct brw_context *brw = brw_context(ctx);
-   struct intel_buffer_object *src = intel_buffer_object(unpack->BufferObj);
+   struct brw_buffer_object *src = brw_buffer_object(unpack->BufferObj);
    GLuint src_offset;
    struct brw_bo *src_buffer;
 
    DBG("%s\n", __func__);
 
-   if (!intel_check_blit_fragment_ops(ctx, false))
+   if (!brw_check_blit_fragment_ops(ctx, false))
       return false;
 
    if (ctx->DrawBuffer->_NumColorDrawBuffers != 1) {
@@ -69,10 +69,10 @@ do_blit_drawpixels(struct gl_context * ctx,
       return false;
    }
 
-   intel_prepare_render(brw);
+   brw_prepare_render(brw);
 
    struct gl_renderbuffer *rb = ctx->DrawBuffer->_ColorDrawBuffers[0];
-   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+   struct brw_renderbuffer *irb = brw_renderbuffer(rb);
 
    mesa_format src_format = _mesa_format_from_format_and_type(format, type);
    if (_mesa_format_is_mesa_array_format(src_format))
@@ -83,7 +83,7 @@ do_blit_drawpixels(struct gl_context * ctx,
    src_format = _mesa_get_srgb_format_linear(src_format);
    dst_format = _mesa_get_srgb_format_linear(dst_format);
 
-   if (!intel_miptree_blit_compatible_formats(src_format, dst_format)) {
+   if (!brw_miptree_blit_compatible_formats(src_format, dst_format)) {
       DBG("%s: bad format for blit\n", __func__);
       return false;
    }
@@ -106,13 +106,13 @@ do_blit_drawpixels(struct gl_context * ctx,
 
    src_offset = (GLintptr)pixels;
    src_offset += _mesa_image_offset(2, unpack, width, height,
-				    format, type, 0, 0, 0);
+                                    format, type, 0, 0, 0);
 
-   src_buffer = intel_bufferobj_buffer(brw, src, src_offset,
-                                       height * src_stride, false);
+   src_buffer = brw_bufferobj_buffer(brw, src, src_offset,
+                                     height * src_stride, false);
 
-   struct intel_mipmap_tree *pbo_mt =
-      intel_miptree_create_for_bo(brw,
+   struct brw_mipmap_tree *pbo_mt =
+      brw_miptree_create_for_bo(brw,
                                   src_buffer,
                                   irb->mt->format,
                                   src_offset,
@@ -123,18 +123,18 @@ do_blit_drawpixels(struct gl_context * ctx,
    if (!pbo_mt)
       return false;
 
-   if (!intel_miptree_blit(brw,
+   if (!brw_miptree_blit(brw,
                            pbo_mt, 0, 0,
                            0, 0, src_flip,
                            irb->mt, irb->mt_level, irb->mt_layer,
                            x, y, ctx->DrawBuffer->FlipY,
                            width, height, COLOR_LOGICOP_COPY)) {
       DBG("%s: blit failed\n", __func__);
-      intel_miptree_release(&pbo_mt);
+      brw_miptree_release(&pbo_mt);
       return false;
    }
 
-   intel_miptree_release(&pbo_mt);
+   brw_miptree_release(&pbo_mt);
 
    if (ctx->Query.CurrentOcclusionObject)
       ctx->Query.CurrentOcclusionObject->Result += width * height;
@@ -144,13 +144,13 @@ do_blit_drawpixels(struct gl_context * ctx,
 }
 
 void
-intelDrawPixels(struct gl_context * ctx,
-                GLint x, GLint y,
-                GLsizei width, GLsizei height,
-                GLenum format,
-                GLenum type,
-                const struct gl_pixelstore_attrib *unpack,
-                const GLvoid * pixels)
+brw_drawpixels(struct gl_context *ctx,
+               GLint x, GLint y,
+               GLsizei width, GLsizei height,
+               GLenum format,
+               GLenum type,
+               const struct gl_pixelstore_attrib *unpack,
+               const GLvoid *pixels)
 {
    struct brw_context *brw = brw_context(ctx);
 
@@ -166,8 +166,8 @@ intelDrawPixels(struct gl_context * ctx,
    if (brw->screen->devinfo.gen < 6 &&
        unpack->BufferObj) {
       if (do_blit_drawpixels(ctx, x, y, width, height, format, type, unpack,
-			     pixels)) {
-	 return;
+                             pixels)) {
+         return;
       }
 
       perf_debug("%s: fallback to generic code in PBO case\n", __func__);

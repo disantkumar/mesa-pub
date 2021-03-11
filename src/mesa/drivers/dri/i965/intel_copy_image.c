@@ -36,9 +36,9 @@
 
 static void
 copy_miptrees(struct brw_context *brw,
-              struct intel_mipmap_tree *src_mt,
+              struct brw_mipmap_tree *src_mt,
               int src_x, int src_y, int src_z, unsigned src_level,
-              struct intel_mipmap_tree *dst_mt,
+              struct brw_mipmap_tree *dst_mt,
               int dst_x, int dst_y, int dst_z, unsigned dst_level,
               int src_width, int src_height)
 {
@@ -52,7 +52,7 @@ copy_miptrees(struct brw_context *brw,
        * faster than using the 3D pipeline.  Original Gen4 also has to rebase
        * and copy miptree slices in order to render to unaligned locations.
        */
-      if (intel_miptree_copy(brw, src_mt, src_level, src_z, src_x, src_y,
+      if (brw_miptree_copy(brw, src_mt, src_level, src_z, src_x, src_y,
                              dst_mt, dst_level, dst_z, dst_x, dst_y,
                              src_width, src_height))
          return;
@@ -66,48 +66,48 @@ copy_miptrees(struct brw_context *brw,
 }
 
 static void
-intel_copy_image_sub_data(struct gl_context *ctx,
-                          struct gl_texture_image *src_image,
-                          struct gl_renderbuffer *src_renderbuffer,
-                          int src_x, int src_y, int src_z,
-                          struct gl_texture_image *dst_image,
-                          struct gl_renderbuffer *dst_renderbuffer,
-                          int dst_x, int dst_y, int dst_z,
-                          int src_width, int src_height)
+brw_copy_image_sub_data(struct gl_context *ctx,
+                        struct gl_texture_image *src_image,
+                        struct gl_renderbuffer *src_renderbuffer,
+                        int src_x, int src_y, int src_z,
+                        struct gl_texture_image *dst_image,
+                        struct gl_renderbuffer *dst_renderbuffer,
+                        int dst_x, int dst_y, int dst_z,
+                        int src_width, int src_height)
 {
    struct brw_context *brw = brw_context(ctx);
-   struct intel_mipmap_tree *src_mt, *dst_mt;
+   struct brw_mipmap_tree *src_mt, *dst_mt;
    unsigned src_level, dst_level;
 
    if (src_image) {
-      src_mt = intel_texture_image(src_image)->mt;
-      src_level = src_image->Level + src_image->TexObject->MinLevel;
+      src_mt = brw_texture_image(src_image)->mt;
+      src_level = src_image->Level + src_image->TexObject->Attrib.MinLevel;
 
       /* Cube maps actually have different images per face */
       if (src_image->TexObject->Target == GL_TEXTURE_CUBE_MAP)
          src_z = src_image->Face;
 
-      src_z += src_image->TexObject->MinLayer;
+      src_z += src_image->TexObject->Attrib.MinLayer;
    } else {
       assert(src_renderbuffer);
-      src_mt = intel_renderbuffer(src_renderbuffer)->mt;
+      src_mt = brw_renderbuffer(src_renderbuffer)->mt;
       src_image = src_renderbuffer->TexImage;
       src_level = 0;
    }
 
    if (dst_image) {
-      dst_mt = intel_texture_image(dst_image)->mt;
+      dst_mt = brw_texture_image(dst_image)->mt;
 
-      dst_level = dst_image->Level + dst_image->TexObject->MinLevel;
+      dst_level = dst_image->Level + dst_image->TexObject->Attrib.MinLevel;
 
       /* Cube maps actually have different images per face */
       if (dst_image->TexObject->Target == GL_TEXTURE_CUBE_MAP)
          dst_z = dst_image->Face;
 
-      dst_z += dst_image->TexObject->MinLayer;
+      dst_z += dst_image->TexObject->Attrib.MinLayer;
    } else {
       assert(dst_renderbuffer);
-      dst_mt = intel_renderbuffer(dst_renderbuffer)->mt;
+      dst_mt = brw_renderbuffer(dst_renderbuffer)->mt;
       dst_image = dst_renderbuffer->TexImage;
       dst_level = 0;
    }
@@ -133,7 +133,7 @@ intel_copy_image_sub_data(struct gl_context *ctx,
 }
 
 void
-intelInitCopyImageFuncs(struct dd_function_table *functions)
+brw_init_copy_image_functions(struct dd_function_table *functions)
 {
-   functions->CopyImageSubData = intel_copy_image_sub_data;
+   functions->CopyImageSubData = brw_copy_image_sub_data;
 }

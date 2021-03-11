@@ -328,8 +328,8 @@ struct pipe_depth_stencil_alpha_state
    unsigned depth_bounds_test:1;     /**< depth bounds test enabled? */
 
    float alpha_ref_value;            /**< reference value */
-   float depth_bounds_min;           /**< minimum depth bound */
-   float depth_bounds_max;           /**< maximum depth bound */
+   double depth_bounds_min;          /**< minimum depth bound */
+   double depth_bounds_max;          /**< maximum depth bound */
 };
 
 
@@ -412,6 +412,7 @@ struct pipe_sampler_state
    unsigned normalized_coords:1; /**< Are coords normalized to [0,1]? */
    unsigned max_anisotropy:5;
    unsigned seamless_cube_map:1;
+   unsigned border_color_is_integer:1;
    float lod_bias;               /**< LOD/lambda bias */
    float min_lod, max_lod;       /**< LOD clamp range, after bias */
    union pipe_color_union border_color;
@@ -750,7 +751,9 @@ struct pipe_draw_info
    bool index_bounds_valid:1; /**< whether min_index and max_index are valid;
                                    they're always invalid if index_size == 0 */
    bool increment_draw_id:1;  /**< whether drawid increments for direct draws */
-   char _pad:4;               /**< padding for memcmp */
+   bool take_index_buffer_ownership:1; /**< callee inherits caller's refcount
+         (no need to reference indexbuf, but still needs to unreference it) */
+   char _pad:3;               /**< padding for memcmp */
 
    unsigned start_instance; /**< first instance id */
    unsigned instance_count; /**< number of instances */

@@ -28,38 +28,38 @@
 
 #include "brw_context.h"
 
-bool intel_miptree_blit_compatible_formats(mesa_format src, mesa_format dst);
+bool brw_miptree_blit_compatible_formats(mesa_format src, mesa_format dst);
 
-bool intel_miptree_blit(struct brw_context *brw,
-                        struct intel_mipmap_tree *src_mt,
-                        int src_level, int src_slice,
-                        uint32_t src_x, uint32_t src_y, bool src_flip,
-                        struct intel_mipmap_tree *dst_mt,
-                        int dst_level, int dst_slice,
-                        uint32_t dst_x, uint32_t dst_y, bool dst_flip,
-                        uint32_t width, uint32_t height,
-                        enum gl_logicop_mode logicop);
+bool brw_miptree_blit(struct brw_context *brw,
+                      struct brw_mipmap_tree *src_mt,
+                      int src_level, int src_slice,
+                      uint32_t src_x, uint32_t src_y, bool src_flip,
+                      struct brw_mipmap_tree *dst_mt,
+                      int dst_level, int dst_slice,
+                      uint32_t dst_x, uint32_t dst_y, bool dst_flip,
+                      uint32_t width, uint32_t height,
+                      enum gl_logicop_mode logicop);
 
-bool intel_miptree_copy(struct brw_context *brw,
-                        struct intel_mipmap_tree *src_mt,
-                        int src_level, int src_slice,
-                        uint32_t src_x, uint32_t src_y,
-                        struct intel_mipmap_tree *dst_mt,
-                        int dst_level, int dst_slice,
-                        uint32_t dst_x, uint32_t dst_y,
-                        uint32_t src_width, uint32_t src_height);
+bool brw_miptree_copy(struct brw_context *brw,
+                      struct brw_mipmap_tree *src_mt,
+                      int src_level, int src_slice,
+                      uint32_t src_x, uint32_t src_y,
+                      struct brw_mipmap_tree *dst_mt,
+                      int dst_level, int dst_slice,
+                      uint32_t dst_x, uint32_t dst_y,
+                      uint32_t src_width, uint32_t src_height);
 
 bool
-intelEmitImmediateColorExpandBlit(struct brw_context *brw,
-				  GLuint cpp,
-				  GLubyte *src_bits, GLuint src_size,
-				  GLuint fg_color,
-				  GLshort dst_pitch,
-				  struct brw_bo *dst_buffer,
-				  GLuint dst_offset,
-                                  enum isl_tiling dst_tiling,
-				  GLshort x, GLshort y,
-				  GLshort w, GLshort h,
-				  enum gl_logicop_mode logic_op);
+brw_emit_immediate_color_expand_blit(struct brw_context *brw,
+                                     GLuint cpp,
+                                     GLubyte *src_bits, GLuint src_size,
+                                     GLuint fg_color,
+                                     GLshort dst_pitch,
+                                     struct brw_bo *dst_buffer,
+                                     GLuint dst_offset,
+                                     enum isl_tiling dst_tiling,
+                                     GLshort x, GLshort y,
+                                     GLshort w, GLshort h,
+                                     enum gl_logicop_mode logic_op);
 
 #endif

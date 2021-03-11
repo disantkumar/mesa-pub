@@ -36,7 +36,9 @@
 #include <vulkan/vk_icd.h>
 #include <vk_enum_to_str.h>
 
-#include "vk_object.h"
+#include "vk_device.h"
+#include "vk_instance.h"
+#include "vk_physical_device.h"
 
 #include <xf86drm.h>
 
@@ -110,10 +112,6 @@ pack_emit_reloc(void *cl, const void *reloc) {}
       fprintf(stderr, __VA_ARGS__);                \
 } while (0)
 
-#define for_each_bit(b, dword)                                               \
-   for (uint32_t __dword = (dword);                                          \
-        (b) = __builtin_ffs(__dword) - 1, __dword; __dword &= ~(1 << (b)))
-
 struct v3dv_instance;
 
 #ifdef USE_V3D_SIMULATOR
@@ -125,12 +123,7 @@ struct v3dv_instance;
 struct v3d_simulator_file;
 
 struct v3dv_physical_device {
-   struct vk_object_base base;
-
-   struct v3dv_instance *instance;
-
-   struct v3dv_device_extension_table supported_extensions;
-   struct v3dv_physical_device_dispatch_table dispatch;
+   struct vk_physical_device vk;
 
    char *name;
    int32_t render_fd;
@@ -175,29 +168,11 @@ void v3dv_meta_blit_finish(struct v3dv_device *device);
 void v3dv_meta_texel_buffer_copy_init(struct v3dv_device *device);
 void v3dv_meta_texel_buffer_copy_finish(struct v3dv_device *device);
 
-struct v3dv_app_info {
-   const char *app_name;
-   uint32_t app_version;
-   const char *engine_name;
-   uint32_t engine_version;
-   uint32_t api_version;
-};
-
 struct v3dv_instance {
-   struct vk_object_base base;
-
-   VkAllocationCallbacks alloc;
-
-   struct v3dv_app_info app_info;
-
-   struct v3dv_instance_extension_table enabled_extensions;
-   struct v3dv_instance_dispatch_table dispatch;
-   struct v3dv_device_dispatch_table device_dispatch;
+   struct vk_instance vk;
 
    int physicalDeviceCount;
    struct v3dv_physical_device physicalDevice;
-
-   struct vk_debug_report_instance debug_report_callbacks;
 
    bool pipeline_cache_enabled;
    bool default_pipeline_cache_enabled;
@@ -249,7 +224,8 @@ struct v3dv_queue {
 };
 
 #define V3DV_META_BLIT_CACHE_KEY_SIZE              (4 * sizeof(uint32_t))
-#define V3DV_META_TEXEL_BUFFER_COPY_CACHE_KEY_SIZE (1 * sizeof(uint32_t))
+#define V3DV_META_TEXEL_BUFFER_COPY_CACHE_KEY_SIZE (2 * sizeof(uint32_t) + \
+                                                    sizeof(VkComponentMapping))
 
 struct v3dv_meta_color_clear_pipeline {
    VkPipeline pipeline;
@@ -301,9 +277,6 @@ struct v3dv_device {
 
    struct v3dv_instance *instance;
    struct v3dv_physical_device *pdevice;
-
-   struct v3dv_device_extension_table enabled_extensions;
-   struct v3dv_device_dispatch_table dispatch;
 
    struct v3d_device_info devinfo;
    struct v3dv_queue queue;
@@ -705,15 +678,16 @@ enum v3dv_cmd_dirty_bits {
    V3DV_CMD_DIRTY_STENCIL_WRITE_MASK        = 1 << 3,
    V3DV_CMD_DIRTY_STENCIL_REFERENCE         = 1 << 4,
    V3DV_CMD_DIRTY_PIPELINE                  = 1 << 5,
-   V3DV_CMD_DIRTY_VERTEX_BUFFER             = 1 << 6,
-   V3DV_CMD_DIRTY_INDEX_BUFFER              = 1 << 7,
-   V3DV_CMD_DIRTY_DESCRIPTOR_SETS           = 1 << 8,
-   V3DV_CMD_DIRTY_COMPUTE_DESCRIPTOR_SETS   = 1 << 9,
-   V3DV_CMD_DIRTY_PUSH_CONSTANTS            = 1 << 10,
-   V3DV_CMD_DIRTY_BLEND_CONSTANTS           = 1 << 11,
-   V3DV_CMD_DIRTY_OCCLUSION_QUERY           = 1 << 12,
-   V3DV_CMD_DIRTY_DEPTH_BIAS                = 1 << 13,
-   V3DV_CMD_DIRTY_LINE_WIDTH                = 1 << 14,
+   V3DV_CMD_DIRTY_COMPUTE_PIPELINE          = 1 << 6,
+   V3DV_CMD_DIRTY_VERTEX_BUFFER             = 1 << 7,
+   V3DV_CMD_DIRTY_INDEX_BUFFER              = 1 << 8,
+   V3DV_CMD_DIRTY_DESCRIPTOR_SETS           = 1 << 9,
+   V3DV_CMD_DIRTY_COMPUTE_DESCRIPTOR_SETS   = 1 << 10,
+   V3DV_CMD_DIRTY_PUSH_CONSTANTS            = 1 << 11,
+   V3DV_CMD_DIRTY_BLEND_CONSTANTS           = 1 << 12,
+   V3DV_CMD_DIRTY_OCCLUSION_QUERY           = 1 << 13,
+   V3DV_CMD_DIRTY_DEPTH_BIAS                = 1 << 14,
+   V3DV_CMD_DIRTY_LINE_WIDTH                = 1 << 15,
 };
 
 struct v3dv_dynamic_state {
@@ -746,6 +720,7 @@ struct v3dv_dynamic_state {
 
    struct {
       float constant_factor;
+      float depth_bias_clamp;
       float slope_factor;
    } depth_bias;
 
@@ -896,6 +871,14 @@ struct v3dv_job {
    enum v3dv_ez_state ez_state;
    enum v3dv_ez_state first_ez_state;
 
+   /* If we have already decided if we need to disable Early Z/S completely
+    * for this job.
+    */
+   bool decided_global_ez_enable;
+
+   /* If this job has been configured to use early Z/S clear */
+   bool early_zs_clear;
+
    /* Number of draw calls recorded into the job */
    uint32_t draw_count;
 
@@ -966,6 +949,12 @@ struct v3dv_descriptor_state {
    uint32_t dynamic_offsets[MAX_DYNAMIC_BUFFERS];
 };
 
+struct v3dv_cmd_pipeline_state {
+   struct v3dv_pipeline *pipeline;
+
+   struct v3dv_descriptor_state descriptor_state;
+};
+
 struct v3dv_cmd_buffer_state {
    struct v3dv_render_pass *pass;
    struct v3dv_framebuffer *framebuffer;
@@ -976,8 +965,8 @@ struct v3dv_cmd_buffer_state {
 
    uint32_t subpass_idx;
 
-   struct v3dv_pipeline *pipeline;
-   struct v3dv_descriptor_state descriptor_state[2];
+   struct v3dv_cmd_pipeline_state gfx;
+   struct v3dv_cmd_pipeline_state compute;
 
    struct v3dv_dynamic_state dynamic;
    uint32_t dirty;
@@ -1033,7 +1022,6 @@ struct v3dv_cmd_buffer_state {
    struct {
       uint32_t subpass_idx;
       VkRenderPass pass;
-      VkPipeline pipeline;
       VkFramebuffer framebuffer;
 
       uint32_t attachment_alloc_count;
@@ -1045,7 +1033,7 @@ struct v3dv_cmd_buffer_state {
 
       struct v3dv_dynamic_state dynamic;
 
-      struct v3dv_descriptor_state descriptor_state;
+      struct v3dv_cmd_pipeline_state gfx;
       bool has_descriptor_state;
 
       uint32_t push_constants[MAX_PUSH_CONSTANTS_SIZE / 4];
@@ -1125,16 +1113,6 @@ struct v3dv_combined_image_sampler_descriptor {
    uint8_t sampler_state[cl_aligned_packet_length(SAMPLER_STATE, 32)];
 };
 
-/* Aux struct as it is really common to have a pair bo/address. Called
- * resource because it is really likely that we would need something like that
- * if we work on reuse the same bo at different points (like the shader
- * assembly).
- */
-struct v3dv_resource {
-   struct v3dv_bo *bo;
-   uint32_t offset;
-};
-
 struct v3dv_query {
    bool maybe_available;
    union {
@@ -1189,8 +1167,13 @@ struct v3dv_cmd_buffer {
 
    struct v3dv_cmd_buffer_state state;
 
+   /* FIXME: we have just one client-side and bo for the push constants,
+    * independently of the stageFlags in vkCmdPushConstants, and the
+    * pipelineBindPoint in vkCmdBindPipeline. We could probably do more stage
+    * tunning in the future if it makes sense.
+    */
    uint32_t push_constants_data[MAX_PUSH_CONSTANTS_SIZE / 4];
-   struct v3dv_resource push_constants_resource;
+   struct v3dv_cl_reloc push_constants_resource;
 
    /* Collection of Vulkan objects created internally by the driver (typically
     * during recording of meta operations) that are part of the command buffer
@@ -1548,8 +1531,11 @@ struct v3dv_pipeline_layout {
    } set[MAX_SETS];
 
    uint32_t num_sets;
-   uint32_t dynamic_offset_count;
 
+   /* Shader stages that are declared to use descriptors from this layout */
+   uint32_t shader_stages;
+
+   uint32_t dynamic_offset_count;
    uint32_t push_constant_size;
 };
 
@@ -1649,6 +1635,9 @@ struct v3dv_pipeline {
 
    struct v3dv_pipeline_layout *layout;
 
+   /* Whether this pipeline enables depth writes */
+   bool z_updates_enable;
+
    enum v3dv_ez_state ez_state;
 
    bool msaa;
@@ -1737,6 +1726,16 @@ v3dv_pipeline_get_binding_point(struct v3dv_pipeline *pipeline)
       VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
 }
 
+static inline struct v3dv_descriptor_state*
+v3dv_cmd_buffer_get_descriptor_state(struct v3dv_cmd_buffer *cmd_buffer,
+                                     struct v3dv_pipeline *pipeline)
+{
+   if (v3dv_pipeline_get_binding_point(pipeline) == VK_PIPELINE_BIND_POINT_COMPUTE)
+      return &cmd_buffer->state.compute.descriptor_state;
+   else
+      return &cmd_buffer->state.gfx.descriptor_state;
+}
+
 const nir_shader_compiler_options *v3dv_pipeline_get_nir_options(void);
 
 static inline uint32_t
@@ -1807,28 +1806,6 @@ v3dv_get_internal_depth_type(VkFormat format)
 uint32_t v3dv_physical_device_api_version(struct v3dv_physical_device *dev);
 uint32_t v3dv_physical_device_vendor_id(struct v3dv_physical_device *dev);
 uint32_t v3dv_physical_device_device_id(struct v3dv_physical_device *dev);
-
-int v3dv_get_instance_entrypoint_index(const char *name);
-int v3dv_get_device_entrypoint_index(const char *name);
-int v3dv_get_physical_device_entrypoint_index(const char *name);
-
-const char *v3dv_get_instance_entry_name(int index);
-const char *v3dv_get_physical_device_entry_name(int index);
-const char *v3dv_get_device_entry_name(int index);
-
-bool
-v3dv_instance_entrypoint_is_enabled(int index, uint32_t core_version,
-                                    const struct v3dv_instance_extension_table *instance);
-bool
-v3dv_physical_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                           const struct v3dv_instance_extension_table *instance);
-bool
-v3dv_device_entrypoint_is_enabled(int index, uint32_t core_version,
-                                  const struct v3dv_instance_extension_table *instance,
-                                  const struct v3dv_device_extension_table *device);
-
-void *v3dv_lookup_entrypoint(const struct v3d_device_info *devinfo,
-                             const char *name);
 
 VkResult __vk_errorf(struct v3dv_instance *instance, VkResult error,
                      const char *file, int line,

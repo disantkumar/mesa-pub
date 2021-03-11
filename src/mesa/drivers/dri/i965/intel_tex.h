@@ -31,28 +31,28 @@
 #include "brw_context.h"
 #include "intel_mipmap_tree.h"
 
-void intelInitTextureFuncs(struct dd_function_table *functions);
+void brw_init_texture_functions(struct dd_function_table *functions);
 
-void intelInitTextureImageFuncs(struct dd_function_table *functions);
+void brw_init_texture_image_functions(struct dd_function_table *functions);
 
-void intelInitTextureCopyImageFuncs(struct dd_function_table *functions);
+void brw_init_texture_copy_image_functions(struct dd_function_table *functs);
 
-void intelInitCopyImageFuncs(struct dd_function_table *functions);
+void brw_init_copy_image_functions(struct dd_function_table *functions);
 
-void intelSetTexBuffer(__DRIcontext *pDRICtx,
-		       GLint target, __DRIdrawable *pDraw);
-void intelSetTexBuffer2(__DRIcontext *pDRICtx,
-			GLint target, GLint format, __DRIdrawable *pDraw);
-void intelReleaseTexBuffer(__DRIcontext *pDRICtx, GLint target,
+void brw_set_texbuffer(__DRIcontext *pDRICtx,
+                       GLint target, __DRIdrawable *pDraw);
+void brw_set_texbuffer2(__DRIcontext *pDRICtx,
+                        GLint target, GLint format, __DRIdrawable *pDraw);
+void brw_release_texbuffer(__DRIcontext *pDRICtx, GLint target,
                            __DRIdrawable *dPriv);
 
-struct intel_mipmap_tree *
-intel_miptree_create_for_teximage(struct brw_context *brw,
-				  struct intel_texture_object *intelObj,
-				  struct intel_texture_image *intelImage,
-                                  enum intel_miptree_create_flags flags);
+struct brw_mipmap_tree *
+brw_miptree_create_for_teximage(struct brw_context *brw,
+                                struct brw_texture_object *brw_obj,
+                                struct brw_texture_image *brw_image,
+                                enum brw_miptree_create_flags flags);
 
-void intel_finalize_mipmap_tree(struct brw_context *brw,
+void brw_finalize_mipmap_tree(struct brw_context *brw,
                                 struct gl_texture_object *tex_obj);
 
 #endif

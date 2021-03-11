@@ -28,11 +28,10 @@
 #include <stdio.h>
 #include "pan_encoder.h"
 #include "pan_pool.h"
+#include "pan_shader.h"
 #include "pan_scoreboard.h"
 #include "pan_texture.h"
 #include "panfrost-quirks.h"
-#include "../midgard/midgard_compile.h"
-#include "../bifrost/bifrost_compile.h"
 #include "compiler/nir/nir_builder.h"
 #include "util/u_math.h"
 
@@ -44,15 +43,20 @@
  * This is primarily designed as a fallback for preloads but could be extended
  * for other clears/blits if needed in the future. */
 
-static panfrost_program *
+static void
 panfrost_build_blit_shader(struct panfrost_device *dev,
                            gl_frag_result loc,
                            nir_alu_type T,
-                           bool ms)
+                           bool ms,
+                           struct util_dynarray *binary,
+                           struct pan_shader_info *info)
 {
         bool is_colour = loc >= FRAG_RESULT_DATA0;
 
-        nir_builder _b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &midgard_nir_options, "pan_blit");
+        nir_builder _b =
+           nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+                                          pan_shader_get_compiler_options(dev),
+                                          "pan_blit");
         nir_builder *b = &_b;
         nir_shader *shader = b->shader;
 
@@ -105,17 +109,12 @@ panfrost_build_blit_shader(struct panfrost_device *dev,
 
         struct panfrost_compile_inputs inputs = {
                 .gpu_id = dev->gpu_id,
+                .is_blit = true,
         };
 
-        panfrost_program *program;
-
-        if (dev->quirks & IS_BIFROST)
-                program = bifrost_compile_shader_nir(NULL, shader, &inputs);
-        else
-                program = midgard_compile_shader_nir(NULL, shader, &inputs);
+        pan_shader_compile(dev, shader, &inputs, binary, info);
 
         ralloc_free(shader);
-        return program;
 }
 
 /* Compile and upload all possible blit shaders ahead-of-time to reduce draw
@@ -124,7 +123,6 @@ panfrost_build_blit_shader(struct panfrost_device *dev,
 void
 panfrost_init_blit_shaders(struct panfrost_device *dev)
 {
-        bool is_bifrost = !!(dev->quirks & IS_BIFROST);
         static const struct {
                 gl_frag_result loc;
                 unsigned types;
@@ -142,9 +140,9 @@ panfrost_init_blit_shaders(struct panfrost_device *dev)
         };
 
         nir_alu_type nir_types[PAN_BLIT_NUM_TYPES] = {
-                nir_type_float,
-                nir_type_uint,
-                nir_type_int
+                nir_type_float32,
+                nir_type_uint32,
+                nir_type_int32
         };
 
         /* Total size = # of shaders * bytes per shader. There are
@@ -156,7 +154,7 @@ panfrost_init_blit_shaders(struct panfrost_device *dev)
         unsigned offset = 0;
         unsigned total_size = (FRAG_RESULT_DATA7 * PAN_BLIT_NUM_TYPES) * (8 * 16) * 2;
 
-        if (is_bifrost)
+        if (pan_is_bifrost(dev))
                 total_size *= 4;
 
         dev->blit_shaders.bo = panfrost_bo_create(dev, total_size, PAN_BO_EXECUTE);
@@ -164,6 +162,9 @@ panfrost_init_blit_shaders(struct panfrost_device *dev)
         /* Don't bother generating multisampling variants if we don't actually
          * support multisampling */
         bool has_ms = !(dev->quirks & MIDGARD_SFBD);
+        struct util_dynarray binary;
+
+        util_dynarray_init(&binary, NULL);
 
         for (unsigned ms = 0; ms <= has_ms; ++ms) {
                 for (unsigned i = 0; i < ARRAY_SIZE(shader_descs); ++i) {
@@ -174,26 +175,38 @@ panfrost_init_blit_shaders(struct panfrost_device *dev)
                                         continue;
 
                                 struct pan_blit_shader *shader = &dev->blit_shaders.loads[loc][T][ms];
-                                panfrost_program *program =
-                                        panfrost_build_blit_shader(dev, loc,
-                                                                   nir_types[T], ms);
+                                struct pan_shader_info info;
 
-                                assert(offset + program->compiled.size < total_size);
+                                util_dynarray_clear(&binary);
+                                panfrost_build_blit_shader(dev, loc,
+                                                           nir_types[T], ms,
+                                                           &binary, &info);
+
+                                assert(offset + binary.size < total_size);
                                 memcpy(dev->blit_shaders.bo->ptr.cpu + offset,
-                                       program->compiled.data, program->compiled.size);
+                                       binary.data, binary.size);
 
-                                shader->shader = (dev->blit_shaders.bo->ptr.gpu + offset) |
-                                                 program->first_tag;
+                                shader->shader = (dev->blit_shaders.bo->ptr.gpu + offset);
+                                if (pan_is_bifrost(dev)) {
+                                        int rt = loc - FRAG_RESULT_DATA0;
+                                        if (rt >= 0 && rt < 8 &&
+                                            info.bifrost.blend[rt].return_offset) {
+                                                shader->blend_ret_addr =
+                                                        shader->shader +
+                                                        info.bifrost.blend[rt].return_offset;
+                                        }
+                                } else {
+                                        shader->shader |= info.midgard.first_tag;
+                                }
 
-                                int rt = loc - FRAG_RESULT_DATA0;
-                                if (rt >= 0 && rt < 8 && program->blend_ret_offsets[rt])
-                                        shader->blend_ret_addr = program->blend_ret_offsets[rt] + shader->shader;
 
-                                offset += ALIGN_POT(program->compiled.size, is_bifrost ? 128 : 64);
-                                ralloc_free(program);
+                                offset += ALIGN_POT(binary.size,
+                                                    pan_is_bifrost(dev) ? 128 : 64);
                         }
                 }
         }
+
+        util_dynarray_fini(&binary);
 }
 
 static void
@@ -258,11 +271,10 @@ panfrost_load_prepare_rsd(struct pan_pool *pool, struct MALI_RENDERER_STATE *sta
 
 static void
 panfrost_load_emit_varying(struct pan_pool *pool, struct MALI_DRAW *draw,
-                          mali_ptr coordinates, unsigned vertex_count,
-                          bool is_bifrost)
+                          mali_ptr coordinates, unsigned vertex_count)
 {
         /* Bifrost needs an empty desc to mark end of prefetching */
-        bool padding_buffer = is_bifrost;
+        bool padding_buffer = pan_is_bifrost(pool->dev);
 
         struct panfrost_ptr varying =
                 panfrost_pool_alloc(pool, MALI_ATTRIBUTE_LENGTH);
@@ -283,7 +295,7 @@ panfrost_load_emit_varying(struct pan_pool *pool, struct MALI_DRAW *draw,
 
         pan_pack(varying.cpu, ATTRIBUTE, cfg) {
                 cfg.buffer_index = 0;
-                cfg.offset_enable = !is_bifrost;
+                cfg.offset_enable = !pan_is_bifrost(pool->dev);
                 cfg.format = pool->dev->formats[PIPE_FORMAT_R32G32_FLOAT].hw;
         }
 
@@ -453,7 +465,7 @@ panfrost_load_midg(struct pan_pool *pool,
                 cfg.draw_descriptor_is_64b = true;
                 cfg.four_components_per_vertex = true;
 
-                panfrost_load_emit_varying(pool, &cfg, coordinates, vertex_count, false);
+                panfrost_load_emit_varying(pool, &cfg, coordinates, vertex_count);
                 midgard_load_emit_texture(pool, &cfg, image);
                 panfrost_load_emit_viewport(pool, &cfg, image);
                 cfg.fbd = fbd;
@@ -644,7 +656,7 @@ panfrost_load_bifrost(struct pan_pool *pool,
                 cfg.four_components_per_vertex = true;
                 cfg.draw_descriptor_is_64b = true;
 
-                panfrost_load_emit_varying(pool, &cfg, coordinates, vertex_count, true);
+                panfrost_load_emit_varying(pool, &cfg, coordinates, vertex_count);
                 bifrost_load_emit_texture(pool, &cfg, image);
                 panfrost_load_emit_viewport(pool, &cfg, image);
                 cfg.thread_storage = thread_storage;

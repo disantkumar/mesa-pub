@@ -243,7 +243,7 @@ aggregate_transform_feedback_counter(
     * generated, flush it now so the results will be present when mapped.
     */
    if (brw_batch_references(&brw->batch, bo))
-      intel_batchbuffer_flush(brw);
+      brw_batch_flush(brw);
 
    if (unlikely(brw->perf_debug && brw_bo_busy(bo)))
       perf_debug("Stalling for # of transform feedback primitives written.\n");
@@ -386,7 +386,7 @@ brw_get_transform_feedback_vertex_count(struct gl_context *ctx,
 
 void
 brw_begin_transform_feedback(struct gl_context *ctx, GLenum mode,
-			     struct gl_transform_feedback_object *obj)
+                             struct gl_transform_feedback_object *obj)
 {
    struct brw_context *brw = brw_context(ctx);
    const struct gl_program *prog;

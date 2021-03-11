@@ -232,7 +232,7 @@ _mesa_CreateSamplers(GLsizei count, GLuint *samplers)
 static void
 delete_samplers(struct gl_context *ctx, GLsizei count, const GLuint *samplers)
 {
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
 
    _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
 
@@ -246,7 +246,7 @@ delete_samplers(struct gl_context *ctx, GLsizei count, const GLuint *samplers)
             /* If the sampler is currently bound, unbind it. */
             for (j = 0; j < ctx->Const.MaxCombinedTextureImageUnits; j++) {
                if (ctx->Texture.Unit[j].Sampler == sampObj) {
-                  FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT);
+                  FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT, GL_TEXTURE_BIT);
                   _mesa_reference_sampler_object(ctx, &ctx->Texture.Unit[j].Sampler, NULL);
                }
             }
@@ -300,7 +300,7 @@ _mesa_bind_sampler(struct gl_context *ctx, GLuint unit,
                    struct gl_sampler_object *sampObj)
 {
    if (ctx->Texture.Unit[unit].Sampler != sampObj) {
-      FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT);
+      FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT, GL_TEXTURE_BIT);
    }
 
    _mesa_reference_sampler_object(ctx, &ctx->Texture.Unit[unit].Sampler,
@@ -357,7 +357,7 @@ bind_samplers(struct gl_context *ctx, GLuint first, GLsizei count,
 {
    GLsizei i;
 
-   FLUSH_VERTICES(ctx, 0);
+   FLUSH_VERTICES(ctx, 0, 0);
 
    if (samplers) {
       /* Note that the error semantics for multi-bind commands differ from
@@ -416,6 +416,7 @@ bind_samplers(struct gl_context *ctx, GLuint first, GLsizei count,
                                            &ctx->Texture.Unit[unit].Sampler,
                                            sampObj);
             ctx->NewState |= _NEW_TEXTURE_OBJECT;
+            ctx->PopAttribState |= GL_TEXTURE_BIT;
          }
       }
 
@@ -430,6 +431,7 @@ bind_samplers(struct gl_context *ctx, GLuint first, GLsizei count,
                                            &ctx->Texture.Unit[unit].Sampler,
                                            NULL);
             ctx->NewState |= _NEW_TEXTURE_OBJECT;
+            ctx->PopAttribState |= GL_TEXTURE_BIT;
          }
       }
    }
@@ -510,7 +512,7 @@ validate_texture_wrap_mode(struct gl_context *ctx, GLenum wrap)
 static inline void
 flush(struct gl_context *ctx)
 {
-   FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT);
+   FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT, GL_TEXTURE_BIT);
 }
 
 void
@@ -534,6 +536,12 @@ _mesa_set_sampler_wrap(struct gl_context *ctx, struct gl_sampler_object *samp,
 #define INVALID_PNAME 0x101
 #define INVALID_VALUE 0x102
 
+static inline GLboolean
+is_wrap_gl_clamp(GLint param)
+{
+   return param == GL_CLAMP || param == GL_MIRROR_CLAMP_EXT;
+}
+
 static GLuint
 set_sampler_wrap_s(struct gl_context *ctx, struct gl_sampler_object *samp,
                    GLint param)
@@ -542,6 +550,8 @@ set_sampler_wrap_s(struct gl_context *ctx, struct gl_sampler_object *samp,
       return GL_FALSE;
    if (validate_texture_wrap_mode(ctx, param)) {
       flush(ctx);
+      if (is_wrap_gl_clamp(samp->Attrib.WrapS) != is_wrap_gl_clamp(param))
+         ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
       samp->Attrib.WrapS = param;
       return GL_TRUE;
    }
@@ -557,6 +567,8 @@ set_sampler_wrap_t(struct gl_context *ctx, struct gl_sampler_object *samp,
       return GL_FALSE;
    if (validate_texture_wrap_mode(ctx, param)) {
       flush(ctx);
+      if (is_wrap_gl_clamp(samp->Attrib.WrapT) != is_wrap_gl_clamp(param))
+         ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
       samp->Attrib.WrapT = param;
       return GL_TRUE;
    }
@@ -572,6 +584,8 @@ set_sampler_wrap_r(struct gl_context *ctx, struct gl_sampler_object *samp,
       return GL_FALSE;
    if (validate_texture_wrap_mode(ctx, param)) {
       flush(ctx);
+      if (is_wrap_gl_clamp(samp->Attrib.WrapR) != is_wrap_gl_clamp(param))
+         ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
       samp->Attrib.WrapR = param;
       return GL_TRUE;
    }

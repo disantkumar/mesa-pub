@@ -58,7 +58,7 @@ struct panfrost_resource {
         /* Whether the modifier can be changed */
         bool modifier_constant;
 
-        /* Is transaciton elimination enabled? */
+        /* Is transaction elimination enabled? */
         bool checksummed;
 
         /* The CRC BO can be allocated separately */
@@ -146,5 +146,9 @@ panfrost_translate_texture_dimension(enum pipe_texture_target t) {
         }
 }
 
+void
+pan_resource_modifier_convert(struct panfrost_context *ctx,
+                              struct panfrost_resource *rsrc,
+                              uint64_t modifier);
 
 #endif /* PAN_RESOURCE_H */

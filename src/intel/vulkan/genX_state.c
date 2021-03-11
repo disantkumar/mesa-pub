@@ -29,12 +29,51 @@
 
 #include "anv_private.h"
 
-#include "common/gen_aux_map.h"
-#include "common/gen_sample_positions.h"
+#include "common/intel_aux_map.h"
+#include "common/intel_sample_positions.h"
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
 #include "vk_util.h"
+
+/**
+ * Compute an \p n x \p m pixel hashing table usable as slice, subslice or
+ * pixel pipe hashing table.  The resulting table is the cyclic repetition of
+ * a fixed pattern with periodicity equal to \p period.
+ *
+ * If \p index is specified to be equal to \p period, a 2-way hashing table
+ * will be generated such that indices 0 and 1 are returned for the following
+ * fractions of entries respectively:
+ *
+ *   p_0 = ceil(period / 2) / period
+ *   p_1 = floor(period / 2) / period
+ *
+ * If \p index is even and less than \p period, a 3-way hashing table will be
+ * generated such that indices 0, 1 and 2 are returned for the following
+ * fractions of entries:
+ *
+ *   p_0 = (ceil(period / 2) - 1) / period
+ *   p_1 = floor(period / 2) / period
+ *   p_2 = 1 / period
+ *
+ * The equations above apply if \p flip is equal to 0, if it is equal to 1 p_0
+ * and p_1 will be swapped for the result.  Note that in the context of pixel
+ * pipe hashing this can be always 0 on Gen12 platforms, since the hardware
+ * transparently remaps logical indices found on the table to physical pixel
+ * pipe indices from the highest to lowest EU count.
+ */
+UNUSED static void
+calculate_pixel_hashing_table(unsigned n, unsigned m,
+                              unsigned period, unsigned index, bool flip,
+                              uint32_t *p)
+{
+   for (unsigned i = 0; i < n; i++) {
+      for (unsigned j = 0; j < m; j++) {
+         const unsigned k = (i + j) % period;
+         p[j + m * i] = (k == index ? 2 : (k & 1) ^ flip);
+      }
+   }
+}
 
 static void
 genX(emit_slice_hashing_state)(struct anv_device *device,
@@ -43,60 +82,21 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
    device->slice_hash = (struct anv_state) { 0 };
 
 #if GEN_GEN == 11
-   const unsigned *ppipe_subslices = device->info.ppipe_subslices;
-   int subslices_delta = ppipe_subslices[0] - ppipe_subslices[1];
-   if (subslices_delta == 0)
-      return;
+   assert(device->info.ppipe_subslices[2] == 0);
+
+   if (device->info.ppipe_subslices[0] == device->info.ppipe_subslices[1])
+     return;
 
    unsigned size = GENX(SLICE_HASH_TABLE_length) * 4;
    device->slice_hash =
       anv_state_pool_alloc(&device->dynamic_state_pool, size, 64);
 
-   struct GENX(SLICE_HASH_TABLE) table0 = {
-      .Entry = {
-         { 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1 },
-         { 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1 },
-         { 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0 },
-         { 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1 },
-         { 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1 },
-         { 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0 },
-         { 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1 },
-         { 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1 },
-         { 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0 },
-         { 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1 },
-         { 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1 },
-         { 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0 },
-         { 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1 },
-         { 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1 },
-         { 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0 },
-         { 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1 }
-      }
-   };
+   const bool flip = device->info.ppipe_subslices[0] <
+                     device->info.ppipe_subslices[1];
+   struct GENX(SLICE_HASH_TABLE) table;
+   calculate_pixel_hashing_table(16, 16, 3, 3, flip, table.Entry[0]);
 
-   struct GENX(SLICE_HASH_TABLE) table1 = {
-      .Entry = {
-         { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 },
-         { 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0 },
-         { 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1 },
-         { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 },
-         { 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0 },
-         { 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1 },
-         { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 },
-         { 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0 },
-         { 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1 },
-         { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 },
-         { 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0 },
-         { 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1 },
-         { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 },
-         { 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0 },
-         { 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1 },
-         { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0 }
-      }
-   };
-
-   const struct GENX(SLICE_HASH_TABLE) *table =
-      subslices_delta < 0 ? &table0 : &table1;
-   GENX(SLICE_HASH_TABLE_pack)(NULL, device->slice_hash.map, table);
+   GENX(SLICE_HASH_TABLE_pack)(NULL, device->slice_hash.map, &table);
 
    anv_batch_emit(batch, GENX(3DSTATE_SLICE_TABLE_STATE_POINTERS), ptr) {
       ptr.SliceHashStatePointerValid = true;
@@ -106,12 +106,55 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
    anv_batch_emit(batch, GENX(3DSTATE_3D_MODE), mode) {
       mode.SliceHashingTableEnable = true;
    }
+#elif GEN_VERSIONx10 == 120
+   /* For each n calculate ppipes_of[n], equal to the number of pixel pipes
+    * present with n active dual subslices.
+    */
+   unsigned ppipes_of[3] = {};
+
+   for (unsigned n = 0; n < ARRAY_SIZE(ppipes_of); n++) {
+      for (unsigned p = 0; p < ARRAY_SIZE(device->info.ppipe_subslices); p++)
+         ppipes_of[n] += (device->info.ppipe_subslices[p] == n);
+   }
+
+   /* Gen12 has three pixel pipes. */
+   assert(ppipes_of[0] + ppipes_of[1] + ppipes_of[2] == 3);
+
+   if (ppipes_of[2] == 3 || ppipes_of[0] == 2) {
+      /* All three pixel pipes have the maximum number of active dual
+       * subslices, or there is only one active pixel pipe: Nothing to do.
+       */
+      return;
+   }
+
+   anv_batch_emit(batch, GENX(3DSTATE_SUBSLICE_HASH_TABLE), p) {
+      p.SliceHashControl[0] = TABLE_0;
+
+      if (ppipes_of[2] == 2 && ppipes_of[0] == 1)
+         calculate_pixel_hashing_table(8, 16, 2, 2, 0, p.TwoWayTableEntry[0]);
+      else if (ppipes_of[2] == 1 && ppipes_of[1] == 1 && ppipes_of[0] == 1)
+         calculate_pixel_hashing_table(8, 16, 3, 3, 0, p.TwoWayTableEntry[0]);
+
+      if (ppipes_of[2] == 2 && ppipes_of[1] == 1)
+         calculate_pixel_hashing_table(8, 16, 5, 4, 0, p.ThreeWayTableEntry[0]);
+      else if (ppipes_of[2] == 2 && ppipes_of[0] == 1)
+         calculate_pixel_hashing_table(8, 16, 2, 2, 0, p.ThreeWayTableEntry[0]);
+      else if (ppipes_of[2] == 1 && ppipes_of[1] == 1 && ppipes_of[0] == 1)
+         calculate_pixel_hashing_table(8, 16, 3, 3, 0, p.ThreeWayTableEntry[0]);
+      else
+         unreachable("Illegal fusing.");
+   }
+
+   anv_batch_emit(batch, GENX(3DSTATE_3D_MODE), p) {
+      p.SubsliceHashingTableEnable = true;
+   }
 #endif
 }
 
-VkResult
-genX(init_device_state)(struct anv_device *device)
+static VkResult
+init_render_queue_state(struct anv_queue *queue)
 {
+   struct anv_device *device = queue->device;
    struct anv_batch batch;
 
    uint32_t cmds[64];
@@ -156,18 +199,7 @@ genX(init_device_state)(struct anv_device *device)
 #if GEN_GEN >= 8
    anv_batch_emit(&batch, GENX(3DSTATE_WM_CHROMAKEY), ck);
 
-   /* See the Vulkan 1.0 spec Table 24.1 "Standard sample locations" and
-    * VkPhysicalDeviceFeatures::standardSampleLocations.
-    */
-   anv_batch_emit(&batch, GENX(3DSTATE_SAMPLE_PATTERN), sp) {
-      GEN_SAMPLE_POS_1X(sp._1xSample);
-      GEN_SAMPLE_POS_2X(sp._2xSample);
-      GEN_SAMPLE_POS_4X(sp._4xSample);
-      GEN_SAMPLE_POS_8X(sp._8xSample);
-#if GEN_GEN >= 9
-      GEN_SAMPLE_POS_16X(sp._16xSample);
-#endif
-   }
+   genX(emit_sample_pattern)(&batch, 0, NULL);
 
    /* The BDW+ docs describe how to use the 3DSTATE_WM_HZ_OP instruction in the
     * section titled, "Optimized Depth Buffer Clear and/or Stencil Buffer
@@ -260,7 +292,7 @@ genX(init_device_state)(struct anv_device *device)
 
 #if GEN_GEN == 12
    if (device->info.has_aux_map) {
-      uint64_t aux_base_addr = gen_aux_map_get_base(device->aux_map_ctx);
+      uint64_t aux_base_addr = intel_aux_map_get_base(device->aux_map_ctx);
       assert(aux_base_addr % (32 * 1024) == 0);
       anv_batch_emit(&batch, GENX(MI_LOAD_REGISTER_IMM), lri) {
          lri.RegisterOffset = GENX(GFX_AUX_TABLE_BASE_ADDR_num);
@@ -300,7 +332,7 @@ genX(init_device_state)(struct anv_device *device)
    }
 
 #if GEN_GEN >= 12
-   const struct gen_l3_config *cfg = gen_get_default_l3_config(&device->info);
+   const struct intel_l3_config *cfg = intel_get_default_l3_config(&device->info);
    if (!cfg) {
       /* Platforms with no configs just setup full-way allocation. */
       uint32_t l3cr;
@@ -317,8 +349,154 @@ genX(init_device_state)(struct anv_device *device)
 
    assert(batch.next <= batch.end);
 
-   return anv_queue_submit_simple_batch(&device->queue, &batch);
+   return anv_queue_submit_simple_batch(queue, &batch);
 }
+
+void
+genX(init_physical_device_state)(ASSERTED struct anv_physical_device *device)
+{
+   assert(device->info.genx10 == GEN_VERSIONx10);
+}
+
+VkResult
+genX(init_device_state)(struct anv_device *device)
+{
+   VkResult res;
+
+   for (uint32_t i = 0; i < device->queue_count; i++) {
+      struct anv_queue *queue = &device->queues[i];
+      switch (queue->family->engine_class) {
+      case I915_ENGINE_CLASS_RENDER:
+         res = init_render_queue_state(queue);
+         break;
+      default:
+         res = vk_error(VK_ERROR_INITIALIZATION_FAILED);
+         break;
+      }
+      if (res != VK_SUCCESS)
+         return res;
+   }
+
+   return res;
+}
+
+void
+genX(emit_multisample)(struct anv_batch *batch, uint32_t samples,
+                       const VkSampleLocationEXT *locations)
+{
+   anv_batch_emit(batch, GENX(3DSTATE_MULTISAMPLE), ms) {
+      ms.NumberofMultisamples       = __builtin_ffs(samples) - 1;
+
+      ms.PixelLocation              = CENTER;
+#if GEN_GEN >= 8
+      /* The PRM says that this bit is valid only for DX9:
+       *
+       *    SW can choose to set this bit only for DX9 API. DX10/OGL API's
+       *    should not have any effect by setting or not setting this bit.
+       */
+      ms.PixelPositionOffsetEnable  = false;
+#else
+
+      if (locations) {
+         switch (samples) {
+         case 1:
+            INTEL_SAMPLE_POS_1X_ARRAY(ms.Sample, locations);
+            break;
+         case 2:
+            INTEL_SAMPLE_POS_2X_ARRAY(ms.Sample, locations);
+            break;
+         case 4:
+            INTEL_SAMPLE_POS_4X_ARRAY(ms.Sample, locations);
+            break;
+         case 8:
+            INTEL_SAMPLE_POS_8X_ARRAY(ms.Sample, locations);
+            break;
+         default:
+            break;
+         }
+      } else {
+         switch (samples) {
+         case 1:
+            INTEL_SAMPLE_POS_1X(ms.Sample);
+            break;
+         case 2:
+            INTEL_SAMPLE_POS_2X(ms.Sample);
+            break;
+         case 4:
+            INTEL_SAMPLE_POS_4X(ms.Sample);
+            break;
+         case 8:
+            INTEL_SAMPLE_POS_8X(ms.Sample);
+            break;
+         default:
+            break;
+         }
+      }
+#endif
+   }
+}
+
+#if GEN_GEN >= 8
+void
+genX(emit_sample_pattern)(struct anv_batch *batch, uint32_t samples,
+                          const VkSampleLocationEXT *locations)
+{
+   /* See the Vulkan 1.0 spec Table 24.1 "Standard sample locations" and
+    * VkPhysicalDeviceFeatures::standardSampleLocations.
+    */
+   anv_batch_emit(batch, GENX(3DSTATE_SAMPLE_PATTERN), sp) {
+      if (locations) {
+         /* The Skylake PRM Vol. 2a "3DSTATE_SAMPLE_PATTERN" says:
+          *
+          *    "When programming the sample offsets (for NUMSAMPLES_4 or _8
+          *    and MSRASTMODE_xxx_PATTERN), the order of the samples 0 to 3
+          *    (or 7 for 8X, or 15 for 16X) must have monotonically increasing
+          *    distance from the pixel center. This is required to get the
+          *    correct centroid computation in the device."
+          *
+          * However, the Vulkan spec seems to require that the the samples
+          * occur in the order provided through the API. The standard sample
+          * patterns have the above property that they have monotonically
+          * increasing distances from the center but client-provided ones do
+          * not. As long as this only affects centroid calculations as the
+          * docs say, we should be ok because OpenGL and Vulkan only require
+          * that the centroid be some lit sample and that it's the same for
+          * all samples in a pixel; they have no requirement that it be the
+          * one closest to center.
+          */
+         switch (samples) {
+         case 1:
+            INTEL_SAMPLE_POS_1X_ARRAY(sp._1xSample, locations);
+            break;
+         case 2:
+            INTEL_SAMPLE_POS_2X_ARRAY(sp._2xSample, locations);
+            break;
+         case 4:
+            INTEL_SAMPLE_POS_4X_ARRAY(sp._4xSample, locations);
+            break;
+         case 8:
+            INTEL_SAMPLE_POS_8X_ARRAY(sp._8xSample, locations);
+            break;
+#if GEN_GEN >= 9
+         case 16:
+            INTEL_SAMPLE_POS_16X_ARRAY(sp._16xSample, locations);
+            break;
+#endif
+         default:
+            break;
+         }
+      } else {
+         INTEL_SAMPLE_POS_1X(sp._1xSample);
+         INTEL_SAMPLE_POS_2X(sp._2xSample);
+         INTEL_SAMPLE_POS_4X(sp._4xSample);
+         INTEL_SAMPLE_POS_8X(sp._8xSample);
+#if GEN_GEN >= 9
+         INTEL_SAMPLE_POS_16X(sp._16xSample);
+#endif
+      }
+   }
+}
+#endif
 
 static uint32_t
 vk_to_gen_tex_filter(VkFilter filter, bool anisotropyEnable)
@@ -504,9 +682,12 @@ VkResult genX(CreateSampler)(
       /* From Broadwell PRM, SAMPLER_STATE:
        *   "Mip Mode Filter must be set to MIPFILTER_NONE for Planar YUV surfaces."
        */
+      const bool isl_format_is_planar_yuv = sampler->conversion &&
+         isl_format_is_yuv(sampler->conversion->format->planes[0].isl_format) &&
+         isl_format_is_planar(sampler->conversion->format->planes[0].isl_format);
+
       const uint32_t mip_filter_mode =
-         (sampler->conversion &&
-          isl_format_is_yuv(sampler->conversion->format->planes[0].isl_format)) ?
+         isl_format_is_planar_yuv ?
          MIPFILTER_NONE : vk_to_gen_mipmap_mode[pCreateInfo->mipmapMode];
 
       struct GENX(SAMPLER_STATE) sampler_state = {

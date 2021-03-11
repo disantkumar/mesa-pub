@@ -23,33 +23,36 @@
  */
 
 #include "radv_private.h"
+#include "radv_debug.h"
 
 #include "vk_format.h"
 #include "sid.h"
 
 #include "vk_util.h"
 
+#include "drm-uapi/drm_fourcc.h"
 #include "util/half_float.h"
 #include "util/format_srgb.h"
 #include "util/format_r11g11b10f.h"
 #include "util/format_rgb9e5.h"
+#include "vulkan/util/vk_format.h"
 
-uint32_t radv_translate_buffer_dataformat(const struct vk_format_description *desc,
+uint32_t radv_translate_buffer_dataformat(const struct util_format_description *desc,
 					  int first_non_void)
 {
 	unsigned type;
 	int i;
 
-	assert(desc->layout != VK_FORMAT_LAYOUT_MULTIPLANE);
+	assert(util_format_get_num_planes(desc->format) == 1);
 
-	if (desc->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+	if (desc->format == PIPE_FORMAT_R11G11B10_FLOAT)
 		return V_008F0C_BUF_DATA_FORMAT_10_11_11;
 
 	if (first_non_void < 0)
 		return V_008F0C_BUF_DATA_FORMAT_INVALID;
 	type = desc->channel[first_non_void].type;
 
-	if (type == VK_FORMAT_TYPE_FIXED)
+	if (type == UTIL_FORMAT_TYPE_FIXED)
 		return V_008F0C_BUF_DATA_FORMAT_INVALID;
 	if (desc->nr_channels == 4 &&
 	    desc->channel[0].size == 10 &&
@@ -90,7 +93,7 @@ uint32_t radv_translate_buffer_dataformat(const struct vk_format_description *de
 		 * 'Memory reads of data in memory that is 32 or 64 bits do not
 		 * undergo any format conversion.'
 		 */
-		if (type != VK_FORMAT_TYPE_FLOAT &&
+		if (type != UTIL_FORMAT_TYPE_FLOAT &&
 		    !desc->channel[first_non_void].pure_integer)
 			return V_008F0C_BUF_DATA_FORMAT_INVALID;
 
@@ -113,19 +116,19 @@ uint32_t radv_translate_buffer_dataformat(const struct vk_format_description *de
 	return V_008F0C_BUF_DATA_FORMAT_INVALID;
 }
 
-uint32_t radv_translate_buffer_numformat(const struct vk_format_description *desc,
+uint32_t radv_translate_buffer_numformat(const struct util_format_description *desc,
 					 int first_non_void)
 {
-	assert(desc->layout != VK_FORMAT_LAYOUT_MULTIPLANE);
+	assert(util_format_get_num_planes(desc->format) == 1);
 
-	if (desc->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+	if (desc->format == PIPE_FORMAT_R11G11B10_FLOAT)
 		return V_008F0C_BUF_NUM_FORMAT_FLOAT;
 
 	if (first_non_void < 0)
 		return ~0;
 
 	switch (desc->channel[first_non_void].type) {
-	case VK_FORMAT_TYPE_SIGNED:
+	case UTIL_FORMAT_TYPE_SIGNED:
 		if (desc->channel[first_non_void].normalized)
 			return V_008F0C_BUF_NUM_FORMAT_SNORM;
 		else if (desc->channel[first_non_void].pure_integer)
@@ -133,7 +136,7 @@ uint32_t radv_translate_buffer_numformat(const struct vk_format_description *des
 		else
 			return V_008F0C_BUF_NUM_FORMAT_SSCALED;
 		break;
-	case VK_FORMAT_TYPE_UNSIGNED:
+	case UTIL_FORMAT_TYPE_UNSIGNED:
 		if (desc->channel[first_non_void].normalized)
 			return V_008F0C_BUF_NUM_FORMAT_UNORM;
 		else if (desc->channel[first_non_void].pure_integer)
@@ -141,14 +144,14 @@ uint32_t radv_translate_buffer_numformat(const struct vk_format_description *des
 		else
 			return V_008F0C_BUF_NUM_FORMAT_USCALED;
 		break;
-	case VK_FORMAT_TYPE_FLOAT:
+	case UTIL_FORMAT_TYPE_FLOAT:
 	default:
 		return V_008F0C_BUF_NUM_FORMAT_FLOAT;
 	}
 }
 
 uint32_t radv_translate_tex_dataformat(VkFormat format,
-				       const struct vk_format_description *desc,
+				       const struct util_format_description *desc,
 				       int first_non_void)
 {
 	bool uniform = true;
@@ -161,7 +164,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 	/* Colorspace (return non-RGB formats directly). */
 	switch (desc->colorspace) {
 		/* Depth stencil formats */
-	case VK_FORMAT_COLORSPACE_ZS:
+	case UTIL_FORMAT_COLORSPACE_ZS:
 		switch (format) {
 		case VK_FORMAT_D16_UNORM:
 			return V_008F14_IMG_DATA_FORMAT_16;
@@ -178,10 +181,10 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 			goto out_unknown;
 		}
 
-	case VK_FORMAT_COLORSPACE_YUV:
+	case UTIL_FORMAT_COLORSPACE_YUV:
 		goto out_unknown; /* TODO */
 
-	case VK_FORMAT_COLORSPACE_SRGB:
+	case UTIL_FORMAT_COLORSPACE_SRGB:
 		if (desc->nr_channels != 4 && desc->nr_channels != 1)
 			goto out_unknown;
 		break;
@@ -190,7 +193,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 		break;
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_SUBSAMPLED) {
+	if (desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
 		switch(format) {
 		/* Don't ask me why this looks inverted. PAL does the same. */
 		case VK_FORMAT_G8B8G8R8_422_UNORM:
@@ -202,7 +205,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 		}
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_RGTC) {
+	if (desc->layout == UTIL_FORMAT_LAYOUT_RGTC) {
 		switch(format) {
 		case VK_FORMAT_BC4_UNORM_BLOCK:
 		case VK_FORMAT_BC4_SNORM_BLOCK:
@@ -215,7 +218,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 		}
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_S3TC) {
+	if (desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
 		switch(format) {
 		case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
 		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
@@ -233,7 +236,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 		}
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_BPTC) {
+	if (desc->layout == UTIL_FORMAT_LAYOUT_BPTC) {
 		switch(format) {
 		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
 		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
@@ -246,7 +249,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 		}
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_ETC) {
+	if (desc->layout == UTIL_FORMAT_LAYOUT_ETC) {
 		switch (format) {
 		case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
@@ -278,7 +281,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 
 	/* hw cannot support mixed formats (except depth/stencil, since only
 	 * depth is read).*/
-	if (desc->is_mixed && desc->colorspace != VK_FORMAT_COLORSPACE_ZS)
+	if (desc->is_mixed && desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
 		goto out_unknown;
 
 	/* See whether the components are of the same size. */
@@ -314,7 +317,7 @@ uint32_t radv_translate_tex_dataformat(VkFormat format,
 			    desc->channel[2].size == 10 &&
 			    desc->channel[3].size == 2) {
 				/* Closed VK driver does this also no 2/10/10/10 snorm */
-				if (desc->channel[0].type == VK_FORMAT_TYPE_SIGNED &&
+				if (desc->channel[0].type == UTIL_FORMAT_TYPE_SIGNED &&
 				    desc->channel[0].normalized)
 					goto out_unknown;
 				return V_008F14_IMG_DATA_FORMAT_2_10_10_10;
@@ -383,7 +386,7 @@ out_unknown:
 }
 
 uint32_t radv_translate_tex_numformat(VkFormat format,
-				      const struct vk_format_description *desc,
+				      const struct util_format_description *desc,
 				      int first_non_void)
 {
 	assert(vk_format_get_plane_count(format) == 1);
@@ -413,25 +416,25 @@ uint32_t radv_translate_tex_numformat(VkFormat format,
 				default:
 					return V_008F14_IMG_NUM_FORMAT_UNORM;
 				}
-			} else if (desc->layout == VK_FORMAT_LAYOUT_SUBSAMPLED) {
+			} else if (desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
 				return V_008F14_IMG_NUM_FORMAT_UNORM;
 			} else {
 				return V_008F14_IMG_NUM_FORMAT_FLOAT;
 			}
-		} else if (desc->colorspace == VK_FORMAT_COLORSPACE_SRGB) {
+		} else if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) {
 			return V_008F14_IMG_NUM_FORMAT_SRGB;
 		} else {
 			switch (desc->channel[first_non_void].type) {
-			case VK_FORMAT_TYPE_FLOAT:
+			case UTIL_FORMAT_TYPE_FLOAT:
 				return V_008F14_IMG_NUM_FORMAT_FLOAT;
-			case VK_FORMAT_TYPE_SIGNED:
+			case UTIL_FORMAT_TYPE_SIGNED:
 				if (desc->channel[first_non_void].normalized)
 					return V_008F14_IMG_NUM_FORMAT_SNORM;
 				else if (desc->channel[first_non_void].pure_integer)
 					return V_008F14_IMG_NUM_FORMAT_SINT;
 				else
 					return V_008F14_IMG_NUM_FORMAT_SSCALED;
-			case VK_FORMAT_TYPE_UNSIGNED:
+			case UTIL_FORMAT_TYPE_UNSIGNED:
 				if (desc->channel[first_non_void].normalized)
 					return V_008F14_IMG_NUM_FORMAT_UNORM;
 				else if (desc->channel[first_non_void].pure_integer)
@@ -446,27 +449,27 @@ uint32_t radv_translate_tex_numformat(VkFormat format,
 }
 
 uint32_t radv_translate_color_numformat(VkFormat format,
-					const struct vk_format_description *desc,
+					const struct util_format_description *desc,
 					int first_non_void)
 {
 	unsigned ntype;
 
 	assert(vk_format_get_plane_count(format) == 1);
 
-	if (first_non_void == -1 || desc->channel[first_non_void].type == VK_FORMAT_TYPE_FLOAT)
+	if (first_non_void == -1 || desc->channel[first_non_void].type == UTIL_FORMAT_TYPE_FLOAT)
 		ntype = V_028C70_NUMBER_FLOAT;
 	else {
 		ntype = V_028C70_NUMBER_UNORM;
-		if (desc->colorspace == VK_FORMAT_COLORSPACE_SRGB)
+		if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
 			ntype = V_028C70_NUMBER_SRGB;
-		else if (desc->channel[first_non_void].type == VK_FORMAT_TYPE_SIGNED) {
+		else if (desc->channel[first_non_void].type == UTIL_FORMAT_TYPE_SIGNED) {
 			if (desc->channel[first_non_void].pure_integer) {
 				ntype = V_028C70_NUMBER_SINT;
 			} else if (desc->channel[first_non_void].normalized) {
 				ntype = V_028C70_NUMBER_SNORM;
 			} else
 				ntype = ~0u;
-		} else if (desc->channel[first_non_void].type == VK_FORMAT_TYPE_UNSIGNED) {
+		} else if (desc->channel[first_non_void].type == UTIL_FORMAT_TYPE_UNSIGNED) {
 			if (desc->channel[first_non_void].pure_integer) {
 				ntype = V_028C70_NUMBER_UINT;
 			} else if (desc->channel[first_non_void].normalized) {
@@ -480,7 +483,7 @@ uint32_t radv_translate_color_numformat(VkFormat format,
 
 static bool radv_is_sampler_format_supported(VkFormat format, bool *linear_sampling)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	uint32_t num_format;
 	if (!desc || format == VK_FORMAT_UNDEFINED ||
 	    format == VK_FORMAT_R64_UINT || format == VK_FORMAT_R64_SINT)
@@ -507,7 +510,7 @@ static bool radv_is_sampler_format_supported(VkFormat format, bool *linear_sampl
 static bool radv_is_storage_image_format_supported(struct radv_physical_device *physical_device,
 						   VkFormat format)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	unsigned data_format, num_format;
 	if (!desc || format == VK_FORMAT_UNDEFINED)
 		return false;
@@ -559,7 +562,7 @@ static bool radv_is_storage_image_format_supported(struct radv_physical_device *
 
 bool radv_is_buffer_format_supported(VkFormat format, bool *scaled)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	unsigned data_format, num_format;
 	if (!desc || format == VK_FORMAT_UNDEFINED)
 		return false;
@@ -578,7 +581,7 @@ bool radv_is_buffer_format_supported(VkFormat format, bool *scaled)
 bool radv_is_colorbuffer_format_supported(const struct radv_physical_device *pdevice,
                                           VkFormat format, bool *blendable)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	uint32_t color_format = radv_translate_colorformat(format);
 	uint32_t color_swap = radv_translate_colorswap(format, false);
 	uint32_t color_num_format = radv_translate_color_numformat(format,
@@ -649,18 +652,19 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 					   VkFormatProperties *out_properties)
 {
 	VkFormatFeatureFlags linear = 0, tiled = 0, buffer = 0;
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	bool blendable;
 	bool scaled = false;
 	/* TODO: implement some software emulation of SUBSAMPLED formats. */
-	if (!desc || desc->layout == VK_FORMAT_LAYOUT_SUBSAMPLED) {
+	if (!desc || vk_format_to_pipe_format(format) == PIPE_FORMAT_NONE ||
+	    desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
 		out_properties->linearTilingFeatures = linear;
 		out_properties->optimalTilingFeatures = tiled;
 		out_properties->bufferFeatures = buffer;
 		return;
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_ETC &&
+	if (desc->layout == UTIL_FORMAT_LAYOUT_ETC &&
 	    !radv_device_supports_etc(physical_device)) {
 		out_properties->linearTilingFeatures = linear;
 		out_properties->optimalTilingFeatures = tiled;
@@ -668,8 +672,8 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 		return;
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_MULTIPLANE ||
-	    desc->layout == VK_FORMAT_LAYOUT_SUBSAMPLED) {
+	if (vk_format_get_plane_count(format) > 1 ||
+	    desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
 		uint32_t tiling = VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
 		                  VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
 		                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
@@ -677,12 +681,12 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 		                  VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT;
 
 		/* The subsampled formats have no support for linear filters. */
-		if (desc->layout != VK_FORMAT_LAYOUT_SUBSAMPLED) {
+		if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
 			tiling |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
 		}
 
 		/* Fails for unknown reasons with linear tiling & subsampled formats. */
-		out_properties->linearTilingFeatures = desc->layout == VK_FORMAT_LAYOUT_SUBSAMPLED ? 0 : tiling;
+		out_properties->linearTilingFeatures = desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED ? 0 : tiling;
 		out_properties->optimalTilingFeatures = tiling;
 		out_properties->bufferFeatures = 0;
 		return;
@@ -714,8 +718,11 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 			if (radv_is_filter_minmax_format_supported(format))
 				 tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
+			if (vk_format_has_depth(format))
+				tiled |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
 			/* Don't support blitting surfaces with depth/stencil. */
-			if (vk_format_is_depth(format) && vk_format_is_stencil(format))
+			if (vk_format_has_depth(format) && vk_format_has_stencil(format))
 				tiled &= ~VK_FORMAT_FEATURE_BLIT_DST_BIT;
 
 			/* Don't support linear depth surfaces */
@@ -804,7 +811,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
 
 uint32_t radv_translate_colorformat(VkFormat format)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 
 #define HAS_SIZE(x,y,z,w)						\
 	(desc->channel[0].size == (x) && desc->channel[1].size == (y) && \
@@ -816,12 +823,12 @@ uint32_t radv_translate_colorformat(VkFormat format)
 	if (format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
 		return V_028C70_COLOR_5_9_9_9;
 
-	if (desc->layout != VK_FORMAT_LAYOUT_PLAIN)
+	if (desc->layout != UTIL_FORMAT_LAYOUT_PLAIN)
 		return V_028C70_COLOR_INVALID;
 
 	/* hw cannot support mixed formats (except depth/stencil, since
 	 * stencil is not written to). */
-	if (desc->is_mixed && desc->colorspace != VK_FORMAT_COLORSPACE_ZS)
+	if (desc->is_mixed && desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
 		return V_028C70_COLOR_INVALID;
 
 	switch (desc->nr_channels) {
@@ -942,9 +949,9 @@ uint32_t radv_translate_dbformat(VkFormat format)
 
 unsigned radv_translate_colorswap(VkFormat format, bool do_endian_swap)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 
-#define HAS_SWIZZLE(chan,swz) (desc->swizzle[chan] == VK_SWIZZLE_##swz)
+#define HAS_SWIZZLE(chan,swz) (desc->swizzle[chan] == PIPE_SWIZZLE_##swz)
 
 	if (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
 		return V_028C70_SWAP_STD;
@@ -952,7 +959,7 @@ unsigned radv_translate_colorswap(VkFormat format, bool do_endian_swap)
 	if (format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32)
 		return V_028C70_SWAP_STD;
 
-	if (desc->layout != VK_FORMAT_LAYOUT_PLAIN)
+	if (desc->layout != UTIL_FORMAT_LAYOUT_PLAIN)
 		return ~0U;
 
 	switch (desc->nr_channels) {
@@ -1007,7 +1014,7 @@ bool radv_format_pack_clear_color(VkFormat format,
 				  uint32_t clear_vals[2],
 				  VkClearColorValue *value)
 {
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 
 	if (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
 		clear_vals[0] = float3_to_r11g11b10f(value->float32);
@@ -1019,7 +1026,7 @@ bool radv_format_pack_clear_color(VkFormat format,
 		return true;
 	}
 
-	if (desc->layout != VK_FORMAT_LAYOUT_PLAIN) {
+	if (desc->layout != UTIL_FORMAT_LAYOUT_PLAIN) {
 		fprintf(stderr, "failed to fast clear for non-plain format %d\n", format);
 		return false;
 	}
@@ -1036,7 +1043,7 @@ bool radv_format_pack_clear_color(VkFormat format,
 		 * and we can skip swizzling checks as alpha always comes last for these and
 		 * we do not care about the rest as they have to be the same.
 		 */
-		if (desc->channel[0].type == VK_FORMAT_TYPE_FLOAT) {
+		if (desc->channel[0].type == UTIL_FORMAT_TYPE_FLOAT) {
 			if (value->float32[0] != value->float32[1] ||
 			    value->float32[0] != value->float32[2])
 				return false;
@@ -1055,23 +1062,23 @@ bool radv_format_pack_clear_color(VkFormat format,
 		if (desc->swizzle[c] >= 4)
 			continue;
 
-		const struct vk_format_channel_description *channel = &desc->channel[desc->swizzle[c]];
+		const struct util_format_channel_description *channel = &desc->channel[desc->swizzle[c]];
 		assert(channel->size);
 
 		uint64_t v = 0;
 		if (channel->pure_integer) {
 			v = value->uint32[c]  & ((1ULL << channel->size) - 1);
 		} else if (channel->normalized) {
-			if (channel->type == VK_FORMAT_TYPE_UNSIGNED &&
+			if (channel->type == UTIL_FORMAT_TYPE_UNSIGNED &&
 			    desc->swizzle[c] < 3 &&
-			    desc->colorspace == VK_FORMAT_COLORSPACE_SRGB) {
+			    desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) {
 				assert(channel->size == 8);
 
 				v = util_format_linear_float_to_srgb_8unorm(value->float32[c]);
 			} else {
 				float f = MIN2(value->float32[c], 1.0f);
 
-				if (channel->type == VK_FORMAT_TYPE_UNSIGNED) {
+				if (channel->type == UTIL_FORMAT_TYPE_UNSIGNED) {
 					f = MAX2(f, 0.0f) * ((1ULL << channel->size) - 1);
 				} else {
 					f = MAX2(f, -1.0f) * ((1ULL << (channel->size - 1)) - 1);
@@ -1085,7 +1092,7 @@ bool radv_format_pack_clear_color(VkFormat format,
 
 				v = (uint64_t)f;
 			}
-		} else if (channel->type == VK_FORMAT_TYPE_FLOAT) {
+		} else if (channel->type == UTIL_FORMAT_TYPE_FLOAT) {
 			if (channel->size == 32) {
 				memcpy(&v, &value->float32[c], 4);
 			} else if(channel->size == 16) {
@@ -1119,6 +1126,167 @@ void radv_GetPhysicalDeviceFormatProperties(
 						   pFormatProperties);
 }
 
+static const struct ac_modifier_options radv_modifier_options = {
+	.dcc = false,
+	.dcc_retile = false,
+};
+
+static VkFormatFeatureFlags
+radv_get_modifier_flags(struct radv_physical_device *dev,
+                        VkFormat format, uint64_t modifier,
+                        const VkFormatProperties *props)
+{
+	VkFormatFeatureFlags features;
+
+	if (vk_format_is_compressed(format) || vk_format_is_depth_or_stencil(format))
+		return 0;
+
+	if (modifier == DRM_FORMAT_MOD_LINEAR)
+		features = props->linearTilingFeatures;
+	else
+		features = props->optimalTilingFeatures;
+
+	if (modifier != DRM_FORMAT_MOD_LINEAR && vk_format_get_plane_count(format) > 1)
+		return 0;
+
+	if (ac_modifier_has_dcc(modifier)) {
+		features &= ~VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+
+		if (dev->instance->debug_flags & (RADV_DEBUG_NO_DCC | RADV_DEBUG_NO_DISPLAY_DCC))
+			return 0;
+	}
+
+	return features;
+}
+
+static void radv_list_drm_format_modifiers(struct radv_physical_device *dev,
+                                           VkFormat format,
+                                           VkFormatProperties2 *pFormatProperties)
+{
+	VkDrmFormatModifierPropertiesListEXT *mod_list =
+		vk_find_struct(pFormatProperties, DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT);
+	unsigned mod_count;
+
+	if (!mod_list)
+		return;
+
+	if (vk_format_is_compressed(format) || vk_format_is_depth_or_stencil(format)) {
+		mod_list->drmFormatModifierCount = 0;
+		return;
+	}
+
+	ac_get_supported_modifiers(&dev->rad_info, &radv_modifier_options,
+	                           vk_format_to_pipe_format(format), &mod_count, NULL);
+	if (!mod_list->pDrmFormatModifierProperties) {
+		mod_list->drmFormatModifierCount = mod_count;
+		return;
+	}
+
+	mod_count = MIN2(mod_count, mod_list->drmFormatModifierCount);
+
+	uint64_t *mods = malloc(mod_count * sizeof(uint64_t));
+	if (!mods) {
+		/* We can't return an error here ... */
+		mod_list->drmFormatModifierCount = 0;
+		return;
+	}
+	ac_get_supported_modifiers(&dev->rad_info, &radv_modifier_options,
+	                           vk_format_to_pipe_format(format), &mod_count, mods);
+
+	mod_list->drmFormatModifierCount = 0;
+	for (unsigned i = 0; i < mod_count; ++i) {
+		VkFormatFeatureFlags features =
+			radv_get_modifier_flags(dev, format, mods[i], &pFormatProperties->formatProperties);
+		unsigned planes = vk_format_get_plane_count(format);
+		if (planes == 1) {
+			if (ac_modifier_has_dcc_retile(mods[i]))
+				planes = 3;
+			else if (ac_modifier_has_dcc(mods[i]))
+				planes = 2;
+		}
+
+		if (!features)
+			continue;
+
+		mod_list->pDrmFormatModifierProperties[mod_list->drmFormatModifierCount].drmFormatModifier = mods[i];
+		mod_list->pDrmFormatModifierProperties[mod_list->drmFormatModifierCount].drmFormatModifierPlaneCount = planes;
+		mod_list->pDrmFormatModifierProperties[mod_list->drmFormatModifierCount].drmFormatModifierTilingFeatures = features;
+
+		++mod_list->drmFormatModifierCount;
+	}
+
+	free(mods);
+}
+
+
+static VkResult radv_check_modifier_support(struct radv_physical_device *dev,
+                                       const VkPhysicalDeviceImageFormatInfo2 *info,
+                                       VkImageFormatProperties *props,
+                                       VkFormat format,
+                                       uint64_t modifier)
+{
+	if (info->type != VK_IMAGE_TYPE_2D)
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+	/* We did not add modifiers for sparse textures. */
+	if (info->flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+	                   VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+	                   VK_IMAGE_CREATE_SPARSE_ALIASED_BIT))
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+	/*
+	 * Need to check the modifier is supported in general:
+	 * "If the drmFormatModifier is incompatible with the parameters specified
+	 * in VkPhysicalDeviceImageFormatInfo2 and its pNext chain, then
+	 * vkGetPhysicalDeviceImageFormatProperties2 returns VK_ERROR_FORMAT_NOT_SUPPORTED.
+	 * The implementation must support the query of any drmFormatModifier,
+	 * including unknown and invalid modifier values."
+	 */
+	VkDrmFormatModifierPropertiesListEXT mod_list = {
+		.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+	};
+
+	VkFormatProperties2 format_props2 = {
+		.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+		.pNext = &mod_list
+	};
+
+	radv_GetPhysicalDeviceFormatProperties2(radv_physical_device_to_handle(dev), format,  &format_props2);
+
+	if (!mod_list.drmFormatModifierCount)
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+	mod_list.pDrmFormatModifierProperties = calloc(mod_list.drmFormatModifierCount, sizeof(*mod_list.pDrmFormatModifierProperties));
+	if (!mod_list.pDrmFormatModifierProperties)
+		return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+	radv_GetPhysicalDeviceFormatProperties2(radv_physical_device_to_handle(dev), format,  &format_props2);
+
+	bool found = false;
+	for (uint32_t i = 0; i < mod_list.drmFormatModifierCount && !found; ++i)
+		if (mod_list.pDrmFormatModifierProperties[i].drmFormatModifier == modifier)
+			found = true;
+
+	free(mod_list.pDrmFormatModifierProperties);
+
+	if (!found)
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+	if (ac_modifier_has_dcc(modifier) &&
+	    !radv_are_formats_dcc_compatible(dev, info->pNext, format, info->flags))
+		return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+	/* We can expand this as needed and implemented but there is not much demand
+	 * for more. */
+	if (ac_modifier_has_dcc(modifier)) {
+		props->maxMipLevels = 1;
+		props->maxArrayLayers = 1;
+	}
+	/* We don't support MSAA for modifiers */
+	props->sampleCounts &= VK_SAMPLE_COUNT_1_BIT;
+	return VK_SUCCESS;
+}
+
 void radv_GetPhysicalDeviceFormatProperties2(
 	VkPhysicalDevice                            physicalDevice,
 	VkFormat                                    format,
@@ -1129,6 +1297,8 @@ void radv_GetPhysicalDeviceFormatProperties2(
 	radv_physical_device_get_format_properties(physical_device,
 						   format,
 						   &pFormatProperties->formatProperties);
+
+	radv_list_drm_format_modifiers(physical_device, format, pFormatProperties);
 }
 
 static VkResult radv_get_image_format_properties(struct radv_physical_device *physical_device,
@@ -1143,15 +1313,28 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 	uint32_t maxMipLevels;
 	uint32_t maxArraySize;
 	VkSampleCountFlags sampleCounts = VK_SAMPLE_COUNT_1_BIT;
-	const struct vk_format_description *desc = vk_format_description(format);
+	const struct util_format_description *desc = vk_format_description(format);
 	enum chip_class chip_class = physical_device->rad_info.chip_class;
+	VkImageTiling tiling = info->tiling;
+	const VkPhysicalDeviceImageDrmFormatModifierInfoEXT *mod_info =
+		vk_find_struct_const(info->pNext, PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
+	VkResult result = VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+	if (mod_info) {
+		tiling = mod_info->drmFormatModifier == DRM_FORMAT_MOD_LINEAR ?
+			VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL;
+	}
 
 	radv_physical_device_get_format_properties(physical_device, format,
 						   &format_props);
-	if (info->tiling == VK_IMAGE_TILING_LINEAR) {
+	if (tiling == VK_IMAGE_TILING_LINEAR) {
 		format_feature_flags = format_props.linearTilingFeatures;
-	} else if (info->tiling == VK_IMAGE_TILING_OPTIMAL) {
+	} else if (tiling == VK_IMAGE_TILING_OPTIMAL) {
 		format_feature_flags = format_props.optimalTilingFeatures;
+	} else if (tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+		format_feature_flags = radv_get_modifier_flags(physical_device, format,
+		                                               mod_info->drmFormatModifier,
+		                                               &format_props);
 	} else {
 		unreachable("bad VkImageTiling");
 	}
@@ -1194,13 +1377,13 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 		break;
 	}
 
-	if (desc->layout == VK_FORMAT_LAYOUT_SUBSAMPLED) {
+	if (desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
 		/* Might be able to support but the entire format support is
 		 * messy, so taking the lazy way out. */
 		maxArraySize = 1;
 	}
 
-	if (info->tiling == VK_IMAGE_TILING_OPTIMAL &&
+	if (tiling == VK_IMAGE_TILING_OPTIMAL &&
 	    info->type == VK_IMAGE_TYPE_2D &&
 	    (format_feature_flags & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
 				     VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) &&
@@ -1208,7 +1391,7 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 		sampleCounts |= VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT;
 	}
 
-	if (info->tiling == VK_IMAGE_TILING_LINEAR &&
+	if (tiling == VK_IMAGE_TILING_LINEAR &&
 	    (format == VK_FORMAT_R32G32B32_SFLOAT ||
 	     format == VK_FORMAT_R32G32B32_SINT ||
 	     format == VK_FORMAT_R32G32B32_UINT)) {
@@ -1279,7 +1462,7 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 
 	/* Sparse resources with multi-planar formats are unsupported. */
 	if (info->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) {
-		if (desc->plane_count > 1)
+		if (vk_format_get_plane_count(format) > 1)
 			goto unsupported;
 	}
 
@@ -1288,7 +1471,7 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 		if (physical_device->rad_info.chip_class < GFX8)
 			goto unsupported;
 
-		if (desc->plane_count > 1 || info->type != VK_IMAGE_TYPE_2D ||
+		if (vk_format_get_plane_count(format) > 1 || info->type != VK_IMAGE_TYPE_2D ||
 		    info->tiling != VK_IMAGE_TILING_OPTIMAL ||
 		    vk_format_is_depth_or_stencil(format))
 			goto unsupported;
@@ -1306,6 +1489,14 @@ static VkResult radv_get_image_format_properties(struct radv_physical_device *ph
 		.maxResourceSize = UINT32_MAX,
 	};
 
+	if (mod_info) {
+		result = radv_check_modifier_support(physical_device, info,
+		                                     pImageFormatProperties,
+		                                     format, mod_info->drmFormatModifier);
+		if (result != VK_SUCCESS)
+			goto unsupported;
+	}
+
 	return VK_SUCCESS;
 unsupported:
 	*pImageFormatProperties = (VkImageFormatProperties) {
@@ -1316,7 +1507,7 @@ unsupported:
 		.maxResourceSize = 0,
 	};
 
-	return VK_ERROR_FORMAT_NOT_SUPPORTED;
+	return result;
 }
 
 VkResult radv_GetPhysicalDeviceImageFormatProperties(
@@ -1359,23 +1550,35 @@ get_external_image_format_properties(struct radv_physical_device *physical_devic
 		return;
 
 	switch (handleType) {
-	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
+		if (pImageFormatInfo->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
+			break;
+
 		switch (pImageFormatInfo->type) {
 		case VK_IMAGE_TYPE_2D:
-			flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT|VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+			flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+
+			compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+			break;
+		default:
+			break;
+		}
+		break;
+	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+		switch (pImageFormatInfo->type) {
+		case VK_IMAGE_TYPE_2D:
+			flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
 			if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
 				flags |= VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
 
-			compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
-						      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+			compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
 			break;
 		default:
 			break;
 		}
 		break;
 	case VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID:
-		if (!physical_device->supported_extensions.ANDROID_external_memory_android_hardware_buffer)
+		if (!physical_device->vk.supported_extensions.ANDROID_external_memory_android_hardware_buffer)
 			break;
 
 		if (!radv_android_gralloc_supports_format(pImageFormatInfo->format,
@@ -1460,7 +1663,7 @@ VkResult radv_GetPhysicalDeviceImageFormatProperties2(
 		}
 	}
 
-	bool ahb_supported = physical_device->supported_extensions.ANDROID_external_memory_android_hardware_buffer;
+	bool ahb_supported = physical_device->vk.supported_extensions.ANDROID_external_memory_android_hardware_buffer;
 	if (android_usage && ahb_supported) {
 #if RADV_SUPPORT_ANDROID_HARDWARE_BUFFER
 		android_usage->androidHardwareBufferUsage =
@@ -1576,9 +1779,9 @@ void radv_GetPhysicalDeviceSparseImageFormatProperties2(
 		return;
 	}
 
-	VK_OUTARRAY_MAKE(out, pProperties, pPropertyCount);
+	VK_OUTARRAY_MAKE_TYPED(VkSparseImageFormatProperties2, out, pProperties, pPropertyCount);
 
-	vk_outarray_append(&out, prop) {
+	vk_outarray_append_typed(VkSparseImageFormatProperties2 , &out, prop) {
 		fill_sparse_image_format_properties(pdev, pFormatInfo->format, &prop->properties);
 	};
 }
@@ -1637,9 +1840,9 @@ void radv_GetImageSparseMemoryRequirements2(
 		return;
 	}
 
-	VK_OUTARRAY_MAKE(out, pSparseMemoryRequirements, pSparseMemoryRequirementCount);
+	VK_OUTARRAY_MAKE_TYPED(VkSparseImageMemoryRequirements2, out, pSparseMemoryRequirements, pSparseMemoryRequirementCount);
 
-	vk_outarray_append(&out, req) {
+	vk_outarray_append_typed(VkSparseImageMemoryRequirements2, &out, req) {
 		fill_sparse_image_format_properties(device->physical_device,
 						    image->vk_format,
 						    &req->memoryRequirements.formatProperties);
@@ -1747,34 +1950,34 @@ enum dcc_channel_type {
 
 /* Return the type of DCC encoding. */
 static enum dcc_channel_type
-radv_get_dcc_channel_type(const struct vk_format_description *desc)
+radv_get_dcc_channel_type(const struct util_format_description *desc)
 {
         int i;
 
         /* Find the first non-void channel. */
         for (i = 0; i < desc->nr_channels; i++)
-                if (desc->channel[i].type != VK_FORMAT_TYPE_VOID)
+                if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID)
                         break;
         if (i == desc->nr_channels)
                 return dcc_channel_incompatible;
 
         switch (desc->channel[i].size) {
         case 32:
-                if (desc->channel[i].type == VK_FORMAT_TYPE_FLOAT)
+                if (desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT)
                         return dcc_channel_float32;
-                if (desc->channel[i].type == VK_FORMAT_TYPE_UNSIGNED)
+                if (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED)
                         return dcc_channel_uint32;
                 return dcc_channel_sint32;
         case 16:
-                if (desc->channel[i].type == VK_FORMAT_TYPE_FLOAT)
+                if (desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT)
                         return dcc_channel_float16;
-                if (desc->channel[i].type == VK_FORMAT_TYPE_UNSIGNED)
+                if (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED)
                         return dcc_channel_uint16;
                 return dcc_channel_sint16;
         case 10:
                 return dcc_channel_uint_10_10_10_2;
         case 8:
-                if (desc->channel[i].type == VK_FORMAT_TYPE_UNSIGNED)
+                if (desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED)
                         return dcc_channel_uint8;
                 return dcc_channel_sint8;
         default:
@@ -1786,7 +1989,7 @@ radv_get_dcc_channel_type(const struct vk_format_description *desc)
 bool radv_dcc_formats_compatible(VkFormat format1,
                                  VkFormat format2)
 {
-        const struct vk_format_description *desc1, *desc2;
+        const struct util_format_description *desc1, *desc2;
         enum dcc_channel_type type1, type2;
         int i;
 
@@ -1801,8 +2004,8 @@ bool radv_dcc_formats_compatible(VkFormat format1,
 
         /* Swizzles must be the same. */
         for (i = 0; i < desc1->nr_channels; i++)
-                if (desc1->swizzle[i] <= VK_SWIZZLE_W &&
-                    desc2->swizzle[i] <= VK_SWIZZLE_W &&
+                if (desc1->swizzle[i] <= PIPE_SWIZZLE_W &&
+                    desc2->swizzle[i] <= PIPE_SWIZZLE_W &&
                     desc1->swizzle[i] != desc2->swizzle[i])
                         return false;
 

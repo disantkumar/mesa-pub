@@ -374,7 +374,6 @@ radv_load_resource(struct ac_shader_abi *abi, LLVMValueRef index,
 
 	desc_ptr = LLVMBuildGEP(ctx->ac.builder, desc_ptr, &offset, 1, "");
 	desc_ptr = ac_cast_ptr(&ctx->ac, desc_ptr, ctx->ac.v4i32);
-	LLVMSetMetadata(desc_ptr, ctx->ac.uniform_md_kind, ctx->ac.empty_md);
 
 	return desc_ptr;
 }
@@ -634,7 +633,7 @@ load_tes_input(struct ac_shader_abi *abi,
 	buf_addr = LLVMBuildAdd(ctx->ac.builder, buf_addr, comp_offset, "");
 
 	result = ac_build_buffer_load(&ctx->ac, ctx->hs_ring_tess_offchip, num_components, NULL,
-				      buf_addr, oc_lds, 0, ac_glc, true, false);
+				      buf_addr, oc_lds, 0, ctx->ac.f32, ac_glc, true, false);
 	result = ac_trim_vector(&ctx->ac, result, num_components);
 	return result;
 }
@@ -674,7 +673,7 @@ load_gs_input(struct ac_shader_abi *abi,
 							ctx->esgs_ring, 1,
 							ctx->ac.i32_0,
 							vtx_offset, soffset,
-							0, ac_glc, true, false);
+							0, ctx->ac.f32, ac_glc, true, false);
 		}
 
 		if (ac_get_type_size(type) == 2) {
@@ -869,12 +868,22 @@ static LLVMValueRef radv_load_base_vertex(struct ac_shader_abi *abi, bool non_in
 }
 
 static LLVMValueRef radv_load_ssbo(struct ac_shader_abi *abi,
-				   LLVMValueRef buffer_ptr, bool write)
+				   LLVMValueRef buffer_ptr, bool write, bool non_uniform)
 {
 	struct radv_shader_context *ctx = radv_shader_context_from_abi(abi);
 	LLVMValueRef result;
 
-	LLVMSetMetadata(buffer_ptr, ctx->ac.uniform_md_kind, ctx->ac.empty_md);
+	if (!non_uniform)
+		LLVMSetMetadata(buffer_ptr, ctx->ac.uniform_md_kind, ctx->ac.empty_md);
+
+	if (non_uniform && LLVMGetPointerAddressSpace(LLVMTypeOf(buffer_ptr)) == AC_ADDR_SPACE_CONST_32BIT) {
+		/* 32-bit seems to always use SMEM. addrspacecast from 32-bit -> 64-bit is broken. */
+		buffer_ptr = LLVMBuildPtrToInt(ctx->ac.builder, buffer_ptr, ctx->ac.i32, ""),
+		buffer_ptr = LLVMBuildZExt(ctx->ac.builder, buffer_ptr, ctx->ac.i64, "");
+		uint64_t hi = (uint64_t)ctx->args->options->address32_hi << 32;
+		buffer_ptr = LLVMBuildOr(ctx->ac.builder, buffer_ptr, LLVMConstInt(ctx->ac.i64, hi, false), "");
+		buffer_ptr = LLVMBuildIntToPtr(ctx->ac.builder, buffer_ptr, LLVMPointerType(ctx->ac.v4i32, AC_ADDR_SPACE_CONST), "");
+	}
 
 	result = LLVMBuildLoad(ctx->ac.builder, buffer_ptr, "");
 	LLVMSetMetadata(result, ctx->ac.invariant_load_md_kind, ctx->ac.empty_md);
@@ -3864,7 +3873,7 @@ LLVMModuleRef ac_translate_nir_to_llvm(struct ac_llvm_compiler *ac_llvm,
 	}
 
 	ac_llvm_context_init(&ctx.ac, ac_llvm, args->options->chip_class,
-			     args->options->family, float_mode,
+			     args->options->family, args->options->info, float_mode,
 			     args->shader_info->wave_size,
 			     args->shader_info->ballot_bit_size);
 	ctx.context = ctx.ac.context;
@@ -4309,7 +4318,7 @@ ac_gs_copy_shader_emit(struct radv_shader_context *ctx)
 							     ctx->gsvs_ring[0],
 							     1, ctx->ac.i32_0,
 							     vtx_offset, soffset,
-							     0, ac_glc | ac_slc, true, false);
+							     0, ctx->ac.f32, ac_glc | ac_slc, true, false);
 
 				LLVMTypeRef type = LLVMGetAllocatedType(ctx->abi.outputs[ac_llvm_reg_index_soa(i, j)]);
 				if (ac_get_type_size(type) == 2) {
@@ -4349,7 +4358,8 @@ radv_compile_gs_copy_shader(struct ac_llvm_compiler *ac_llvm,
 	assert(args->is_gs_copy_shader);
 
 	ac_llvm_context_init(&ctx.ac, ac_llvm, args->options->chip_class,
-			     args->options->family, AC_FLOAT_MODE_DEFAULT, 64, 64);
+			     args->options->family, args->options->info,
+			     AC_FLOAT_MODE_DEFAULT, 64, 64);
 	ctx.context = ctx.ac.context;
 
 	ctx.stage = MESA_SHADER_VERTEX;

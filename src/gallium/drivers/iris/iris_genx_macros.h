@@ -61,6 +61,12 @@ __gen_combine_address(struct iris_batch *batch, void *location,
    return result;
 }
 
+static inline struct iris_address
+__gen_get_batch_address(struct iris_batch *batch, void *location)
+{
+   unreachable("Not supported by iris");
+}
+
 #define __gen_address_type struct iris_address
 #define __gen_user_data struct iris_batch
 
@@ -76,8 +82,8 @@ __gen_combine_address(struct iris_batch *batch, void *location,
 /* CS_GPR(15) is reserved for combining conditional rendering predicates
  * with GL_ARB_indirect_parameters draw number predicates.
  */
-#define GEN_MI_BUILDER_NUM_ALLOC_GPRS 15
-#include "common/gen_mi_builder.h"
+#define MI_BUILDER_NUM_ALLOC_GPRS 15
+#include "common/mi_builder.h"
 
 #define _iris_pack_command(batch, cmd, dst, name)                 \
    for (struct cmd name = { __genxml_cmd_header(cmd) },           \

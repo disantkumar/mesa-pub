@@ -725,6 +725,7 @@ nv50_stage_set_sampler_views(struct nv50_context *nv50, int s,
 static void
 nv50_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
                        unsigned start, unsigned nr,
+                       unsigned unbind_num_trailing_slots,
                        struct pipe_sampler_view **views)
 {
    assert(start == 0);
@@ -890,6 +891,7 @@ nv50_cp_state_bind(struct pipe_context *pipe, void *hwcso)
 static void
 nv50_set_constant_buffer(struct pipe_context *pipe,
                          enum pipe_shader_type shader, uint index,
+                         bool take_ownership,
                          const struct pipe_constant_buffer *cb)
 {
    struct nv50_context *nv50 = nv50_context(pipe);
@@ -908,7 +910,13 @@ nv50_set_constant_buffer(struct pipe_context *pipe,
       nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_CB(s, i));
       nv04_resource(nv50->constbuf[s][i].u.buf)->cb_bindings[s] &= ~(1 << i);
    }
-   pipe_resource_reference(&nv50->constbuf[s][i].u.buf, res);
+
+   if (take_ownership) {
+      pipe_resource_reference(&nv50->constbuf[s][i].u.buf, NULL);
+      nv50->constbuf[s][i].u.buf = res;
+   } else {
+      pipe_resource_reference(&nv50->constbuf[s][i].u.buf, res);
+   }
 
    nv50->constbuf[s][i].user = (cb && cb->user_buffer) ? true : false;
    if (nv50->constbuf[s][i].user) {
@@ -1068,6 +1076,8 @@ nv50_set_window_rectangles(struct pipe_context *pipe,
 static void
 nv50_set_vertex_buffers(struct pipe_context *pipe,
                         unsigned start_slot, unsigned count,
+                        unsigned unbind_num_trailing_slots,
+                        bool take_ownership,
                         const struct pipe_vertex_buffer *vb)
 {
    struct nv50_context *nv50 = nv50_context(pipe);
@@ -1077,12 +1087,20 @@ nv50_set_vertex_buffers(struct pipe_context *pipe,
    nv50->dirty_3d |= NV50_NEW_3D_ARRAYS;
 
    util_set_vertex_buffers_count(nv50->vtxbuf, &nv50->num_vtxbufs, vb,
-                                 start_slot, count);
+                                 start_slot, count,
+                                 unbind_num_trailing_slots,
+                                 take_ownership);
+
+   unsigned clear_mask = ~u_bit_consecutive(start_slot + count, unbind_num_trailing_slots);
+   nv50->vbo_user &= clear_mask;
+   nv50->vbo_constant &= clear_mask;
+   nv50->vtxbufs_coherent &= clear_mask;
 
    if (!vb) {
-      nv50->vbo_user &= ~(((1ull << count) - 1) << start_slot);
-      nv50->vbo_constant &= ~(((1ull << count) - 1) << start_slot);
-      nv50->vtxbufs_coherent &= ~(((1ull << count) - 1) << start_slot);
+      clear_mask = ~u_bit_consecutive(start_slot, count);
+      nv50->vbo_user &= clear_mask;
+      nv50->vbo_constant &= clear_mask;
+      nv50->vtxbufs_coherent &= clear_mask;
       return;
    }
 

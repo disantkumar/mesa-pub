@@ -392,7 +392,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    brw_postprocess_nir(nir, compiler, is_scalar);
 
    bool has_primitive_id =
-      nir->info.system_values_read & (1 << SYSTEM_VALUE_PRIMITIVE_ID);
+      BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
 
    prog_data->patch_count_threshold = brw::get_patch_count_threshold(key->input_vertices);
 
@@ -450,9 +450,9 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
    if (INTEL_DEBUG & DEBUG_TCS) {
       fprintf(stderr, "TCS Input ");
-      brw_print_vue_map(stderr, &input_vue_map);
+      brw_print_vue_map(stderr, &input_vue_map, MESA_SHADER_TESS_CTRL);
       fprintf(stderr, "TCS Output ");
-      brw_print_vue_map(stderr, &vue_prog_data->vue_map);
+      brw_print_vue_map(stderr, &vue_prog_data->vue_map, MESA_SHADER_TESS_CTRL);
    }
 
    if (is_scalar) {
