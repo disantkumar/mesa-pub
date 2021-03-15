@@ -109,7 +109,7 @@ ir2_optimize_nir(nir_shader *s, bool lower)
 		.lower_rect = 0,
 	};
 
-	if (FD_DBG(DISASM)) {
+	if (fd_mesa_debug & FD_DBG_DISASM) {
 		debug_printf("----------------------\n");
 		nir_print_shader(s, stdout);
 		debug_printf("----------------------\n");
@@ -1119,7 +1119,7 @@ ir2_nir_compile(struct ir2_context *ctx, bool binning)
 
 	nir_sweep(ctx->nir);
 
-	if (FD_DBG(DISASM)) {
+	if (fd_mesa_debug & FD_DBG_DISASM) {
 		debug_printf("----------------------\n");
 		nir_print_shader(ctx->nir, stdout);
 		debug_printf("----------------------\n");

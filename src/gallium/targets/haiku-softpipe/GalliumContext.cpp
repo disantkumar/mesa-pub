@@ -222,7 +222,7 @@ GalliumContext::CreateContext(HGLWinsysContext *wsContext)
 	// Init Gallium3D Post Processing
 	// TODO: no pp filters are enabled yet through postProcessEnable
 	context->postProcess = pp_init(stContext->pipe, context->postProcessEnable,
-		stContext->cso_context, &stContext->iface);
+		stContext->cso_context);
 
 	context_id contextNext = -1;
 	Lock();

@@ -32,7 +32,7 @@
 #include <sys/resource.h>
 #include <sys/un.h>
 
-#include "common/intel_gem.h"
+#include "common/gen_gem.h"
 #include "dev/gen_device_info.h"
 #include "drm-uapi/i915_drm.h"
 #include "drm-shim/drm_shim.h"
@@ -88,22 +88,6 @@ i915_ioctl_gem_mmap(int fd, unsigned long request, void *arg)
       bo->map = drm_shim_mmap(shim_fd, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, -1, (uintptr_t)bo);
 
    mmap_arg->addr_ptr = (uint64_t) (bo->map + mmap_arg->offset);
-
-   return 0;
-}
-
-static int
-i915_ioctl_gem_userptr(int fd, unsigned long request, void *arg)
-{
-   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
-   struct drm_i915_gem_userptr *userptr = arg;
-   struct i915_bo *bo = calloc(1, sizeof(*bo));
-
-   drm_shim_bo_init(&bo->base, userptr->user_size);
-
-   userptr->handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
-
-   drm_shim_bo_put(&bo->base);
 
    return 0;
 }
@@ -187,9 +171,6 @@ i915_ioctl_get_param(int fd, unsigned long request, void *arg)
    case I915_PARAM_HAS_EXEC_NO_RELOC:
    case I915_PARAM_HAS_EXEC_BATCH_FIRST:
       *gp->value = true;
-      return 0;
-   case I915_PARAM_HAS_EXEC_TIMELINE_FENCES:
-      *gp->value = false;
       return 0;
    case I915_PARAM_CMD_PARSER_VERSION:
       /* Most recent version in drivers/gpu/drm/i915/i915_cmd_parser.c */
@@ -346,8 +327,6 @@ static ioctl_fn_t driver_ioctls[] = {
    [DRM_I915_GEM_EXECBUFFER2] = i915_ioctl_noop,
    [DRM_I915_GEM_EXECBUFFER2_WR] = i915_ioctl_noop,
 
-   [DRM_I915_GEM_USERPTR] = i915_ioctl_gem_userptr,
-
    [DRM_I915_GEM_GET_APERTURE] = i915_gem_get_aperture,
 
    [DRM_I915_REG_READ] = i915_ioctl_noop,
@@ -355,7 +334,6 @@ static ioctl_fn_t driver_ioctls[] = {
    [DRM_I915_GEM_SET_DOMAIN] = i915_ioctl_noop,
    [DRM_I915_GEM_GET_CACHING] = i915_ioctl_noop,
    [DRM_I915_GEM_SET_CACHING] = i915_ioctl_noop,
-   [DRM_I915_GEM_GET_TILING] = i915_ioctl_noop,
    [DRM_I915_GEM_MADVISE] = i915_ioctl_noop,
    [DRM_I915_GEM_WAIT] = i915_ioctl_noop,
    [DRM_I915_GEM_BUSY] = i915_ioctl_noop,

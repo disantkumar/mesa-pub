@@ -75,7 +75,11 @@ static const struct sw_driver_descriptor driver_descriptors = {
          .create_winsys = kms_dri_create_winsys,
       },
 #endif
-#ifndef __ANDROID__
+/**
+ * XXX: Do not include these two for non autotools builds.
+ * They don't have neither opencl nor nine, where these are used.
+ */
+#ifndef DROP_PIPE_LOADER_MISC
       {
          .name = "null",
          .create_winsys = null_sw_create,

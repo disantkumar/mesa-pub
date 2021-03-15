@@ -109,7 +109,6 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    const uint16_t class_3d = nouveau_screen(pscreen)->class_3d;
    const struct nouveau_screen *screen = nouveau_screen(pscreen);
    struct nouveau_device *dev = screen->device;
-   static bool debug_cap_printed[PIPE_CAP_LAST] = {};
 
    switch (param) {
    /* non-boolean caps */
@@ -197,8 +196,6 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 16;
    case PIPE_CAP_GL_BEGIN_END_BUFFER_SIZE:
       return 512 * 1024; /* TODO: Investigate tuning this */
-   case PIPE_CAP_MAX_TEXTURE_MB:
-      return 0; /* TODO: use 1/2 of VRAM for this? */
 
    /* supported caps */
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
@@ -261,6 +258,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
+   case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
@@ -299,8 +297,6 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CLIP_PLANES:
    case PIPE_CAP_TEXTURE_SHADOW_LOD:
    case PIPE_CAP_PACKED_STREAM_OUTPUT:
-   case PIPE_CAP_CLEAR_SCISSORED:
-   case PIPE_CAP_GL_CLAMP:
       return 1;
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
       return nouveau_screen(pscreen)->vram_domain & NOUVEAU_BO_VRAM ? 1 : 0;
@@ -403,15 +399,6 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
    case PIPE_CAP_VIEWPORT_TRANSFORM_LOWERED:
    case PIPE_CAP_PSIZ_CLAMPED:
-   case PIPE_CAP_TEXTURE_BUFFER_SAMPLER:
-   case PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0:
-   case PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE: /* when we fix MT stuff */
-   case PIPE_CAP_ALPHA_TO_COVERAGE_DITHER_CONTROL: /* TODO */
-   case PIPE_CAP_SHADER_ATOMIC_INT64: /* TODO */
-   case PIPE_CAP_GLSL_ZERO_INIT:
-   case PIPE_CAP_BLEND_EQUATION_ADVANCED:
-   case PIPE_CAP_NO_CLIP_ON_COPY_TEX:
-   case PIPE_CAP_DEVICE_PROTECTED_CONTENT:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -432,10 +419,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    default:
-      if (!debug_cap_printed[param]) {
-         debug_printf("%s: unhandled cap %d\n", __func__, param);
-         debug_cap_printed[param] = true;
-      }
+      debug_printf("%s: unhandled cap %d\n", __func__, param);
       /* fallthrough */
    /* caps where we want the default value */
    case PIPE_CAP_DMABUF:

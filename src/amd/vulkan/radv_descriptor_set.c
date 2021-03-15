@@ -24,6 +24,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
 #include <fcntl.h>
 
 #include "util/mesa-sha1.h"
@@ -503,13 +504,7 @@ VkResult radv_CreatePipelineLayout(
 		}
 		dynamic_offset_count += layout->set[set].dynamic_offset_count;
 		dynamic_shader_stages |= layout->set[set].dynamic_offset_stages;
-
-		/* Hash the entire set layout except for the vk_object_base. The
-		 * rest of the set layout is carefully constructed to not have
-		 * pointers so a full hash instead of a per-field hash should be ok. */
-		_mesa_sha1_update(&ctx,
-		                  (const char*)set_layout + sizeof(struct vk_object_base),
-		                  set_layout->layout_size - sizeof(struct vk_object_base));
+		_mesa_sha1_update(&ctx, set_layout, set_layout->layout_size);
 	}
 
 	layout->dynamic_offset_count = dynamic_offset_count;
@@ -546,6 +541,8 @@ void radv_DestroyPipelineLayout(
 	vk_free2(&device->vk.alloc, pAllocator, pipeline_layout);
 }
 
+#define EMPTY 1
+
 static VkResult
 radv_descriptor_set_create(struct radv_device *device,
 			   struct radv_descriptor_pool *pool,
@@ -563,7 +560,7 @@ radv_descriptor_set_create(struct radv_device *device,
 		buffer_count = layout->binding[layout->binding_count - 1].buffer_offset +
 		               *variable_count * stride;
 	}
-	unsigned range_offset = sizeof(struct radv_descriptor_set_header) +
+	unsigned range_offset = sizeof(struct radv_descriptor_set) +
 		sizeof(struct radeon_winsys_bo *) * buffer_count;
 	unsigned mem_size = range_offset +
 		sizeof(struct radv_descriptor_range) * layout->dynamic_offset_count;
@@ -574,7 +571,6 @@ radv_descriptor_set_create(struct radv_device *device,
 
 		set = (struct radv_descriptor_set*)pool->host_memory_ptr;
 		pool->host_memory_ptr += mem_size;
-		memset(set->descriptors, 0, sizeof(struct radeon_winsys_bo *) * buffer_count);
 	} else {
 		set = vk_alloc2(&device->vk.alloc, NULL, mem_size, 8,
 		                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -585,15 +581,15 @@ radv_descriptor_set_create(struct radv_device *device,
 
 	memset(set, 0, mem_size);
 
-	vk_object_base_init(&device->vk, &set->header.base,
+	vk_object_base_init(&device->vk, &set->base,
 			    VK_OBJECT_TYPE_DESCRIPTOR_SET);
 
 	if (layout->dynamic_offset_count) {
-		set->header.dynamic_descriptors = (struct radv_descriptor_range*)((uint8_t*)set + range_offset);
+		set->dynamic_descriptors = (struct radv_descriptor_range*)((uint8_t*)set + range_offset);
 	}
 
-	set->header.layout = layout;
-	set->header.buffer_count = buffer_count;
+	set->layout = layout;
+	set->buffer_count = buffer_count;
 	uint32_t layout_size = layout->size;
 	if (variable_count) {
 		assert(layout->has_variable_descriptors);
@@ -606,7 +602,7 @@ radv_descriptor_set_create(struct radv_device *device,
 	}
 	layout_size = align_u32(layout_size, 32);
 	if (layout_size) {
-		set->header.size = layout_size;
+		set->size = layout_size;
 
 		if (!pool->host_memory_base && pool->entry_count == pool->max_entry_count) {
 			vk_free2(&device->vk.alloc, NULL, set);
@@ -617,9 +613,9 @@ radv_descriptor_set_create(struct radv_device *device,
 		 * time looking for gaps if the app only allocates &
 		 * resets via the pool. */
 		if (pool->current_offset + layout_size <= pool->size) {
-			set->header.bo = pool->bo;
-			set->header.mapped_ptr = (uint32_t*)(pool->mapped_ptr + pool->current_offset);
-			set->header.va = pool->bo ? (radv_buffer_get_va(set->header.bo) + pool->current_offset) : 0;
+			set->bo = pool->bo;
+			set->mapped_ptr = (uint32_t*)(pool->mapped_ptr + pool->current_offset);
+			set->va = set->bo ? (radv_buffer_get_va(set->bo) + pool->current_offset) : 0;
 			if (!pool->host_memory_base) {
 				pool->entries[pool->entry_count].offset = pool->current_offset;
 				pool->entries[pool->entry_count].size = layout_size;
@@ -641,9 +637,9 @@ radv_descriptor_set_create(struct radv_device *device,
 				vk_free2(&device->vk.alloc, NULL, set);
 				return vk_error(device->instance, VK_ERROR_OUT_OF_POOL_MEMORY);
 			}
-			set->header.bo = pool->bo;
-			set->header.mapped_ptr = (uint32_t*)(pool->mapped_ptr + offset);
-			set->header.va = pool->bo ? (radv_buffer_get_va(set->header.bo) + offset) : 0;
+			set->bo = pool->bo;
+			set->mapped_ptr = (uint32_t*)(pool->mapped_ptr + offset);
+			set->va = set->bo ? (radv_buffer_get_va(set->bo) + offset) : 0;
 			memmove(&pool->entries[index + 1], &pool->entries[index],
 				sizeof(pool->entries[0]) * (pool->entry_count - index));
 			pool->entries[index].offset = offset;
@@ -666,7 +662,7 @@ radv_descriptor_set_create(struct radv_device *device,
 
 			const uint32_t *samplers = (const uint32_t*)((const char*)layout + layout->binding[i].immutable_samplers_offset);
 			for (unsigned j = 0; j < layout->binding[i].array_size; ++j) {
-				memcpy(set->header.mapped_ptr + offset, samplers + 4 * j, 16);
+				memcpy(set->mapped_ptr + offset, samplers + 4 * j, 16);
 				offset += layout->binding[i].size / 4;
 			}
 
@@ -684,8 +680,8 @@ radv_descriptor_set_destroy(struct radv_device *device,
 {
 	assert(!pool->host_memory_base);
 
-	if (free_bo && set->header.size && !pool->host_memory_base) {
-		uint32_t offset = (uint8_t*)set->header.mapped_ptr - pool->mapped_ptr;
+	if (free_bo && set->size && !pool->host_memory_base) {
+		uint32_t offset = (uint8_t*)set->mapped_ptr - pool->mapped_ptr;
 		for (int i = 0; i < pool->entry_count; ++i) {
 			if (pool->entries[i].offset == offset) {
 				memmove(&pool->entries[i], &pool->entries[i+1],
@@ -695,7 +691,7 @@ radv_descriptor_set_destroy(struct radv_device *device,
 			}
 		}
 	}
-	vk_object_base_finish(&set->header.base);
+	vk_object_base_finish(&set->base);
 	vk_free2(&device->vk.alloc, NULL, set);
 }
 
@@ -710,7 +706,7 @@ static void radv_destroy_descriptor_pool(struct radv_device *device,
 	}
 
 	if (pool->bo)
-		device->ws->buffer_destroy(device->ws, pool->bo);
+		device->ws->buffer_destroy(pool->bo);
 	if (pool->host_bo)
 		vk_free2(&device->vk.alloc, pAllocator, pool->host_bo);
 
@@ -966,8 +962,6 @@ static void write_texel_buffer_descriptor(struct radv_device *device,
 
 	if (!buffer_view) {
 		memset(dst, 0, 4 * 4);
-		if (!cmd_buffer)
-			*buffer_list = NULL;
 		return;
 	}
 
@@ -989,8 +983,6 @@ static void write_buffer_descriptor(struct radv_device *device,
 
 	if (!buffer) {
 		memset(dst, 0, 4 * 4);
-		if (!cmd_buffer)
-			*buffer_list = NULL;
 		return;
 	}
 
@@ -1055,7 +1047,6 @@ static void write_dynamic_buffer_descriptor(struct radv_device *device,
 
 	if (!buffer) {
 		range->va = 0;
-		*buffer_list = NULL;
 		return;
 	}
 
@@ -1091,8 +1082,6 @@ write_image_descriptor(struct radv_device *device,
 
 	if (!iview) {
 		memset(dst, 0, size);
-		if (!cmd_buffer)
-			*buffer_list = NULL;
 		return;
 	}
 
@@ -1155,8 +1144,8 @@ void radv_update_descriptor_sets(
 		RADV_FROM_HANDLE(radv_descriptor_set, set,
 		                 dstSetOverride ? dstSetOverride : writeset->dstSet);
 		const struct radv_descriptor_set_binding_layout *binding_layout =
-			set->header.layout->binding + writeset->dstBinding;
-		uint32_t *ptr = set->header.mapped_ptr;
+			set->layout->binding + writeset->dstBinding;
+		uint32_t *ptr = set->mapped_ptr;
 		struct radeon_winsys_bo **buffer_list =  set->descriptors;
 		/* Immutable samplers are not copied into push descriptors when they are
 		 * allocated, so if we are writing push descriptors we have to copy the
@@ -1164,7 +1153,7 @@ void radv_update_descriptor_sets(
 		 */
 		const bool copy_immutable_samplers = cmd_buffer &&
 			binding_layout->immutable_samplers_offset && !binding_layout->immutable_samplers_equal;
-		const uint32_t *samplers = radv_immutable_samplers(set->header.layout, binding_layout);
+		const uint32_t *samplers = radv_immutable_samplers(set->layout, binding_layout);
 
 		ptr += binding_layout->offset / 4;
 
@@ -1182,8 +1171,8 @@ void radv_update_descriptor_sets(
 			case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
 				unsigned idx = writeset->dstArrayElement + j;
 				idx += binding_layout->dynamic_offset_offset;
-				assert(!(set->header.layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR));
-				write_dynamic_buffer_descriptor(device, set->header.dynamic_descriptors + idx,
+				assert(!(set->layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR));
+				write_dynamic_buffer_descriptor(device, set->dynamic_descriptors + idx,
 								buffer_list, writeset->pBufferInfo + j);
 				break;
 			}
@@ -1242,11 +1231,11 @@ void radv_update_descriptor_sets(
 		RADV_FROM_HANDLE(radv_descriptor_set, dst_set,
 		                 copyset->dstSet);
 		const struct radv_descriptor_set_binding_layout *src_binding_layout =
-			src_set->header.layout->binding + copyset->srcBinding;
+			src_set->layout->binding + copyset->srcBinding;
 		const struct radv_descriptor_set_binding_layout *dst_binding_layout =
-			dst_set->header.layout->binding + copyset->dstBinding;
-		uint32_t *src_ptr = src_set->header.mapped_ptr;
-		uint32_t *dst_ptr = dst_set->header.mapped_ptr;
+			dst_set->layout->binding + copyset->dstBinding;
+		uint32_t *src_ptr = src_set->mapped_ptr;
+		uint32_t *dst_ptr = dst_set->mapped_ptr;
 		struct radeon_winsys_bo **src_buffer_list = src_set->descriptors;
 		struct radeon_winsys_bo **dst_buffer_list = dst_set->descriptors;
 
@@ -1284,8 +1273,8 @@ void radv_update_descriptor_sets(
 				src_idx += src_binding_layout->dynamic_offset_offset;
 				dst_idx += dst_binding_layout->dynamic_offset_offset;
 
-				src_range = src_set->header.dynamic_descriptors + src_idx;
-				dst_range = dst_set->header.dynamic_descriptors + dst_idx;
+				src_range = src_set->dynamic_descriptors + src_idx;
+				dst_range = dst_set->dynamic_descriptors + dst_idx;
 				*dst_range = *src_range;
 				break;
 			}
@@ -1434,7 +1423,7 @@ void radv_update_descriptor_set_with_template(struct radv_device *device,
 
 	for (i = 0; i < templ->entry_count; ++i) {
 		struct radeon_winsys_bo **buffer_list = set->descriptors + templ->entry[i].buffer_offset;
-		uint32_t *pDst = set->header.mapped_ptr + templ->entry[i].dst_offset;
+		uint32_t *pDst = set->mapped_ptr + templ->entry[i].dst_offset;
 		const uint8_t *pSrc = ((const uint8_t *) pData) + templ->entry[i].src_offset;
 		uint32_t j;
 
@@ -1448,8 +1437,8 @@ void radv_update_descriptor_set_with_template(struct radv_device *device,
 			case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
 			case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
 				const unsigned idx = templ->entry[i].dst_offset + j;
-				assert(!(set->header.layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR));
-				write_dynamic_buffer_descriptor(device, set->header.dynamic_descriptors + idx,
+				assert(!(set->layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR));
+				write_dynamic_buffer_descriptor(device, set->dynamic_descriptors + idx,
 								buffer_list, (struct VkDescriptorBufferInfo *) pSrc);
 				break;
 			}

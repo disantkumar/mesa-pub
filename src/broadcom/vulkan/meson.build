@@ -19,13 +19,14 @@
 # SOFTWARE.
 
 v3dv_entrypoints = custom_target(
-  'v3dv_entrypoints',
-  input : [vk_entrypoints_gen, vk_api_xml],
+  'v3dv_entrypoints.[ch]',
+  input : ['v3dv_entrypoints_gen.py', vk_api_xml],
   output : ['v3dv_entrypoints.h', 'v3dv_entrypoints.c'],
   command : [
-    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
-    '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'v3dv',
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--outdir',
+    meson.current_build_dir()
   ],
+  depend_files : files('v3dv_extensions.py'),
 )
 
 v3dv_extensions_c = custom_target(
@@ -36,7 +37,7 @@ v3dv_extensions_c = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@',
     '--out-c', '@OUTPUT@',
   ],
-  depend_files : [files('v3dv_extensions.py'), vk_extensions_gen],
+  depend_files : files('v3dv_extensions.py'),
 )
 
 v3dv_extensions_h = custom_target(
@@ -47,7 +48,7 @@ v3dv_extensions_h = custom_target(
     prog_python, '@INPUT0@', '--xml', '@INPUT1@',
     '--out-h', '@OUTPUT@',
   ],
-  depend_files : [files('v3dv_extensions.py'), vk_extensions_gen],
+  depend_files : files('v3dv_extensions.py'),
 )
 
 libv3dv_files = files(

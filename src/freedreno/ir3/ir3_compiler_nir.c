@@ -1270,6 +1270,29 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx, nir_intrinsic_instr *intr
 
 	ir3_split_dest(b, tmp, sam, 0, 4);
 
+	/* get_size instruction returns size in bytes instead of texels
+	 * for imageBuffer, so we need to divide it by the pixel size
+	 * of the image format.
+	 *
+	 * TODO: This is at least true on a5xx. Check other gens.
+	 */
+	if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF) {
+		/* Since all the possible values the divisor can take are
+		 * power-of-two (4, 8, or 16), the division is implemented
+		 * as a shift-right.
+		 * During shader setup, the log2 of the image format's
+		 * bytes-per-pixel should have been emitted in 2nd slot of
+		 * image_dims. See ir3_shader::emit_image_dims().
+		 */
+		const struct ir3_const_state *const_state =
+				ir3_const_state(ctx->so);
+		unsigned cb = regid(const_state->offsets.image_dims, 0) +
+			const_state->image_dims.off[nir_src_as_uint(intr->src[0])];
+		struct ir3_instruction *aux = create_uniform(b, cb + 1);
+
+		tmp[0] = ir3_SHR_B(b, tmp[0], 0, aux, 0);
+	}
+
 	for (unsigned i = 0; i < ncoords; i++)
 		dst[i] = tmp[i];
 
@@ -1933,9 +1956,6 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		cond->regs[0]->flags &= ~IR3_REG_SSA;
 
 		kill = ir3_KILL(b, cond, 0);
-		/* Side-effects should not be moved on a different side of the kill */
-		kill->barrier_class = IR3_BARRIER_IMAGE_W | IR3_BARRIER_BUFFER_W;
-		kill->barrier_conflict = IR3_BARRIER_IMAGE_W | IR3_BARRIER_BUFFER_W;
 		kill->regs[1]->num = regid(REG_P0, 0);
 		array_insert(ctx->ir, ctx->ir->predicates, kill);
 
@@ -2030,22 +2050,18 @@ get_tex_dest_type(nir_tex_instr *tex)
 {
 	type_t type;
 
-	switch (tex->dest_type) {
-	case nir_type_float32:
-		return TYPE_F32;
-	case nir_type_float16:
-		return TYPE_F16;
-	case nir_type_int32:
-		return TYPE_S32;
-	case nir_type_int16:
-		return TYPE_S16;
-	case nir_type_bool32:
-	case nir_type_uint32:
-		return TYPE_U32;
-	case nir_type_bool16:
-	case nir_type_uint16:
-		return TYPE_U16;
+	switch (nir_alu_type_get_base_type(tex->dest_type)) {
 	case nir_type_invalid:
+	case nir_type_float:
+		type = nir_dest_bit_size(tex->dest) == 16 ? TYPE_F16 : TYPE_F32;
+		break;
+	case nir_type_int:
+		type = nir_dest_bit_size(tex->dest) == 16 ? TYPE_S16 : TYPE_S32;
+		break;
+	case nir_type_uint:
+	case nir_type_bool:
+		type = nir_dest_bit_size(tex->dest) == 16 ? TYPE_U16 : TYPE_U32;
+		break;
 	default:
 		unreachable("bad dest_type");
 	}
@@ -2506,7 +2522,7 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
 	if (opc == OPC_GETLOD) {
 		struct ir3_instruction *factor = create_immed(b, fui(1.0 / 256));
 
-		compile_assert(ctx, tex->dest_type == nir_type_float32);
+		compile_assert(ctx, tex->dest_type == nir_type_float);
 		for (i = 0; i < 2; i++) {
 			dst[i] = ir3_MUL_F(b, ir3_COV(b, dst[i], TYPE_S32, TYPE_F32), 0,
 							   factor, 0);
@@ -2568,17 +2584,7 @@ emit_tex_txs(struct ir3_context *ctx, nir_tex_instr *tex)
 
 	lod = ir3_get_src(ctx, &tex->src[lod_idx].src)[0];
 
-	if (tex->sampler_dim != GLSL_SAMPLER_DIM_BUF) {
-		sam = emit_sam(ctx, OPC_GETSIZE, info, dst_type, 0b1111, lod, NULL);
-	} else {
-		/*
-		 * The maximum value which OPC_GETSIZE could return for one dimension
-		 * is 0x007ff0, however sampler buffer could be much bigger.
-		 * Blob uses OPC_GETBUF for them.
-		 */
-		sam = emit_sam(ctx, OPC_GETBUF, info, dst_type, 0b1111, NULL, NULL);
-	}
-
+	sam = emit_sam(ctx, OPC_GETSIZE, info, dst_type, 0b1111, lod, NULL);
 	ir3_split_dest(b, dst, sam, 0, 4);
 
 	/* Array size actually ends up in .w rather than .z. This doesn't
@@ -3245,7 +3251,7 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 				break;
 			ir3_context_error(ctx, "unknown %s shader output name: %s\n",
 					_mesa_shader_stage_to_string(ctx->so->type),
-					gl_varying_slot_name_for_stage(slot, ctx->so->type));
+					gl_varying_slot_name(slot));
 		}
 	} else {
 		ir3_context_error(ctx, "unknown shader type: %d\n", ctx->so->type);
@@ -3392,7 +3398,7 @@ emit_instructions(struct ir3_context *ctx)
 	 * it is write-only we don't have to count it, but after lowering derefs
 	 * is too late to compact indices for that.
 	 */
-	ctx->so->num_samp = BITSET_LAST_BIT(ctx->s->info.textures_used) + ctx->s->info.num_images;
+	ctx->so->num_samp = util_last_bit(ctx->s->info.textures_used) + ctx->s->info.num_images;
 
 	/* Save off clip+cull information. Note that in OpenGL clip planes may
 	 * be individually enabled/disabled, so we can't use the
@@ -3403,7 +3409,6 @@ emit_instructions(struct ir3_context *ctx)
 		ctx->s->info.clip_distance_array_size;
 
 	ctx->so->pvtmem_size = ctx->s->scratch_size;
-	ctx->so->shared_size = ctx->s->shared_size;
 
 	/* NOTE: need to do something more clever when we support >1 fxn */
 	nir_foreach_register (reg, &fxn->registers) {

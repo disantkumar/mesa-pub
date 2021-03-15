@@ -66,8 +66,8 @@ debug_mask(const char *name, GLbitfield mask)
    if (INTEL_DEBUG & DEBUG_BLIT) {
       DBG("%s clear:", name);
       for (i = 0; i < BUFFER_COUNT; i++) {
-         if (mask & (1 << i))
-            DBG(" %s", buffer_names[i]);
+	 if (mask & (1 << i))
+	    DBG(" %s", buffer_names[i]);
       }
       DBG("\n");
    }
@@ -102,9 +102,9 @@ brw_fast_clear_depth(struct gl_context *ctx)
 {
    struct brw_context *brw = brw_context(ctx);
    struct gl_framebuffer *fb = ctx->DrawBuffer;
-   struct brw_renderbuffer *depth_irb =
-      brw_get_renderbuffer(fb, BUFFER_DEPTH);
-   struct brw_mipmap_tree *mt = depth_irb->mt;
+   struct intel_renderbuffer *depth_irb =
+      intel_get_renderbuffer(fb, BUFFER_DEPTH);
+   struct intel_mipmap_tree *mt = depth_irb->mt;
    struct gl_renderbuffer_attachment *depth_att = &fb->Attachment[BUFFER_DEPTH];
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
@@ -114,7 +114,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
    if (devinfo->gen < 6)
       return false;
 
-   if (!brw_renderbuffer_has_hiz(depth_irb))
+   if (!intel_renderbuffer_has_hiz(depth_irb))
       return false;
 
    /* We only handle full buffer clears -- otherwise you'd have to track whether
@@ -155,7 +155,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
       if (devinfo->gen == 6 &&
           (minify(mt->surf.phys_level0_sa.width,
                   depth_irb->mt_level - mt->first_level) % 16) != 0)
-         return false;
+	 return false;
       break;
 
    default:
@@ -179,7 +179,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
     */
    if (mt->fast_clear_color.f32[0] != clear_value) {
       for (uint32_t level = mt->first_level; level <= mt->last_level; level++) {
-         if (!brw_miptree_level_has_hiz(mt, level))
+         if (!intel_miptree_level_has_hiz(mt, level))
             continue;
 
          const unsigned level_layers = brw_get_num_logical_layers(mt, level);
@@ -193,7 +193,7 @@ brw_fast_clear_depth(struct gl_context *ctx)
             }
 
             enum isl_aux_state aux_state =
-               brw_miptree_get_aux_state(mt, level, layer);
+               intel_miptree_get_aux_state(mt, level, layer);
 
             if (aux_state != ISL_AUX_STATE_CLEAR &&
                 aux_state != ISL_AUX_STATE_COMPRESSED_CLEAR) {
@@ -207,29 +207,30 @@ brw_fast_clear_depth(struct gl_context *ctx)
              * Fortunately, few applications ever change their depth clear
              * value so this shouldn't happen often.
              */
-            brw_hiz_exec(brw, mt, level, layer, 1, ISL_AUX_OP_FULL_RESOLVE);
-            brw_miptree_set_aux_state(brw, mt, level, layer, 1,
+            intel_hiz_exec(brw, mt, level, layer, 1,
+                           ISL_AUX_OP_FULL_RESOLVE);
+            intel_miptree_set_aux_state(brw, mt, level, layer, 1,
                                         ISL_AUX_STATE_RESOLVED);
          }
       }
 
       const union isl_color_value clear_color = { .f32 = {clear_value, } };
-      brw_miptree_set_clear_color(brw, mt, clear_color);
+      intel_miptree_set_clear_color(brw, mt, clear_color);
    }
 
    for (unsigned a = 0; a < num_layers; a++) {
       enum isl_aux_state aux_state =
-         brw_miptree_get_aux_state(mt, depth_irb->mt_level,
+         intel_miptree_get_aux_state(mt, depth_irb->mt_level,
                                      depth_irb->mt_layer + a);
 
       if (aux_state != ISL_AUX_STATE_CLEAR) {
-         brw_hiz_exec(brw, mt, depth_irb->mt_level,
-                      depth_irb->mt_layer + a, 1,
-                      ISL_AUX_OP_FAST_CLEAR);
+         intel_hiz_exec(brw, mt, depth_irb->mt_level,
+                        depth_irb->mt_layer + a, 1,
+                        ISL_AUX_OP_FAST_CLEAR);
       }
    }
 
-   brw_miptree_set_aux_state(brw, mt, depth_irb->mt_level,
+   intel_miptree_set_aux_state(brw, mt, depth_irb->mt_level,
                                depth_irb->mt_layer, num_layers,
                                ISL_AUX_STATE_CLEAR);
    return true;
@@ -253,13 +254,13 @@ brw_clear(struct gl_context *ctx, GLbitfield mask)
       brw->front_buffer_dirty = true;
    }
 
-   brw_prepare_render(brw);
+   intel_prepare_render(brw);
    brw_workaround_depthstencil_alignment(brw, partial_clear ? 0 : mask);
 
    if (mask & BUFFER_BIT_DEPTH) {
       if (brw_fast_clear_depth(ctx)) {
-         DBG("fast clear: depth\n");
-         mask &= ~BUFFER_BIT_DEPTH;
+	 DBG("fast clear: depth\n");
+	 mask &= ~BUFFER_BIT_DEPTH;
       }
    }
 
@@ -297,7 +298,7 @@ brw_clear(struct gl_context *ctx, GLbitfield mask)
 
 
 void
-brw_init_clear_functions(struct dd_function_table *functions)
+intelInitClearFuncs(struct dd_function_table *functions)
 {
    functions->Clear = brw_clear;
 }

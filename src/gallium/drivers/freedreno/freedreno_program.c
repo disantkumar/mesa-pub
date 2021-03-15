@@ -34,7 +34,6 @@
 
 static void
 fd_vs_state_bind(struct pipe_context *pctx, void *hwcso)
-	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.vs = hwcso;
@@ -44,7 +43,6 @@ fd_vs_state_bind(struct pipe_context *pctx, void *hwcso)
 
 static void
 fd_tcs_state_bind(struct pipe_context *pctx, void *hwcso)
-	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.hs = hwcso;
@@ -54,7 +52,6 @@ fd_tcs_state_bind(struct pipe_context *pctx, void *hwcso)
 
 static void
 fd_tes_state_bind(struct pipe_context *pctx, void *hwcso)
-	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.ds = hwcso;
@@ -64,7 +61,6 @@ fd_tes_state_bind(struct pipe_context *pctx, void *hwcso)
 
 static void
 fd_gs_state_bind(struct pipe_context *pctx, void *hwcso)
-	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.gs = hwcso;
@@ -74,7 +70,6 @@ fd_gs_state_bind(struct pipe_context *pctx, void *hwcso)
 
 static void
 fd_fs_state_bind(struct pipe_context *pctx, void *hwcso)
-	in_dt
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->prog.fs = hwcso;

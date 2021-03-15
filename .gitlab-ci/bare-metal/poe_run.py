@@ -32,12 +32,7 @@ class PoERun:
     def __init__(self, args):
         self.powerup = args.powerup
         self.powerdown = args.powerdown
-        self.ser = SerialBuffer(args.dev, "results/serial-output.txt", "", args.timeout)
-
-    def print_error(self, message):
-        RED = '\033[0;31m'
-        NO_COLOR = '\033[0m'
-        print(RED + message + NO_COLOR)
+        self.ser = SerialBuffer(args.dev, "results/serial-output.txt", "", 60)
 
     def logged_system(self, cmd):
         print("Running '{}'".format(cmd))
@@ -54,7 +49,7 @@ class PoERun:
                 break
 
         if not boot_detected:
-            self.print_error("Something wrong; couldn't detect the boot start up sequence")
+            print("Something wrong; couldn't detect the boot start up sequence")
             self.logged_system(self.powerdown)
             return 2
 
@@ -64,7 +59,7 @@ class PoERun:
 
             # Binning memory problems
             if re.search("binner overflow mem", line):
-                self.print_error("Memory overflow in the binner; GPU hang")
+                print("Memory overflow in the binner; GPU hang")
                 return 1
 
             result = re.search("bare-metal result: (\S*)", line)
@@ -74,16 +69,14 @@ class PoERun:
                 else:
                     return 1
 
-        self.print_error("Reached the end of the CPU serial log without finding a result")
-        return 2
+        print("Reached the end of the CPU serial log without finding a result")
+        return 1
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dev', type=str, help='Serial device to monitor', required=True)
     parser.add_argument('--powerup', type=str, help='shell command for rebooting', required=True)
     parser.add_argument('--powerdown', type=str, help='shell command for powering off', required=True)
-    parser.add_argument('--timeout', type=int, default=60,
-                        help='time in seconds to wait for activity', required=False)
     args = parser.parse_args()
 
     poe = PoERun(args)

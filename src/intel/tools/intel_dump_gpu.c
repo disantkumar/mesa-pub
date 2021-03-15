@@ -251,8 +251,6 @@ dump_execbuffer2(int fd, struct drm_i915_gem_execbuffer2 *execbuffer2)
       }
 
       if (obj->flags & EXEC_OBJECT_PINNED) {
-         if (bo->offset != obj->offset)
-            bo->gtt_mapped = false;
          bo->offset = obj->offset;
       } else {
          if (obj->alignment != 0)

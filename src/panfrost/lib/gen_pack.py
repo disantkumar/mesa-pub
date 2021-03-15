@@ -166,24 +166,6 @@ __gen_unpack_padded(const uint8_t *restrict cl, uint32_t start, uint32_t end)
 #define pan_section_print(fp, A, S, var, indent)                          \\
         MALI_ ## A ## _SECTION_ ## S ## _print(fp, &(var), indent)
 
-#define mali_pixel_format_print_v6(fp, format) \\
-    fprintf(fp, "%*sFormat (v6): %s%s%s %s%s%s%s\\n", indent, "", \\
-        mali_format_as_str((format >> 12) & 0xFF), \\
-        (format & (1 << 20)) ? " sRGB" : "", \\
-        (format & (1 << 21)) ? " big-endian" : "", \\
-        mali_channel_as_str(((format >> 0) & 0x7)), \\
-        mali_channel_as_str(((format >> 3) & 0x7)), \\
-        mali_channel_as_str(((format >> 6) & 0x7)), \\
-        mali_channel_as_str(((format >> 9) & 0x7)));
-
-#define mali_pixel_format_print_v7(fp, format) \\
-    fprintf(fp, "%*sFormat (v7): %s%s %s%s\\n", indent, "", \\
-        mali_format_as_str((format >> 12) & 0xFF), \\
-        (format & (1 << 20)) ? " sRGB" : "", \\
-        mali_rgb_component_order_as_str((format & ((1 << 12) - 1))), \\
-        (format & (1 << 21)) ? " XXX BAD BIT" : "");
-
-
 /* From presentations, 16x16 tiles externally. Use shift for fast computation
  * of tile numbers. */
 
@@ -350,7 +332,7 @@ class Field(object):
             type = 'uint64_t'
         elif self.type == 'int':
             type = 'int32_t'
-        elif self.type in ['uint', 'uint/float', 'padded', 'Pixel Format']:
+        elif self.type in ['uint', 'padded']:
             type = 'uint32_t'
         elif self.type in self.parser.structs:
             type = 'struct ' + self.parser.gen_prefix(safe_name(self.type.upper()))
@@ -370,12 +352,11 @@ class Field(object):
         return self != field and max(self.start, field.start) <= min(self.end, field.end)
 
 class Group(object):
-    def __init__(self, parser, parent, start, count, label):
+    def __init__(self, parser, parent, start, count):
         self.parser = parser
         self.parent = parent
         self.start = start
         self.count = count
-        self.label = label
         self.size = 0
         self.length = 0
         self.fields = []
@@ -506,7 +487,7 @@ class Group(object):
                     elif field.modifier[0] == "log2":
                         value = "util_logbase2({})".format(value)
 
-                if field.type in ["uint", "uint/float", "address", "Pixel Format"]:
+                if field.type == "uint" or field.type == "address":
                     s = "__gen_uint(%s, %d, %d)" % \
                         (value, start, end)
                 elif field.type == "padded":
@@ -566,8 +547,8 @@ class Group(object):
             ALL_ONES = 0xffffffff
 
             if mask != ALL_ONES:
-                TMPL = '   if (((const uint32_t *) cl)[{}] & {}) fprintf(stderr, "XXX: Invalid field of {} unpacked at word {}\\n");'
-                print(TMPL.format(index, hex(mask ^ ALL_ONES), self.label, index))
+                TMPL = '   if (((const uint32_t *) cl)[{}] & {}) fprintf(stderr, "XXX: Invalid field unpacked at word {}\\n");'
+                print(TMPL.format(index, hex(mask ^ ALL_ONES), index))
 
         fieldrefs = []
         self.collect_fields(self.fields, 0, '', fieldrefs)
@@ -580,7 +561,7 @@ class Group(object):
             args.append(str(fieldref.start))
             args.append(str(fieldref.end))
 
-            if field.type in set(["uint", "uint/float", "address", "Pixel Format"]) | self.parser.enums:
+            if field.type in set(["uint", "address"]) | self.parser.enums:
                 convert = "__gen_unpack_uint"
             elif field.type == "int":
                 convert = "__gen_unpack_sint"
@@ -632,11 +613,6 @@ class Group(object):
                 print('   fprintf(fp, "%*s{}: %f\\n", indent, "", {});'.format(name, val))
             elif field.type == "uint" and (field.end - field.start) >= 32:
                 print('   fprintf(fp, "%*s{}: 0x%" PRIx64 "\\n", indent, "", {});'.format(name, val))
-            elif field.type == "uint/float":
-                print('   fprintf(fp, "%*s{}: 0x%X (%f)\\n", indent, "", {}, uif({}));'.format(name, val, val))
-            elif field.type == "Pixel Format":
-                print('   mali_pixel_format_print_v6(fp, {});'.format(val))
-                print('   mali_pixel_format_print_v7(fp, {});'.format(val))
             else:
                 print('   fprintf(fp, "%*s{}: %u\\n", indent, "", {});'.format(name, val))
 
@@ -670,7 +646,7 @@ class Parser(object):
             object_name = self.gen_prefix(safe_name(name.upper()))
             self.struct = object_name
 
-            self.group = Group(self, None, 0, 1, name)
+            self.group = Group(self, None, 0, 1)
             if "size" in attrs:
                 self.group.length = int(attrs["size"]) * 4
             self.structs[attrs["name"]] = self.group

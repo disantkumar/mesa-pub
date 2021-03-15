@@ -293,8 +293,7 @@ void si_test_blit(struct si_screen *sscreen)
 
       /* clear dst pixels */
       uint32_t zero = 0;
-      si_clear_buffer(sctx, dst, 0, sdst->surface.surf_size, &zero, 4,
-                      SI_COHERENCY_SHADER, SI_AUTO_SELECT_CLEAR_METHOD);
+      si_clear_buffer(sctx, dst, 0, sdst->surface.surf_size, &zero, 4, SI_COHERENCY_SHADER, false);
       memset(dst_cpu.ptr, 0, dst_cpu.layer_stride * tdst.array_size);
 
       /* preparation */

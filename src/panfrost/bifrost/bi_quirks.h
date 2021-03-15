@@ -34,22 +34,23 @@
 
 #define BIFROST_NO_PRELOAD (1 << 0)
 
-/* Whether this GPU lacks support for fp32 transcendentals, requiring backend
- * lowering to low-precision lookup tables and polynomial approximation */
+/* Whether this GPU lacks support for the _FAST family of opcodes for fast
+ * computation of special functions requiring lookup tables. Early GPUs require
+ * rather unweildly lowering mechanisms for thesr things. */
 
-#define BIFROST_NO_FP32_TRANSCENDENTALS (1 << 1)
+#define BIFROST_NO_FAST_OP (1 << 1)
 
 static inline unsigned
 bifrost_get_quirks(unsigned product_id)
 {
-        switch (product_id >> 8) {
-        case 0x60:
-                return BIFROST_NO_PRELOAD | BIFROST_NO_FP32_TRANSCENDENTALS;
-        case 0x62:
+        switch (product_id >> 12) {
+        case 6: /* 1st gen */
                 return BIFROST_NO_PRELOAD;
-        case 0x70:
-        case 0x72:
+
+        case 7: /* 2nd gen */
+        case 8: /* 3rd gen */
                 return 0;
+
         default:
                 unreachable("Unknown Bifrost GPU ID");
         }

@@ -227,9 +227,7 @@ static int si_init_surface(struct si_screen *sscreen, struct radeon_surf *surfac
     * If it's not present, it will be disabled by
     * si_get_opaque_metadata later.
     */
-   if (!is_imported &&
-       (sscreen->debug_flags & DBG(NO_DCC) ||
-	(ptex->bind & PIPE_BIND_SCANOUT && sscreen->debug_flags & DBG(NO_DISPLAY_DCC))))
+   if (!is_imported && (sscreen->debug_flags & DBG(NO_DCC)))
       flags |= RADEON_SURF_DISABLE_DCC;
 
    if (is_scanout) {
@@ -434,8 +432,8 @@ static void si_reallocate_texture_inplace(struct si_context *sctx, struct si_tex
    tex->buffer.b.b.bind = templ.bind;
    pb_reference(&tex->buffer.buf, new_tex->buffer.buf);
    tex->buffer.gpu_address = new_tex->buffer.gpu_address;
-   tex->buffer.vram_usage_kb = new_tex->buffer.vram_usage_kb;
-   tex->buffer.gart_usage_kb = new_tex->buffer.gart_usage_kb;
+   tex->buffer.vram_usage = new_tex->buffer.vram_usage;
+   tex->buffer.gart_usage = new_tex->buffer.gart_usage;
    tex->buffer.bo_size = new_tex->buffer.bo_size;
    tex->buffer.bo_alignment = new_tex->buffer.bo_alignment;
    tex->buffer.domains = new_tex->buffer.domains;
@@ -516,7 +514,7 @@ static void si_set_tex_bo_metadata(struct si_screen *sscreen, struct si_texture 
                                     res->last_level, 0, is_array ? res->array_size - 1 : 0,
                                     res->width0, res->height0, res->depth0, desc, NULL);
    si_set_mutable_tex_desc_fields(sscreen, tex, &tex->surface.u.legacy.level[0], 0, 0,
-                                  tex->surface.blk_w, false, 0, desc);
+                                  tex->surface.blk_w, false, false, desc);
 
    ac_surface_get_umd_metadata(&sscreen->info, &tex->surface,
                                tex->buffer.b.b.last_level + 1,
@@ -648,8 +646,8 @@ static bool si_texture_get_handle(struct pipe_screen *screen, struct pipe_contex
          --plane;
       }
 
-      res = si_resource(resource);
-      tex = (struct si_texture *)resource;
+         res = si_resource(resource);
+         tex = (struct si_texture *)resource;
 
       /* This is not supported now, but it might be required for OpenCL
        * interop in the future.
@@ -896,14 +894,6 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
    struct si_resource *resource;
    struct si_screen *sscreen = (struct si_screen *)screen;
 
-   if (!sscreen->info.has_3d_cube_border_color_mipmap &&
-       (base->last_level > 0 ||
-        base->target == PIPE_TEXTURE_3D ||
-        base->target == PIPE_TEXTURE_CUBE)) {
-      assert(0);
-      return NULL;
-   }
-
    tex = CALLOC_STRUCT(si_texture);
    if (!tex)
       goto error;
@@ -984,8 +974,8 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
       resource->bo_alignment = plane0->buffer.bo_alignment;
       resource->flags = plane0->buffer.flags;
       resource->domains = plane0->buffer.domains;
-      resource->vram_usage_kb = plane0->buffer.vram_usage_kb;
-      resource->gart_usage_kb = plane0->buffer.gart_usage_kb;
+      resource->vram_usage = plane0->buffer.vram_usage;
+      resource->gart_usage = plane0->buffer.gart_usage;
 
       pb_reference(&resource->buf, plane0->buffer.buf);
       resource->gpu_address = plane0->buffer.gpu_address;
@@ -1002,9 +992,9 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
       resource->bo_alignment = imported_buf->alignment;
       resource->domains = sscreen->ws->buffer_get_initial_domain(resource->buf);
       if (resource->domains & RADEON_DOMAIN_VRAM)
-         resource->vram_usage_kb = MAX2(1, resource->bo_size / 1024);
+         resource->vram_usage = resource->bo_size;
       else if (resource->domains & RADEON_DOMAIN_GTT)
-         resource->gart_usage_kb = MAX2(1, resource->bo_size / 1024);
+         resource->gart_usage = resource->bo_size;
       if (sscreen->ws->buffer_get_flags)
          resource->flags = sscreen->ws->buffer_get_flags(resource->buf);
    }
@@ -1085,7 +1075,9 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
        * Use a staging buffer for the upload, because
        * the buffer backing the texture is unmappable.
        */
-      uint32_t dcc_retile_map_size = ac_surface_get_retile_map_size(&tex->surface);
+      bool use_uint16 = tex->surface.u.gfx9.dcc_retile_use_uint16;
+      unsigned num_elements = tex->surface.u.gfx9.dcc_retile_num_elements;
+      unsigned dcc_retile_map_size = num_elements * (use_uint16 ? 2 : 4);
 
       tex->dcc_retile_buffer = si_aligned_buffer_create(screen,
                                                         SI_RESOURCE_FLAG_DRIVER_INTERNAL, PIPE_USAGE_DEFAULT,
@@ -1168,8 +1160,7 @@ static enum radeon_surf_mode si_choose_tiling(struct si_screen *sscreen,
     * Compressed textures and DB surfaces must always be tiled.
     */
    if (!force_tiling && !is_depth_stencil && !util_format_is_compressed(templ->format)) {
-      if (sscreen->debug_flags & DBG(NO_TILING) ||
-	  (templ->bind & PIPE_BIND_SCANOUT && sscreen->debug_flags & DBG(NO_DISPLAY_TILING)))
+      if (sscreen->debug_flags & DBG(NO_TILING))
          return RADEON_SURF_MODE_LINEAR_ALIGNED;
 
       /* Tiling doesn't work with the 422 (SUBSAMPLED) formats. */

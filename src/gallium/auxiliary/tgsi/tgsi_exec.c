@@ -1461,7 +1461,7 @@ fetch_src_file_channel(const struct tgsi_exec_machine *mach,
             const uint constbuf = index2D->i[i];
             const int pos = index->i[i] * 4 + swizzle;
             /* const buffer bounds check */
-            if (pos < 0 || pos >= (int) mach->ConstsSize[constbuf] / 4) {
+            if (pos < 0 || pos >= (int) mach->ConstsSize[constbuf]) {
                if (0) {
                   /* Debug: print warning */
                   static int count = 0;
@@ -1713,8 +1713,11 @@ fetch_source(const struct tgsi_exec_machine *mach,
    fetch_source_d(mach, chan, reg, chan_index);
 
    if (reg->Register.Absolute) {
-      assert(src_datatype == TGSI_EXEC_DATA_FLOAT);
-      micro_abs(chan, chan);
+      if (src_datatype == TGSI_EXEC_DATA_FLOAT) {
+         micro_abs(chan, chan);
+      } else {
+         micro_iabs(chan, chan);
+      }
    }
 
    if (reg->Register.Negate) {
@@ -3594,8 +3597,12 @@ fetch_double_channel(struct tgsi_exec_machine *mach,
       chan->u[i][0] = src[0].u[i];
       chan->u[i][1] = src[1].u[i];
    }
-   assert(!reg->Register.Absolute);
-   assert(!reg->Register.Negate);
+   if (reg->Register.Absolute) {
+      micro_dabs(chan, chan);
+   }
+   if (reg->Register.Negate) {
+      micro_dneg(chan, chan);
+   }
 }
 
 static void
@@ -5489,14 +5496,21 @@ exec_instruction(
       assert(mach->CondStackTop < TGSI_EXEC_MAX_COND_NESTING);
       mach->CondStack[mach->CondStackTop++] = mach->CondMask;
       FETCH( &r[0], 0, TGSI_CHAN_X );
-      for (int i = 0; i < TGSI_QUAD_SIZE; i++) {
-         if (!r[0].f[i])
-            mach->CondMask &= ~(1 << i);
+      /* update CondMask */
+      if( ! r[0].f[0] ) {
+         mach->CondMask &= ~0x1;
+      }
+      if( ! r[0].f[1] ) {
+         mach->CondMask &= ~0x2;
+      }
+      if( ! r[0].f[2] ) {
+         mach->CondMask &= ~0x4;
+      }
+      if( ! r[0].f[3] ) {
+         mach->CondMask &= ~0x8;
       }
       UPDATE_EXEC_MASK(mach);
-      /* If no channels are taking the then branch, jump to ELSE. */
-      if (!mach->CondMask)
-         *pc = inst->Label.Label;
+      /* Todo: If CondMask==0, jump to ELSE */
       break;
 
    case TGSI_OPCODE_UIF:
@@ -5504,14 +5518,21 @@ exec_instruction(
       assert(mach->CondStackTop < TGSI_EXEC_MAX_COND_NESTING);
       mach->CondStack[mach->CondStackTop++] = mach->CondMask;
       IFETCH( &r[0], 0, TGSI_CHAN_X );
-      for (int i = 0; i < TGSI_QUAD_SIZE; i++) {
-         if (!r[0].u[i])
-            mach->CondMask &= ~(1 << i);
+      /* update CondMask */
+      if( ! r[0].u[0] ) {
+         mach->CondMask &= ~0x1;
+      }
+      if( ! r[0].u[1] ) {
+         mach->CondMask &= ~0x2;
+      }
+      if( ! r[0].u[2] ) {
+         mach->CondMask &= ~0x4;
+      }
+      if( ! r[0].u[3] ) {
+         mach->CondMask &= ~0x8;
       }
       UPDATE_EXEC_MASK(mach);
-      /* If no channels are taking the then branch, jump to ELSE. */
-      if (!mach->CondMask)
-         *pc = inst->Label.Label;
+      /* Todo: If CondMask==0, jump to ELSE */
       break;
 
    case TGSI_OPCODE_ELSE:
@@ -5522,10 +5543,7 @@ exec_instruction(
          prevMask = mach->CondStack[mach->CondStackTop - 1];
          mach->CondMask = ~mach->CondMask & prevMask;
          UPDATE_EXEC_MASK(mach);
-
-         /* If no channels are taking ELSE, jump to ENDIF */
-         if (!mach->CondMask)
-            *pc = inst->Label.Label;
+         /* Todo: If CondMask==0, jump to ENDIF */
       }
       break;
 

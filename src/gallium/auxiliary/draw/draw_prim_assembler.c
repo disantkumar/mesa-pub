@@ -90,16 +90,6 @@ draw_prim_assembler_is_required(const struct draw_context *draw,
    }
 }
 
-static void
-add_prim(struct draw_assembler *asmblr, unsigned length)
-{
-   struct draw_prim_info *output_prims = asmblr->output_prims;
-
-   output_prims->primitive_lengths = realloc(output_prims->primitive_lengths, sizeof(unsigned) * (output_prims->primitive_count + 1));
-   output_prims->primitive_lengths[output_prims->primitive_count] = length;
-   output_prims->primitive_count++;
-}
-
 /*
  * Copy the vertex header along with its data from the current
  * vertex buffer into a buffer holding vertices arranged
@@ -160,8 +150,7 @@ prim_point(struct draw_assembler *asmblr,
       inject_primid(asmblr, idx, asmblr->primid++);
    }
    indices[0] = idx;
-
-   add_prim(asmblr, 1);
+   
    copy_verts(asmblr, indices, 1);
 }
 
@@ -178,7 +167,6 @@ prim_line(struct draw_assembler *asmblr,
    indices[0] = i0;
    indices[1] = i1;
 
-   add_prim(asmblr, 2);
    copy_verts(asmblr, indices, 2);
 }
 
@@ -197,7 +185,6 @@ prim_tri(struct draw_assembler *asmblr,
    indices[1] = i1;
    indices[2] = i2;
 
-   add_prim(asmblr, 3);
    copy_verts(asmblr, indices, 3);
 }
 
@@ -285,6 +272,7 @@ draw_prim_assembler_run(struct draw_context *draw,
       }
    }
 
+   output_prims->primitive_lengths[0] = output_verts->count;
    output_prims->count = output_verts->count;
 }
 

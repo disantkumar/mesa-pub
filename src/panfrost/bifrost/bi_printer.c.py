@@ -79,8 +79,6 @@ bi_print_index(FILE *fp, bi_index index)
         fprintf(fp, "_");
     else if (index.type == BI_INDEX_CONSTANT)
         fprintf(fp, "#0x%x", index.value);
-    else if (index.type == BI_INDEX_FAU && index.value >= BIR_FAU_UNIFORM)
-        fprintf(fp, "u%u", index.value & ~BIR_FAU_UNIFORM);
     else if (index.type == BI_INDEX_FAU)
         fprintf(fp, "%s", bir_fau_name(index.value));
     else if (index.type == BI_INDEX_PASS)
@@ -154,17 +152,8 @@ bi_${mod}_as_str(enum bi_${mod} ${mod})
 void
 bi_print_instr(bi_instr *I, FILE *fp)
 {
-    bi_foreach_dest(I, d) {
-        if (bi_is_null(I->dest[d])) break;
-        if (d > 0) fprintf(fp, ", ");
-
-        bi_print_index(fp, I->dest[d]);
-    }
-
+    bi_print_index(fp, I->dest[0]);
     fprintf(fp, " = %s", bi_opcode_props[I->op].name);
-
-    if (I->table)
-        fprintf(fp, ".%s", bi_table_as_str(I->table));
 
     switch (I->op) {
 % for opcode in ops:

@@ -58,8 +58,7 @@ static void
 d3d12_context_destroy(struct pipe_context *pctx)
 {
    struct d3d12_context *ctx = d3d12_context(pctx);
-   if (ctx->validation_tools)
-      d3d12_validator_destroy(ctx->validation_tools);
+   d3d12_validator_destroy(ctx->validation_tools);
 
    if (ctx->timestamp_query)
       pctx->destroy_query(pctx, ctx->timestamp_query);
@@ -925,10 +924,10 @@ d3d12_set_sampler_views(struct pipe_context *pctx,
                         enum pipe_shader_type shader_type,
                         unsigned start_slot,
                         unsigned num_views,
-                        unsigned unbind_num_trailing_slots,
                         struct pipe_sampler_view **views)
 {
    struct d3d12_context *ctx = d3d12_context(pctx);
+   assert(views);
    unsigned shader_bit = (1 << shader_type);
    ctx->has_int_samplers &= ~shader_bit;
 
@@ -965,11 +964,6 @@ d3d12_set_sampler_views(struct pipe_context *pctx,
          swizzle_state.swizzle_a = ss->swizzle_override_a;
       }
    }
-
-   for (unsigned i = 0; i < unbind_num_trailing_slots; i++)
-      pipe_sampler_view_reference(
-         &ctx->sampler_views[shader_type][start_slot + num_views + i], NULL);
-
    ctx->num_sampler_views[shader_type] = start_slot + num_views;
    ctx->shader_dirty[shader_type] |= D3D12_SHADER_DIRTY_SAMPLER_VIEWS;
 }
@@ -1124,15 +1118,11 @@ static void
 d3d12_set_vertex_buffers(struct pipe_context *pctx,
                          unsigned start_slot,
                          unsigned num_buffers,
-                         unsigned unbind_num_trailing_slots,
-                         bool take_ownership,
                          const struct pipe_vertex_buffer *buffers)
 {
    struct d3d12_context *ctx = d3d12_context(pctx);
    util_set_vertex_buffers_count(ctx->vbs, &ctx->num_vbs,
-                                 buffers, start_slot, num_buffers,
-                                 unbind_num_trailing_slots,
-                                 take_ownership);
+                                 buffers, start_slot, num_buffers);
 
    for (unsigned i = 0; i < ctx->num_vbs; ++i) {
       const struct pipe_vertex_buffer* buf = ctx->vbs + i;
@@ -1205,7 +1195,6 @@ d3d12_set_scissor_states(struct pipe_context *pctx,
 static void
 d3d12_set_constant_buffer(struct pipe_context *pctx,
                           enum pipe_shader_type shader, uint index,
-                          bool take_ownership,
                           const struct pipe_constant_buffer *buf)
 {
    struct d3d12_context *ctx = d3d12_context(pctx);
@@ -1218,14 +1207,8 @@ d3d12_set_constant_buffer(struct pipe_context *pctx,
                        D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
                        buf->user_buffer, &offset, &ctx->cbufs[shader][index].buffer);
 
-      } else {
-         if (take_ownership) {
-            pipe_resource_reference(&ctx->cbufs[shader][index].buffer, NULL);
-            ctx->cbufs[shader][index].buffer = buffer;
-         } else {
-            pipe_resource_reference(&ctx->cbufs[shader][index].buffer, buffer);
-         }
-      }
+      } else
+         pipe_resource_reference(&ctx->cbufs[shader][index].buffer, buffer);
 
 
       ctx->cbufs[shader][index].buffer_offset = offset;

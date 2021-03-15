@@ -267,7 +267,7 @@ LowerSplit64BitVar::split_store_deref_array(nir_intrinsic_instr *intr, nir_deref
    else
       nir_build_store_deref(b, &deref_array2->dest.ssa, nir_channels(b, intr->src[1].ssa, 0xc), 3);
 
-   return NIR_LOWER_INSTR_PROGRESS_REPLACE;
+   return progress_replace;
 }
 
 nir_ssa_def *
@@ -291,7 +291,7 @@ LowerSplit64BitVar::split_store_deref_var(nir_intrinsic_instr *intr, nir_deref_i
    else
       nir_build_store_deref(b, &deref2->dest.ssa, nir_channels(b, intr->src[1].ssa, 0xc), 3);
 
-   return NIR_LOWER_INSTR_PROGRESS_REPLACE;
+   return progress_replace;
 }
 
 nir_ssa_def *
@@ -394,7 +394,7 @@ LowerSplit64BitVar::split_store_output(nir_intrinsic_instr *store1)
    nir_intrinsic_set_base(store2, nir_intrinsic_base(store1));
 
    nir_builder_instr_insert(b, &store2->instr);
-   return NIR_LOWER_INSTR_PROGRESS;
+   return progress_keep;
 }
 
 
@@ -711,13 +711,13 @@ Lower64BitToVec2::lower(nir_instr *instr)
       default:
          return NULL;
       }
-      return NIR_LOWER_INSTR_PROGRESS;
+      return progress_keep;
    }
    case nir_instr_type_phi: {
       auto phi = nir_instr_as_phi(instr);
       phi->dest.ssa.bit_size = 32;
       phi->dest.ssa.num_components = 2;
-      return NIR_LOWER_INSTR_PROGRESS;
+      return progress_keep;
    }
    case nir_instr_type_load_const:  {
       auto lc = nir_instr_as_load_const(instr);
@@ -735,7 +735,7 @@ Lower64BitToVec2::lower(nir_instr *instr)
       auto undef = nir_instr_as_ssa_undef(instr);
       undef->def.num_components *= 2;
       undef->def.bit_size = 32;
-      return NIR_LOWER_INSTR_PROGRESS;
+      return progress_keep;
    }
    default:
       return nullptr;
@@ -774,7 +774,7 @@ Lower64BitToVec2::load_deref_64_to_vec2(nir_intrinsic_instr *intr)
    intr->num_components = components;
    intr->dest.ssa.bit_size = 32;
    intr->dest.ssa.num_components = components;
-   return NIR_LOWER_INSTR_PROGRESS;
+   return progress_keep;
 }
 
 nir_ssa_def *
@@ -805,7 +805,7 @@ Lower64BitToVec2::store_64_to_vec2(nir_intrinsic_instr *intr)
    }
    intr->num_components = components;
    nir_intrinsic_set_write_mask(intr, wrmask == 1 ? 3 : 0xf);
-   return NIR_LOWER_INSTR_PROGRESS;
+   return progress_keep;
 }
 
 
@@ -816,7 +816,7 @@ Lower64BitToVec2::load_uniform_64_to_vec2(nir_intrinsic_instr *intr)
    intr->dest.ssa.bit_size = 32;
    intr->dest.ssa.num_components *= 2;
    nir_intrinsic_set_dest_type(intr, nir_type_float32);
-   return NIR_LOWER_INSTR_PROGRESS;
+   return progress_keep;
 }
 
 nir_ssa_def *
@@ -826,7 +826,7 @@ Lower64BitToVec2::load_64_to_vec2(nir_intrinsic_instr *intr)
    intr->dest.ssa.bit_size = 32;
    intr->dest.ssa.num_components *= 2;
    nir_intrinsic_set_component(intr, nir_intrinsic_component(intr) * 2);
-   return NIR_LOWER_INSTR_PROGRESS;
+   return progress_keep;
 }
 
 nir_ssa_def *
@@ -835,7 +835,7 @@ Lower64BitToVec2::load_ssbo_64_to_vec2(nir_intrinsic_instr *intr)
    intr->num_components *= 2;
    intr->dest.ssa.bit_size = 32;
    intr->dest.ssa.num_components *= 2;
-   return NIR_LOWER_INSTR_PROGRESS;
+   return progress_keep;
 }
 
 static bool store_64bit_intr(nir_src *src, void *state)
@@ -967,6 +967,7 @@ public:
 
    StoreCombos m_stores;
    nir_shader *sh;
+   nir_builder b;
 };
 
 StoreMerger::StoreMerger(nir_shader *shader):

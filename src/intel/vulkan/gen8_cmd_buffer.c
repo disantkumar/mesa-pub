@@ -31,7 +31,7 @@
 
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
-#include "common/intel_guardband.h"
+#include "common/gen_guardband.h"
 
 #if GEN_GEN == 8
 void
@@ -71,15 +71,15 @@ gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
           * framebuffer at the time we emit the packet.  Otherwise, we have
           * fall back to a worst-case guardband of [-1, 1].
           */
-         intel_calculate_guardband_size(fb->width, fb->height,
-                                        sfv.ViewportMatrixElementm00,
-                                        sfv.ViewportMatrixElementm11,
-                                        sfv.ViewportMatrixElementm30,
-                                        sfv.ViewportMatrixElementm31,
-                                        &sfv.XMinClipGuardband,
-                                        &sfv.XMaxClipGuardband,
-                                        &sfv.YMinClipGuardband,
-                                        &sfv.YMaxClipGuardband);
+         gen_calculate_guardband_size(fb->width, fb->height,
+                                      sfv.ViewportMatrixElementm00,
+                                      sfv.ViewportMatrixElementm11,
+                                      sfv.ViewportMatrixElementm30,
+                                      sfv.ViewportMatrixElementm31,
+                                      &sfv.XMinClipGuardband,
+                                      &sfv.XMaxClipGuardband,
+                                      &sfv.YMinClipGuardband,
+                                      &sfv.YMaxClipGuardband);
       }
 
       GENX(SF_CLIP_VIEWPORT_pack)(NULL, sf_clip_state.map + i * 64, &sfv);
@@ -646,13 +646,6 @@ genX(cmd_buffer_flush_dynamic_state)(struct anv_cmd_buffer *cmd_buffer)
       anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_TOPOLOGY), vft) {
          vft.PrimitiveTopologyType = topology;
       }
-   }
-
-   if (cmd_buffer->device->vk.enabled_extensions.EXT_sample_locations &&
-       cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS) {
-      genX(emit_sample_pattern)(&cmd_buffer->batch,
-                                cmd_buffer->state.gfx.dynamic.sample_locations.samples,
-                                cmd_buffer->state.gfx.dynamic.sample_locations.locations);
    }
 
    cmd_buffer->state.gfx.dirty = 0;

@@ -337,10 +337,8 @@ main(UNUSED int argc, UNUSED char **argv)
       if (devinfo->gen == 10)
          continue;
 
-      devinfo->genx10 = devinfo->gen * 10;
       fail |= run_tests(devinfo);
    }
 
-   free(devinfo);
    return fail;
 }

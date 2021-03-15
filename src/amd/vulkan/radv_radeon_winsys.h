@@ -65,6 +65,12 @@ enum radeon_bo_flag { /* bitfield */
 	RADEON_FLAG_ZERO_VRAM = (1 << 10),
 };
 
+enum radeon_bo_usage { /* bitfield */
+	RADEON_USAGE_READ = 2,
+	RADEON_USAGE_WRITE = 4,
+	RADEON_USAGE_READWRITE = RADEON_USAGE_READ | RADEON_USAGE_WRITE
+};
+
 enum radeon_ctx_priority {
 	RADEON_CTX_PRIORITY_INVALID = -1,
 	RADEON_CTX_PRIORITY_LOW = 0,
@@ -141,11 +147,6 @@ struct radeon_bo_metadata {
 			/* surface flags */
 			unsigned swizzle_mode:5;
 			bool scanout;
-			uint32_t dcc_offset_256b;
-			uint32_t dcc_pitch_max;
-			bool dcc_independent_64b_blocks;
-			bool dcc_independent_128b_blocks;
-			unsigned dcc_max_compressed_block_size;
 		} gfx9;
 	} u;
 
@@ -164,8 +165,6 @@ struct radeon_winsys_bo {
 	uint64_t va;
 	bool is_local;
 	bool vram_no_cpu_access;
-	bool use_global_list;
-	enum radeon_bo_domain initial_domain;
 };
 struct radv_winsys_sem_counts {
 	uint32_t syncobj_count;
@@ -197,7 +196,6 @@ enum {
 	/* virtual buffers have 0 priority since the priority is not used. */
 	RADV_BO_PRIORITY_VIRTUAL = 0,
 
-	RADV_BO_PRIORITY_METADATA = 10,
 	/* This should be considerably lower than most of the stuff below,
 	 * but how much lower is hard to say since we don't know application
 	 * assignments. Put it pretty high since it is GTT anyway. */
@@ -232,8 +230,7 @@ struct radeon_winsys {
 						  enum radeon_bo_flag flags,
 						  unsigned priority);
 
-	void (*buffer_destroy)(struct radeon_winsys *ws,
-			       struct radeon_winsys_bo *bo);
+	void (*buffer_destroy)(struct radeon_winsys_bo *bo);
 	void *(*buffer_map)(struct radeon_winsys_bo *bo);
 
 	struct radeon_winsys_bo *(*buffer_from_ptr)(struct radeon_winsys *ws,
@@ -256,22 +253,14 @@ struct radeon_winsys {
 
 	void (*buffer_unmap)(struct radeon_winsys_bo *bo);
 
-	void (*buffer_set_metadata)(struct radeon_winsys *ws,
-				    struct radeon_winsys_bo *bo,
+	void (*buffer_set_metadata)(struct radeon_winsys_bo *bo,
 				    struct radeon_bo_metadata *md);
-	void (*buffer_get_metadata)(struct radeon_winsys *ws,
-				    struct radeon_winsys_bo *bo,
+	void (*buffer_get_metadata)(struct radeon_winsys_bo *bo,
 				    struct radeon_bo_metadata *md);
 
-	VkResult (*buffer_virtual_bind)(struct radeon_winsys *ws,
-					struct radeon_winsys_bo *parent,
+	VkResult (*buffer_virtual_bind)(struct radeon_winsys_bo *parent,
 					uint64_t offset, uint64_t size,
 					struct radeon_winsys_bo *bo, uint64_t bo_offset);
-
-	VkResult (*buffer_make_resident)(struct radeon_winsys *ws,
-					 struct radeon_winsys_bo *bo,
-					 bool resident);
-
 	VkResult (*ctx_create)(struct radeon_winsys *ws,
 	                       enum radeon_ctx_priority priority,
 	                       struct radeon_winsys_ctx **ctx);
@@ -298,6 +287,7 @@ struct radeon_winsys {
 			      struct radeon_cmdbuf *initial_preamble_cs,
 			      struct radeon_cmdbuf *continue_preamble_cs,
 			      struct radv_winsys_sem_info *sem_info,
+			      const struct radv_winsys_bo_list *bo_list, /* optional */
 			      bool can_patch,
 			      struct radeon_winsys_fence *fence);
 
@@ -380,7 +370,7 @@ static inline void radv_cs_add_buffer(struct radeon_winsys *ws,
 				      struct radeon_cmdbuf *cs,
 				      struct radeon_winsys_bo *bo)
 {
-	if (bo->use_global_list)
+	if (bo->is_local)
 		return;
 
 	ws->cs_add_buffer(cs, bo);

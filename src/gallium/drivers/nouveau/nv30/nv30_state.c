@@ -328,7 +328,6 @@ nv30_set_sample_mask(struct pipe_context *pipe, unsigned sample_mask)
 static void
 nv30_set_constant_buffer(struct pipe_context *pipe,
                          enum pipe_shader_type shader, uint index,
-                         bool pass_reference,
                          const struct pipe_constant_buffer *cb)
 {
    struct nv30_context *nv30 = nv30_context(pipe);
@@ -346,22 +345,12 @@ nv30_set_constant_buffer(struct pipe_context *pipe,
       size = buf->width0 / (4 * sizeof(float));
 
    if (shader == PIPE_SHADER_VERTEX) {
-      if (pass_reference) {
-         pipe_resource_reference(&nv30->vertprog.constbuf, NULL);
-         nv30->vertprog.constbuf = buf;
-      } else {
-         pipe_resource_reference(&nv30->vertprog.constbuf, buf);
-      }
+      pipe_resource_reference(&nv30->vertprog.constbuf, buf);
       nv30->vertprog.constbuf_nr = size;
       nv30->dirty |= NV30_NEW_VERTCONST;
    } else
    if (shader == PIPE_SHADER_FRAGMENT) {
-      if (pass_reference) {
-         pipe_resource_reference(&nv30->fragprog.constbuf, NULL);
-         nv30->fragprog.constbuf = buf;
-      } else {
-         pipe_resource_reference(&nv30->fragprog.constbuf, buf);
-      }
+      pipe_resource_reference(&nv30->fragprog.constbuf, buf);
       nv30->fragprog.constbuf_nr = size;
       nv30->dirty |= NV30_NEW_FRAGCONST;
    }
@@ -437,8 +426,6 @@ nv30_set_viewport_states(struct pipe_context *pipe,
 static void
 nv30_set_vertex_buffers(struct pipe_context *pipe,
                         unsigned start_slot, unsigned count,
-                        unsigned unbind_num_trailing_slots,
-                        bool take_ownership,
                         const struct pipe_vertex_buffer *vb)
 {
     struct nv30_context *nv30 = nv30_context(pipe);
@@ -446,9 +433,7 @@ nv30_set_vertex_buffers(struct pipe_context *pipe,
     nouveau_bufctx_reset(nv30->bufctx, BUFCTX_VTXBUF);
 
     util_set_vertex_buffers_count(nv30->vtxbuf, &nv30->num_vtxbufs,
-                                  vb, start_slot, count,
-                                  unbind_num_trailing_slots,
-                                  take_ownership);
+                                  vb, start_slot, count);
 
     nv30->dirty |= NV30_NEW_ARRAYS;
 }

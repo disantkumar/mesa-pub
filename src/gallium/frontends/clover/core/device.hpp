@@ -57,10 +57,8 @@ namespace clover {
       size_t max_images_read() const;
       size_t max_images_write() const;
       size_t max_image_buffer_size() const;
-      // Use for 1D and 2D images.
-      cl_uint max_image_size() const;
-      // Use for 3D images.
-      cl_uint max_image_size_3d() const;
+      cl_uint max_image_levels_2d() const;
+      cl_uint max_image_levels_3d() const;
       size_t max_image_array_number() const;
       cl_uint max_samplers() const;
       cl_ulong max_mem_global() const;

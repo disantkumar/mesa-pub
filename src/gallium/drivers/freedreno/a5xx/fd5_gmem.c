@@ -257,7 +257,6 @@ patch_draws(struct fd_batch *batch, enum pc_di_vis_cull_mode vismode)
 
 static void
 update_vsc_pipe(struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_context *ctx = batch->ctx;
 	struct fd5_context *fd5_ctx = fd5_context(ctx);
@@ -300,8 +299,8 @@ update_vsc_pipe(struct fd_batch *batch)
 
 static void
 emit_binning_pass(struct fd_batch *batch)
-	assert_dt
 {
+	struct fd_context *ctx = batch->ctx;
 	struct fd_ringbuffer *ring = batch->gmem;
 	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 
@@ -333,7 +332,8 @@ emit_binning_pass(struct fd_batch *batch)
 	OUT_PKT4(ring, REG_A5XX_VPC_MODE_CNTL, 1);
 	OUT_RING(ring, A5XX_VPC_MODE_CNTL_BINNING_PASS);
 
-	fd5_event_write(batch, ring, UNK_2C, false);
+	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
+	OUT_RING(ring, UNK_2C);
 
 	OUT_PKT4(ring, REG_A5XX_RB_WINDOW_OFFSET, 1);
 	OUT_RING(ring, A5XX_RB_WINDOW_OFFSET_X(0) |
@@ -344,9 +344,13 @@ emit_binning_pass(struct fd_batch *batch)
 
 	fd_reset_wfi(batch);
 
-	fd5_event_write(batch, ring, UNK_2D, false);
+	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
+	OUT_RING(ring, UNK_2D);
 
-	fd5_event_write(batch, ring, CACHE_FLUSH_TS, true);
+	OUT_PKT7(ring, CP_EVENT_WRITE, 4);
+	OUT_RING(ring, CACHE_FLUSH_TS);
+	OUT_RELOC(ring, fd5_context(ctx)->blit_mem, 0, 0, 0);  /* ADDR_LO/HI */
+	OUT_RING(ring, 0x00000000);
 
 	// TODO CP_COND_WRITE's for all the vsc buffers (check for overflow??)
 
@@ -359,7 +363,6 @@ emit_binning_pass(struct fd_batch *batch)
 /* before first tile */
 static void
 fd5_emit_tile_init(struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
@@ -369,7 +372,7 @@ fd5_emit_tile_init(struct fd_batch *batch)
 	if (batch->prologue)
 		fd5_emit_ib(ring, batch->prologue);
 
-	fd5_emit_lrz_flush(batch, ring);
+	fd5_emit_lrz_flush(ring);
 
 	OUT_PKT4(ring, REG_A5XX_GRAS_CL_CNTL, 1);
 	OUT_RING(ring, 0x00000080);   /* GRAS_CL_CNTL */
@@ -393,7 +396,7 @@ fd5_emit_tile_init(struct fd_batch *batch)
 
 	if (use_hw_binning(batch)) {
 		emit_binning_pass(batch);
-		fd5_emit_lrz_flush(batch, ring);
+		fd5_emit_lrz_flush(ring);
 		patch_draws(batch, USE_VISIBILITY);
 	} else {
 		patch_draws(batch, IGNORE_VISIBILITY);
@@ -405,7 +408,6 @@ fd5_emit_tile_init(struct fd_batch *batch)
 /* before mem2gmem */
 static void
 fd5_emit_tile_prep(struct fd_batch *batch, const struct fd_tile *tile)
-	assert_dt
 {
 	struct fd_context *ctx = batch->ctx;
 	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
@@ -481,7 +483,7 @@ emit_mem2gmem_surf(struct fd_batch *batch, uint32_t base,
 		// might be required for doing depth/stencil in bypass mode?
 		struct fdl_slice *slice = fd_resource_slice(rsc, 0);
 		enum a5xx_color_fmt format =
-			fd5_pipe2color(fd_gmem_restore_format(rsc->b.b.format));
+			fd5_pipe2color(fd_gmem_restore_format(rsc->base.format));
 
 		OUT_PKT4(ring, REG_A5XX_RB_MRT_BUF_INFO(0), 5);
 		OUT_RING(ring, A5XX_RB_MRT_BUF_INFO_COLOR_FORMAT(format) |
@@ -513,7 +515,7 @@ emit_mem2gmem_surf(struct fd_batch *batch, uint32_t base,
 	OUT_PKT4(ring, REG_A5XX_RB_BLIT_CNTL, 1);
 	OUT_RING(ring, A5XX_RB_BLIT_CNTL_BUF(buf));
 
-	fd5_emit_blit(batch, ring);
+	fd5_emit_blit(batch->ctx, ring);
 }
 
 static void
@@ -643,7 +645,7 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
 	OUT_PKT4(ring, REG_A5XX_RB_CLEAR_CNTL, 1);
 	OUT_RING(ring, COND(msaa_resolve, A5XX_RB_CLEAR_CNTL_MSAA_RESOLVE));
 
-	fd5_emit_blit(batch, ring);
+	fd5_emit_blit(batch->ctx, ring);
 }
 
 static void
@@ -676,14 +678,13 @@ fd5_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
 
 static void
 fd5_emit_tile_fini(struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);
 
-	fd5_emit_lrz_flush(batch, ring);
+	fd5_emit_lrz_flush(ring);
 
 	fd5_cache_flush(batch, ring);
 	fd5_set_render_mode(batch->ctx, ring, BYPASS);
@@ -691,13 +692,12 @@ fd5_emit_tile_fini(struct fd_batch *batch)
 
 static void
 fd5_emit_sysmem_prep(struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 
 	fd5_emit_restore(batch, ring);
 
-	fd5_emit_lrz_flush(batch, ring);
+	fd5_emit_lrz_flush(ring);
 
 	if (batch->prologue)
 		fd5_emit_ib(ring, batch->prologue);
@@ -705,7 +705,8 @@ fd5_emit_sysmem_prep(struct fd_batch *batch)
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);
 
-	fd5_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
+	OUT_PKT7(ring, CP_EVENT_WRITE, 1);
+	OUT_RING(ring, PC_CCU_INVALIDATE_COLOR);
 
 	OUT_PKT4(ring, REG_A5XX_PC_POWER_CNTL, 1);
 	OUT_RING(ring, 0x00000003);   /* PC_POWER_CNTL */
@@ -772,20 +773,22 @@ fd5_emit_sysmem_prep(struct fd_batch *batch)
 static void
 fd5_emit_sysmem_fini(struct fd_batch *batch)
 {
+	struct fd5_context *fd5_ctx = fd5_context(batch->ctx);
 	struct fd_ringbuffer *ring = batch->gmem;
 
 	OUT_PKT7(ring, CP_SKIP_IB2_ENABLE_GLOBAL, 1);
 	OUT_RING(ring, 0x0);
 
-	fd5_emit_lrz_flush(batch, ring);
+	fd5_emit_lrz_flush(ring);
 
-	fd5_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
-	fd5_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
+	OUT_PKT7(ring, CP_EVENT_WRITE, 4);
+	OUT_RING(ring, PC_CCU_FLUSH_COLOR_TS);
+	OUT_RELOC(ring, fd5_ctx->blit_mem, 0, 0, 0);  /* ADDR_LO/HI */
+	OUT_RING(ring, 0x00000000);
 }
 
 void
 fd5_gmem_init(struct pipe_context *pctx)
-	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 

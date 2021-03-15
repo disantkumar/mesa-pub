@@ -126,7 +126,6 @@ static void
 fd2_sampler_states_bind(struct pipe_context *pctx,
 		enum pipe_shader_type shader, unsigned start,
 		unsigned nr, void **hwcso)
-	in_dt
 {
 	if (!hwcso)
 		nr = 0;
@@ -213,9 +212,8 @@ fd2_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 
 static void
 fd2_set_sampler_views(struct pipe_context *pctx, enum pipe_shader_type shader,
-		unsigned start, unsigned nr, unsigned unbind_num_trailing_slots,
+		unsigned start, unsigned nr,
 		struct pipe_sampler_view **views)
-	in_dt
 {
 	if (shader == PIPE_SHADER_FRAGMENT) {
 		struct fd_context *ctx = fd_context(pctx);
@@ -228,7 +226,7 @@ fd2_set_sampler_views(struct pipe_context *pctx, enum pipe_shader_type shader,
 			ctx->dirty |= FD_DIRTY_TEXSTATE;
 	}
 
-	fd_set_sampler_views(pctx, shader, start, nr, unbind_num_trailing_slots, views);
+	fd_set_sampler_views(pctx, shader, start, nr, views);
 }
 
 /* map gallium sampler-id to hw const-idx.. adreno uses a flat address
@@ -245,7 +243,6 @@ fd2_set_sampler_views(struct pipe_context *pctx, enum pipe_shader_type shader,
 unsigned
 fd2_get_const_idx(struct fd_context *ctx, struct fd_texture_stateobj *tex,
 		unsigned samp_id)
-	assert_dt
 {
 	if (tex == &ctx->tex[PIPE_SHADER_FRAGMENT])
 		return samp_id;

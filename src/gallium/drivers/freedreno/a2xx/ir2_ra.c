@@ -74,7 +74,6 @@ static void set_need_emit(struct ir2_context *ctx, struct ir2_instr *instr)
 				if (!instr->is_ssa && instr->reg == reg)
 					set_need_emit(ctx, instr);
 			}
-			break;
 		default:
 			break;
 		}

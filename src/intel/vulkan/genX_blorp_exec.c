@@ -24,24 +24,15 @@
 #include <assert.h>
 
 #include "anv_private.h"
-#include "anv_measure.h"
 
 /* These are defined in anv_private.h and blorp_genX_exec.h */
 #undef __gen_address_type
 #undef __gen_user_data
 #undef __gen_combine_address
 
-#include "common/intel_l3_config.h"
+#include "common/gen_l3_config.h"
+#include "common/gen_sample_positions.h"
 #include "blorp/blorp_genX_exec.h"
-
-static void blorp_measure_start(struct blorp_batch *_batch,
-                                const struct blorp_params *params)
-{
-   struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
-   anv_measure_snapshot(cmd_buffer,
-                        params->snapshot_type,
-                        NULL, 0);
-}
 
 static void *
 blorp_emit_dwords(struct blorp_batch *batch, unsigned n)
@@ -155,7 +146,7 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
       .buffer = cmd_buffer->device->dynamic_state_pool.block_pool.bo,
       .offset = vb_state.offset,
       .mocs = isl_mocs(&cmd_buffer->device->isl_dev,
-                       ISL_SURF_USAGE_VERTEX_BUFFER_BIT, false),
+                       ISL_SURF_USAGE_VERTEX_BUFFER_BIT),
    };
 
    return vb_state.map;
@@ -206,7 +197,7 @@ blorp_flush_range(struct blorp_batch *batch, void *start, size_t size)
     */
 }
 
-static const struct intel_l3_config *
+static const struct gen_l3_config *
 blorp_get_l3_config(struct blorp_batch *batch)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
@@ -220,8 +211,8 @@ genX(blorp_exec)(struct blorp_batch *batch,
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
 
    if (!cmd_buffer->state.current_l3_config) {
-      const struct intel_l3_config *cfg =
-         intel_get_default_l3_config(&cmd_buffer->device->info);
+      const struct gen_l3_config *cfg =
+         gen_get_default_l3_config(&cmd_buffer->device->info);
       genX(cmd_buffer_config_l3)(cmd_buffer, cfg);
    }
 

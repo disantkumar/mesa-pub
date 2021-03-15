@@ -122,7 +122,7 @@ include $(MESA_COMMON_MK)
 include $(BUILD_STATIC_LIBRARY)
 
 #
-# libiris for gen125
+# libiris for gen12hp
 #
 
 include $(CLEAR_VARS)

@@ -94,8 +94,7 @@ panfrost_blit(struct pipe_context *pipe,
          * u_blitter. We could do a little better by culling
          * vertex jobs, though. */
 
-        if (info->render_condition_enable &&
-            !panfrost_render_condition_check(pan_context(pipe)))
+        if (info->render_condition_enable && !pan_render_condition_check(pipe))
                 return;
 
         if (panfrost_u_blitter_blit(pipe, info))

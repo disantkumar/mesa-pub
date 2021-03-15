@@ -32,7 +32,7 @@
 extern "C" {
 #endif
 
-struct brw_texture_object
+struct intel_texture_object
 {
    struct gl_texture_object base;
 
@@ -48,7 +48,7 @@ struct brw_texture_object
    /* The miptree of pixel data for the texture (if !needs_validate).  After
     * validation, the images will also have references to the same mt.
     */
-   struct brw_mipmap_tree *mt;
+   struct intel_mipmap_tree *mt;
 
    /**
     * Set when mipmap trees in the texture images of this texture object
@@ -62,36 +62,36 @@ struct brw_texture_object
     */
    mesa_format _Format;
 
-   const struct brw_image_format *planar_format;
+   const struct intel_image_format *planar_format;
    unsigned int yuv_color_space;
 };
 
 
 /**
- * brw_texture_image is a subclass of swrast_texture_image because we
+ * intel_texture_image is a subclass of swrast_texture_image because we
  * sometimes fall back to using the swrast module for software rendering.
  */
-struct brw_texture_image
+struct intel_texture_image
 {
    struct swrast_texture_image base;
 
-   /* If brw_image->mt != NULL, image data is stored here.
-    * Else if brw_image->base.Buffer != NULL, image is stored there.
+   /* If intelImage->mt != NULL, image data is stored here.
+    * Else if intelImage->base.Buffer != NULL, image is stored there.
     * Else there is no image data.
     */
-   struct brw_mipmap_tree *mt;
+   struct intel_mipmap_tree *mt;
 };
 
-static inline struct brw_texture_object *
-brw_texture_object(struct gl_texture_object *obj)
+static inline struct intel_texture_object *
+intel_texture_object(struct gl_texture_object *obj)
 {
-   return (struct brw_texture_object *) obj;
+   return (struct intel_texture_object *) obj;
 }
 
-static inline struct brw_texture_image *
-brw_texture_image(struct gl_texture_image *img)
+static inline struct intel_texture_image *
+intel_texture_image(struct gl_texture_image *img)
 {
-   return (struct brw_texture_image *) img;
+   return (struct intel_texture_image *) img;
 }
 
 #ifdef __cplusplus

@@ -481,7 +481,7 @@ apply_perspective_corr( struct gallivm_state *gallivm,
 
 
 /**
- * Apply cylindrical wrapping to vertex attributes if enabled.
+ * Applys cylindrical wrapping to vertex attributes if enabled.
  * Input coordinates must be in [0, 1] range, otherwise results are undefined.
  *
  * @param cyl_wrap  TGSI_CYLINDRICAL_WRAP_x flags

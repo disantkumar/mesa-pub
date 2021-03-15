@@ -230,13 +230,14 @@ record_textures_used(struct shader_info *info,
    /* Structs have been lowered already, so get_aoa_size is sufficient. */
    const unsigned size =
       glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1;
+   unsigned mask = ((1ull << MAX2(size, 1)) - 1) << var->data.binding;
 
-   BITSET_SET_RANGE(info->textures_used, var->data.binding, var->data.binding + (MAX2(size, 1) - 1));
+   info->textures_used |= mask;
 
    if (op == nir_texop_txf ||
        op == nir_texop_txf_ms ||
        op == nir_texop_txf_ms_mcs)
-      BITSET_SET_RANGE(info->textures_used_by_txf, var->data.binding, var->data.binding + (MAX2(size, 1) - 1));
+      info->textures_used_by_txf |= mask;
 }
 
 static bool

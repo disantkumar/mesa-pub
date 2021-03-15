@@ -145,12 +145,6 @@ util_fill_rect(ubyte * dst,
          dst += dst_stride;
       }
       break;
-   case 8:
-      for (i = 0; i < height; i++) {
-         util_memset64(dst, ((uint64_t *)uc)[0], width);
-         dst += dst_stride;
-      }
-      break;
    default:
       for (i = 0; i < height; i++) {
          ubyte *row = dst;
@@ -495,7 +489,9 @@ util_fill_zs_rect(ubyte *dst_map,
    case 8:
       if (!need_rmw) {
          for (i = 0; i < height; i++) {
-            util_memset64(dst_map, zstencil, width);
+            uint64_t *row = (uint64_t *)dst_map;
+            for (j = 0; j < width; j++)
+               *row++ = zstencil;
             dst_map += dst_stride;
          }
       }

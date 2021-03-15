@@ -466,9 +466,7 @@ vl_video_buffer_create_ex2(struct pipe_context *pipe,
 /* Create pipe_video_buffer by using resource_create with planar formats. */
 struct pipe_video_buffer *
 vl_video_buffer_create_as_resource(struct pipe_context *pipe,
-                                   const struct pipe_video_buffer *tmpl,
-                                   const uint64_t *modifiers,
-                                   int modifiers_count)
+                                   const struct pipe_video_buffer *tmpl)
 {
    struct pipe_resource templ, *resources[VL_NUM_COMPONENTS] = {0};
    unsigned array_size =  tmpl->interlaced ? 2 : 1;
@@ -489,12 +487,7 @@ vl_video_buffer_create_as_resource(struct pipe_context *pipe,
    else
       templ.format = tmpl->buffer_format;
 
-   if (modifiers)
-      resources[0] = pipe->screen->resource_create_with_modifiers(pipe->screen,
-                                                                  &templ, modifiers,
-                                                                  modifiers_count);
-   else
-      resources[0] = pipe->screen->resource_create(pipe->screen, &templ);
+   resources[0] = pipe->screen->resource_create(pipe->screen, &templ);
    if (!resources[0])
       return NULL;
 

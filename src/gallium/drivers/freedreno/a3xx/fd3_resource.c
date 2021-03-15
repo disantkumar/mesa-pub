@@ -28,7 +28,7 @@
 static uint32_t
 setup_slices(struct fd_resource *rsc, uint32_t alignment, enum pipe_format format)
 {
-	struct pipe_resource *prsc = &rsc->b.b;
+	struct pipe_resource *prsc = &rsc->base;
 	uint32_t level, size = 0;
 	uint32_t width0 = prsc->width0;
 
@@ -77,7 +77,7 @@ fd3_setup_slices(struct fd_resource *rsc)
 {
 	uint32_t alignment;
 
-	switch (rsc->b.b.target) {
+	switch (rsc->base.target) {
 	case PIPE_TEXTURE_3D:
 	case PIPE_TEXTURE_1D_ARRAY:
 	case PIPE_TEXTURE_2D_ARRAY:
@@ -88,7 +88,7 @@ fd3_setup_slices(struct fd_resource *rsc)
 		break;
 	}
 
-	return setup_slices(rsc, alignment, rsc->b.b.format);
+	return setup_slices(rsc, alignment, rsc->base.format);
 }
 
 static bool

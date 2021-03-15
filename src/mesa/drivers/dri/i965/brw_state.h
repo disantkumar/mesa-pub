@@ -149,7 +149,7 @@ void gen8_write_pma_stall_bits(struct brw_context *brw,
                                uint32_t pma_stall_bits);
 
 /* brw_disk_cache.c */
-void brw_disk_cache_init(struct brw_screen *screen);
+void brw_disk_cache_init(struct intel_screen *screen);
 bool brw_disk_cache_upload_program(struct brw_context *brw,
                                    gl_shader_stage stage);
 void brw_disk_cache_write_compute_program(struct brw_context *brw);
@@ -209,7 +209,7 @@ void brw_print_program_cache(struct brw_context *brw);
 
 enum brw_cache_id brw_stage_cache_id(gl_shader_stage stage);
 
-/* brw_batch.c */
+/* intel_batchbuffer.c */
 void brw_require_statebuffer_space(struct brw_context *brw, int size);
 void *brw_state_batch(struct brw_context *brw,
                       int size, int alignment, uint32_t *out_offset);

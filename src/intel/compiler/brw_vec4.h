@@ -254,7 +254,7 @@ public:
 
    void emit_texture(ir_texture_opcode op,
                      dst_reg dest,
-                     int dest_components,
+                     const glsl_type *dest_type,
                      src_reg coordinate,
                      int coord_components,
                      src_reg shadow_comparator,

@@ -87,6 +87,8 @@ trace_transfer_create(struct trace_context *tr_ctx,
    if (!transfer)
       goto error;
 
+   assert(transfer->resource == res);
+
    tr_trans = CALLOC_STRUCT(trace_transfer);
    if (!tr_trans)
       goto error;

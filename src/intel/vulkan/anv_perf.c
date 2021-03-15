@@ -33,73 +33,37 @@
 
 #include "util/mesa-sha1.h"
 
-void
-anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
+struct gen_perf_config *
+anv_get_perf(const struct gen_device_info *devinfo, int fd)
 {
-   const struct gen_device_info *devinfo = &device->info;
-
-   device->perf = NULL;
-
    /* We need self modifying batches. The i915 parser prevents it on
     * Gen7.5 :( maybe one day.
     */
    if (devinfo->gen < 8)
-      return;
+      return NULL;
 
    struct gen_perf_config *perf = gen_perf_new(NULL);
 
-   gen_perf_init_metrics(perf, &device->info, fd, false /* pipeline statistics */);
+   gen_perf_init_metrics(perf, devinfo, fd, false /* pipeline statistics */);
 
    if (!perf->n_queries) {
-      if (perf->platform_supported) {
-         static bool warned_once = false;
-
-         if (!warned_once) {
-            mesa_logw("Performance support disabled, "
-                      "consider sysctl dev.i915.perf_stream_paranoid=0\n");
-            warned_once = true;
-         }
-      }
+      if (perf->platform_supported)
+         mesa_logw("Performance support disabled, "
+                   "consider sysctl dev.i915.perf_stream_paranoid=0\n");
       goto err;
    }
 
    /* We need DRM_I915_PERF_PROP_HOLD_PREEMPTION support, only available in
     * perf revision 2.
     */
-   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG)) {
-      if (!gen_perf_has_hold_preemption(perf))
-         goto err;
-   }
+   if (perf->i915_perf_version < 3)
+      goto err;
 
-   device->perf = perf;
-
-   /* Compute the number of commands we need to implement a performance
-    * query.
-    */
-   const struct gen_perf_query_field_layout *layout = &perf->query_layout;
-   device->n_perf_query_commands = 0;
-   for (uint32_t f = 0; f < layout->n_fields; f++) {
-      struct gen_perf_query_field *field = &layout->fields[f];
-
-      switch (field->type) {
-      case GEN_PERF_QUERY_FIELD_TYPE_MI_RPC:
-         device->n_perf_query_commands++;
-         break;
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
-         device->n_perf_query_commands += field->size / 4;
-         break;
-      }
-   }
-   device->n_perf_query_commands *= 2; /* Begin & End */
-   device->n_perf_query_commands += 1; /* availability */
-
-   return;
+   return perf;
 
  err:
    ralloc_free(perf);
+   return NULL;
 }
 
 void
@@ -140,7 +104,7 @@ anv_device_perf_open(struct anv_device *device, uint64_t metric_id)
     * enabled we would use only half on Gen11 because of functional
     * requirements.
     */
-   if (gen_perf_has_global_sseu(device->physical->perf)) {
+   if (device->physical->perf->i915_perf_version >= 4) {
       properties[p++] = DRM_I915_PERF_PROP_GLOBAL_SSEU;
       properties[p++] = (uintptr_t) &device->physical->perf->sseu;
    }
@@ -151,7 +115,7 @@ anv_device_perf_open(struct anv_device *device, uint64_t metric_id)
    param.properties_ptr = (uintptr_t)properties;
    param.num_properties = p / 2;
 
-   stream_fd = intel_ioctl(device->fd, DRM_IOCTL_I915_PERF_OPEN, &param);
+   stream_fd = gen_ioctl(device->fd, DRM_IOCTL_I915_PERF_OPEN, &param);
    return stream_fd;
 }
 
@@ -260,7 +224,7 @@ VkResult anv_ReleasePerformanceConfigurationINTEL(
    ANV_FROM_HANDLE(anv_performance_configuration_intel, config, _configuration);
 
    if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG))
-      intel_ioctl(device->fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &config->config_id);
+      gen_ioctl(device->fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &config->config_id);
 
    ralloc_free(config->register_config);
    vk_object_base_finish(&config->base);
@@ -283,8 +247,8 @@ VkResult anv_QueueSetPerformanceConfigurationINTEL(
          if (device->perf_fd < 0)
             return VK_ERROR_INITIALIZATION_FAILED;
       } else {
-         int ret = intel_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
-                               (void *)(uintptr_t) config->config_id);
+         int ret = gen_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
+                          (void *)(uintptr_t) config->config_id);
          if (ret < 0)
             return anv_device_set_lost(device, "i915-perf config failed: %m");
       }
@@ -455,13 +419,13 @@ anv_perf_write_pass_results(struct gen_perf_config *perf,
             results[c].uint64 =
                counter_pass->counter->oa_counter_read_uint64(perf,
                                                              counter_pass->query,
-                                                             accumulated_results);
+                                                             accumulated_results->accumulator);
             break;
          case GEN_PERF_COUNTER_DATA_TYPE_FLOAT:
             results[c].float32 =
                counter_pass->counter->oa_counter_read_float(perf,
                                                             counter_pass->query,
-                                                            accumulated_results);
+                                                            accumulated_results->accumulator);
             break;
          default:
             /* So far we aren't using uint32, double or bool32... */

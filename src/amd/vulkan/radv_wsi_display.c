@@ -204,7 +204,7 @@ radv_CreateDisplayPlaneSurfaceKHR(
 	if (allocator)
 		alloc = allocator;
 	else
-		alloc = &instance->vk.alloc;
+		alloc = &instance->alloc;
 
 	return wsi_create_display_surface(_instance, alloc,
 					  create_info, surface);

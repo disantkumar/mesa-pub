@@ -31,6 +31,7 @@
 #include "radv_shader.h"
 #include "radv_cs.h"
 #include "sid.h"
+#include "radv_util.h"
 
 static void
 si_write_harvested_raster_configs(struct radv_physical_device *physical_device,
@@ -139,22 +140,6 @@ si_emit_compute(struct radv_device *device,
 			uint64_t bc_va = radv_buffer_get_va(device->border_color_data.bo);
 			radeon_set_config_reg(cs, R_00950C_TA_CS_BC_BASE_ADDR, bc_va >> 8);
 		}
-	}
-
-	if (device->tma_bo) {
-		uint64_t tba_va, tma_va;
-
-		assert(device->physical_device->rad_info.chip_class == GFX8);
-
-		tba_va = radv_buffer_get_va(device->trap_handler_shader->bo) +
-			 device->trap_handler_shader->bo_offset;
-		tma_va = radv_buffer_get_va(device->tma_bo);
-
-		radeon_set_sh_reg_seq(cs, R_00B838_COMPUTE_TBA_LO, 4);
-		radeon_emit(cs, tba_va >> 8);
-		radeon_emit(cs, tba_va >> 40);
-		radeon_emit(cs, tma_va >> 8);
-		radeon_emit(cs, tma_va >> 40);
 	}
 }
 
@@ -621,31 +606,6 @@ si_emit_graphics(struct radv_device *device,
 			       S_028818_VPORT_Y_SCALE_ENA(1) | S_028818_VPORT_Y_OFFSET_ENA(1) |
 			       S_028818_VPORT_Z_SCALE_ENA(1) | S_028818_VPORT_Z_OFFSET_ENA(1));
 
-	if (device->tma_bo) {
-		uint64_t tba_va, tma_va;
-
-		assert(device->physical_device->rad_info.chip_class == GFX8);
-
-		tba_va = radv_buffer_get_va(device->trap_handler_shader->bo) +
-			 device->trap_handler_shader->bo_offset;
-		tma_va = radv_buffer_get_va(device->tma_bo);
-
-		uint32_t regs[] = {R_00B000_SPI_SHADER_TBA_LO_PS,
-				   R_00B100_SPI_SHADER_TBA_LO_VS,
-				   R_00B200_SPI_SHADER_TBA_LO_GS,
-				   R_00B300_SPI_SHADER_TBA_LO_ES,
-				   R_00B400_SPI_SHADER_TBA_LO_HS,
-				   R_00B500_SPI_SHADER_TBA_LO_LS};
-
-		for (i = 0; i < ARRAY_SIZE(regs); ++i) {
-			radeon_set_sh_reg_seq(cs, regs[i], 4);
-			radeon_emit(cs, tba_va >> 8);
-			radeon_emit(cs, tba_va >> 40);
-			radeon_emit(cs, tma_va >> 8);
-			radeon_emit(cs, tma_va >> 40);
-		}
-	}
-
 	si_emit_compute(device, cs);
 }
 
@@ -679,7 +639,7 @@ cik_create_gfx_config(struct radv_device *device)
 
 	void *map = device->ws->buffer_map(device->gfx_init);
 	if (!map) {
-		device->ws->buffer_destroy(device->ws, device->gfx_init);
+		device->ws->buffer_destroy(device->gfx_init);
 		device->gfx_init = NULL;
 		goto fail;
 	}
@@ -1029,54 +989,26 @@ void si_cs_emit_write_event_eop(struct radeon_cmdbuf *cs,
 		if (!is_gfx8_mec)
 			radeon_emit(cs, 0); /* unused */
 	} else {
-		/* On GFX6, EOS events are always emitted with EVENT_WRITE_EOS.
-		 * On GFX7+, EOS events are emitted with EVENT_WRITE_EOS on
-		 * the graphics queue, and with RELEASE_MEM on the compute
-		 * queue.
-		 */
-		if (event == V_028B9C_CS_DONE || event == V_028B9C_PS_DONE) {
-			assert(event_flags == 0 &&
-			       dst_sel == EOP_DST_SEL_MEM &&
-			       data_sel == EOP_DATA_SEL_VALUE_32BIT);
-
-			if (is_mec) {
-				radeon_emit(cs, PKT3(PKT3_RELEASE_MEM, 5, false));
-				radeon_emit(cs, op);
-				radeon_emit(cs, sel);
-				radeon_emit(cs, va);            /* address lo */
-				radeon_emit(cs, va >> 32);      /* address hi */
-				radeon_emit(cs, new_fence);     /* immediate data lo */
-				radeon_emit(cs, 0);		/* immediate data hi */
-			} else {
-				radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOS, 3, false));
-				radeon_emit(cs, op);
-				radeon_emit(cs, va);
-				radeon_emit(cs, ((va >> 32) & 0xffff) |
-						EOS_DATA_SEL(EOS_DATA_SEL_VALUE_32BIT));
-				radeon_emit(cs, new_fence);
-			}
-		} else {
-			if (chip_class == GFX7 ||
-			    chip_class == GFX8) {
-				/* Two EOP events are required to make all
-				 * engines go idle (and optional cache flushes
-				 * executed) before the timestamp is written.
-				 */
-				radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, false));
-				radeon_emit(cs, op);
-				radeon_emit(cs, va);
-				radeon_emit(cs, ((va >> 32) & 0xffff) | sel);
-				radeon_emit(cs, 0); /* immediate data */
-				radeon_emit(cs, 0); /* unused */
-			}
-
+		if (chip_class == GFX7 ||
+		    chip_class == GFX8) {
+			/* Two EOP events are required to make all engines go idle
+			 * (and optional cache flushes executed) before the timestamp
+			 * is written.
+			 */
 			radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, false));
 			radeon_emit(cs, op);
 			radeon_emit(cs, va);
 			radeon_emit(cs, ((va >> 32) & 0xffff) | sel);
-			radeon_emit(cs, new_fence); /* immediate data */
+			radeon_emit(cs, 0); /* immediate data */
 			radeon_emit(cs, 0); /* unused */
 		}
+
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE_EOP, 4, false));
+		radeon_emit(cs, op);
+		radeon_emit(cs, va);
+		radeon_emit(cs, ((va >> 32) & 0xffff) | sel);
+		radeon_emit(cs, new_fence); /* immediate data */
+		radeon_emit(cs, 0); /* unused */
 	}
 }
 
@@ -1785,7 +1717,7 @@ static void si_cp_dma_realign_engine(struct radv_cmd_buffer *cmd_buffer, unsigne
 
 	assert(size < SI_CPDMA_ALIGNMENT);
 
-	radv_cmd_buffer_upload_alloc(cmd_buffer, buf_size,  &offset, &ptr);
+	radv_cmd_buffer_upload_alloc(cmd_buffer, buf_size, SI_CPDMA_ALIGNMENT,  &offset, &ptr);
 
 	va = radv_buffer_get_va(cmd_buffer->upload.upload_bo);
 	va += offset;

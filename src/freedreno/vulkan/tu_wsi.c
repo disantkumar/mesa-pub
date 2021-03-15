@@ -32,8 +32,7 @@
 static VKAPI_PTR PFN_vkVoidFunction
 tu_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 {
-   TU_FROM_HANDLE(tu_physical_device, pdevice, physicalDevice);
-   return vk_instance_get_proc_addr_unchecked(&pdevice->instance->vk, pName);
+   return tu_lookup_entrypoint_unchecked(pName);
 }
 
 VkResult
@@ -44,7 +43,7 @@ tu_wsi_init(struct tu_physical_device *physical_device)
    result = wsi_device_init(&physical_device->wsi_device,
                             tu_physical_device_to_handle(physical_device),
                             tu_wsi_proc_addr,
-                            &physical_device->instance->vk.alloc,
+                            &physical_device->instance->alloc,
                             physical_device->master_fd, NULL,
                             false);
    if (result != VK_SUCCESS)
@@ -59,7 +58,7 @@ void
 tu_wsi_finish(struct tu_physical_device *physical_device)
 {
    wsi_device_finish(&physical_device->wsi_device,
-                     &physical_device->instance->vk.alloc);
+                     &physical_device->instance->alloc);
 }
 
 void
@@ -70,7 +69,7 @@ tu_DestroySurfaceKHR(VkInstance _instance,
    TU_FROM_HANDLE(tu_instance, instance, _instance);
    ICD_FROM_HANDLE(VkIcdSurfaceBase, surface, _surface);
 
-   vk_free2(&instance->vk.alloc, pAllocator, surface);
+   vk_free2(&instance->alloc, pAllocator, surface);
 }
 
 VkResult

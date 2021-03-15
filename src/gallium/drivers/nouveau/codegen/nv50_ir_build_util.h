@@ -137,9 +137,7 @@ public:
    class DataArray
    {
    public:
-      DataArray(BuildUtil *bld) : up(bld), array(0), arrayIdx(0), baseAddr(0),
-         arrayLen(0), baseSym(NULL), vecDim(0), eltSize(0), file(FILE_NULL),
-         regOnly(false) { }
+      DataArray(BuildUtil *bld) : up(bld) { }
 
       void setup(unsigned array, unsigned arrayIdx,
                  uint32_t base, int len, int vecDim, int eltSize,

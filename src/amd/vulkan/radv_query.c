@@ -26,6 +26,7 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <string.h>
+#include <unistd.h>
 #include <fcntl.h>
 
 #include "nir/nir_builder.h"
@@ -1006,7 +1007,7 @@ radv_destroy_query_pool(struct radv_device *device,
 			struct radv_query_pool *pool)
 {
 	if (pool->bo)
-		device->ws->buffer_destroy(device->ws, pool->bo);
+		device->ws->buffer_destroy(pool->bo);
 	vk_object_base_finish(&pool->base);
 	vk_free2(&device->vk.alloc, pAllocator, pool);
 }
@@ -1316,11 +1317,9 @@ void radv_CmdCopyQueryPoolResults(
 	switch (pool->type) {
 	case VK_QUERY_TYPE_OCCLUSION:
 		if (flags & VK_QUERY_RESULT_WAIT_BIT) {
-			unsigned enabled_rb_mask = cmd_buffer->device->physical_device->rad_info.enabled_rb_mask;
-			uint32_t rb_avail_offset = 16 * util_last_bit(enabled_rb_mask) - 4;
 			for(unsigned i = 0; i < queryCount; ++i, dest_va += stride) {
 				unsigned query = firstQuery + i;
-				uint64_t src_va = va + query * pool->stride + rb_avail_offset;
+				uint64_t src_va = va + query * pool->stride + pool->stride - 4;
 
 				radeon_check_space(cmd_buffer->device->ws, cs, 7);
 

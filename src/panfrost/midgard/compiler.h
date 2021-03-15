@@ -236,10 +236,14 @@ enum midgard_rt_id {
 #define MIDGARD_MAX_SAMPLE_ITER 16
 
 typedef struct compiler_context {
-        const struct panfrost_compile_inputs *inputs;
         nir_shader *nir;
-        struct pan_shader_info *info;
         gl_shader_stage stage;
+
+        /* Is internally a blend shader? Depends on stage == FRAGMENT */
+        bool is_blend;
+
+        /* Render target number for a keyed blend shader. Depends on is_blend */
+        unsigned blend_rt;
 
         /* Number of samples for a keyed blend shader. Depends on is_blend */
         unsigned blend_sample_iterations;
@@ -249,6 +253,12 @@ typedef struct compiler_context {
 
         /* Index to precolour to r2 for a dual-source blend colour */
         unsigned blend_src1;
+
+        /* Blend constants */
+        float blend_constants[4];
+
+        /* Number of bytes used for Thread Local Storage */
+        unsigned tls_size;
 
         /* Count of spills and fills for shaderdb */
         unsigned spills;
@@ -289,6 +299,13 @@ typedef struct compiler_context {
         /* Set of NIR indices that were already emitted as outmods */
         BITSET_WORD *already_emitted;
 
+        /* Just the count of the max register used. Higher count => higher
+         * register pressure */
+        int work_registers;
+
+        /* The number of uniforms allowable for the fast path */
+        int uniform_cutoff;
+
         /* Count of instructions emitted from NIR overall, across all blocks */
         int instruction_count;
 
@@ -303,7 +320,7 @@ typedef struct compiler_context {
         /* Writeout instructions for each render target */
         midgard_instruction *writeout_branch[MIDGARD_NUM_RTS][MIDGARD_MAX_SAMPLE_ITER];
 
-        struct hash_table_u64 *sysval_to_id;
+        struct panfrost_sysvals sysvals;
 } compiler_context;
 
 /* Per-block live_in/live_out */
@@ -521,7 +538,6 @@ void mir_compute_temp_count(compiler_context *ctx);
 #define LDST_SCRATCH 0x2A
 
 void mir_set_offset(compiler_context *ctx, midgard_instruction *ins, nir_src *offset, unsigned seg);
-void mir_set_ubo_offset(midgard_instruction *ins, nir_src *src, unsigned bias);
 
 /* 'Intrinsic' move for aliasing */
 

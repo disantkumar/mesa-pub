@@ -8,28 +8,25 @@ BLORP_FILES = \
 	blorp/blorp_priv.h
 
 COMMON_FILES = \
-	common/intel_aux_map.c \
-	common/intel_aux_map.h \
-	common/intel_buffer_alloc.h \
-	common/intel_clflush.h \
-	common/intel_batch_decoder.c \
-	common/intel_decoder.c \
-	common/intel_decoder.h \
-	common/intel_disasm.c \
-	common/intel_disasm.h \
-	common/intel_defines.h \
-	common/intel_gem.c \
-	common/intel_gem.h \
-	common/intel_guardband.h \
-	common/intel_l3_config.c \
-	common/intel_l3_config.h \
-	common/intel_urb_config.c \
-	common/intel_sample_positions.c \
-	common/intel_sample_positions.h \
-	common/intel_uuid.c \
-	common/intel_uuid.h \
-	common/intel_measure.c \
-	common/intel_measure.h
+	common/gen_aux_map.c \
+	common/gen_aux_map.h \
+	common/gen_buffer_alloc.h \
+	common/gen_clflush.h \
+	common/gen_batch_decoder.c \
+	common/gen_decoder.c \
+	common/gen_decoder.h \
+	common/gen_disasm.c \
+	common/gen_disasm.h \
+	common/gen_defines.h \
+	common/gen_gem.c \
+	common/gen_gem.h \
+	common/gen_guardband.h \
+	common/gen_l3_config.c \
+	common/gen_l3_config.h \
+	common/gen_urb_config.c \
+	common/gen_sample_positions.h \
+	common/gen_uuid.c \
+	common/gen_uuid.h
 
 COMPILER_FILES = \
 	compiler/brw_cfg.cpp \
@@ -266,12 +263,11 @@ VULKAN_FILES := \
 	vulkan/anv_cmd_buffer.c \
 	vulkan/anv_descriptor_set.c \
 	vulkan/anv_device.c \
+	vulkan/anv_dump.c \
 	vulkan/anv_formats.c \
 	vulkan/anv_genX.h \
 	vulkan/anv_image.c \
 	vulkan/anv_intel.c \
-	vulkan/anv_measure.c \
-	vulkan/anv_measure.h \
 	vulkan/anv_nir.h \
 	vulkan/anv_nir_add_base_work_group_id.c \
 	vulkan/anv_nir_apply_pipeline_layout.c \
@@ -285,7 +281,8 @@ VULKAN_FILES := \
 	vulkan/anv_private.h \
 	vulkan/anv_queue.c \
 	vulkan/anv_util.c \
-	vulkan/anv_wsi.c
+	vulkan/anv_wsi.c \
+	vulkan/vk_format_info.h
 
 VULKAN_NON_ANDROID_FILES := \
 	vulkan/anv_android_stubs.c
@@ -310,7 +307,9 @@ VULKAN_GEM_STUB_FILES := \
 
 VULKAN_GENERATED_FILES := \
 	vulkan/anv_entrypoints.c \
-	vulkan/anv_entrypoints.h
+	vulkan/anv_entrypoints.h \
+	vulkan/anv_extensions.c \
+	vulkan/anv_extensions.h
 
 VULKAN_GENX_FILES := \
 	vulkan/genX_blorp_exec.c \
@@ -362,12 +361,8 @@ GEN_PERF_XML_FILES = \
 	perf/oa-cflgt2.xml \
 	perf/oa-cflgt3.xml \
 	perf/oa-icl.xml \
-	perf/oa-ehl.xml \
-	perf/oa-tglgt1.xml \
-	perf/oa-tglgt2.xml \
-	perf/oa-rkl.xml \
-	perf/oa-dg1.xml \
-	perf/oa-adl.xml
+	perf/oa-lkf.xml \
+	perf/oa-tgl.xml
 
 GEN_PERF_FILES = \
 	perf/gen_perf.c \

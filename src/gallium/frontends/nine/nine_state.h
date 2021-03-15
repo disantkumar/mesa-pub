@@ -24,7 +24,6 @@
 #define _NINE_STATE_H_
 
 #include "d3d9.h"
-#include "iunknown.h"
 #include "nine_defines.h"
 #include "pipe/p_state.h"
 #include "util/list.h"
@@ -41,11 +40,10 @@
  */
 #define NINED3DRS_ALPHACOVERAGE  (D3DRS_BLENDOPALPHA + 3)
 #define NINED3DRS_MULTISAMPLE  (D3DRS_BLENDOPALPHA + 4)
-#define NINED3DRS_FETCH4  (D3DRS_BLENDOPALPHA + 5)
 
 #define D3DRS_LAST       D3DRS_BLENDOPALPHA
 #define D3DSAMP_LAST     D3DSAMP_DMAPOFFSET
-#define NINED3DRS_LAST   NINED3DRS_FETCH4 /* 215 */
+#define NINED3DRS_LAST   NINED3DRS_MULTISAMPLE /* 214 */
 #define NINED3DSAMP_LAST NINED3DSAMP_CUBETEX /* 16 */
 #define NINED3DTSS_LAST  D3DTSS_CONSTANT
 #define NINED3DTS_LAST   D3DTS_WORLDMATRIX(255)
@@ -299,7 +297,6 @@ struct nine_context {
     DWORD samp[NINE_MAX_SAMPLERS][NINED3DSAMP_COUNT];
 
     uint32_t samplers_shadow;
-    uint32_t samplers_fetch4;
 
     uint8_t bound_samplers_mask_vs;
     uint16_t bound_samplers_mask_ps;
@@ -672,8 +669,5 @@ nine_context_get_pipe_acquire( struct NineDevice9 *device );
 
 void
 nine_context_get_pipe_release( struct NineDevice9 *device );
-
-bool
-nine_context_is_worker( struct NineDevice9 *device );
 
 #endif /* _NINE_STATE_H_ */

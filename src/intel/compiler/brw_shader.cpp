@@ -932,19 +932,6 @@ backend_instruction::is_control_flow() const
 }
 
 bool
-backend_instruction::uses_indirect_addressing() const
-{
-   switch (opcode) {
-   case SHADER_OPCODE_BROADCAST:
-   case SHADER_OPCODE_CLUSTER_BROADCAST:
-   case SHADER_OPCODE_MOV_INDIRECT:
-      return true;
-   default:
-      return false;
-   }
-}
-
-bool
 backend_instruction::can_do_source_mods() const
 {
    switch (opcode) {
@@ -962,7 +949,6 @@ backend_instruction::can_do_source_mods() const
    case SHADER_OPCODE_BROADCAST:
    case SHADER_OPCODE_CLUSTER_BROADCAST:
    case SHADER_OPCODE_MOV_INDIRECT:
-   case SHADER_OPCODE_SHUFFLE:
       return false;
    default:
       return true;
@@ -1378,10 +1364,9 @@ brw_compile_tes(const struct brw_compiler *compiler,
 
    if (INTEL_DEBUG & DEBUG_TES) {
       fprintf(stderr, "TES Input ");
-      brw_print_vue_map(stderr, input_vue_map, MESA_SHADER_TESS_EVAL);
+      brw_print_vue_map(stderr, input_vue_map);
       fprintf(stderr, "TES Output ");
-      brw_print_vue_map(stderr, &prog_data->base.vue_map,
-                        MESA_SHADER_TESS_EVAL);
+      brw_print_vue_map(stderr, &prog_data->base.vue_map);
    }
 
    if (is_scalar) {

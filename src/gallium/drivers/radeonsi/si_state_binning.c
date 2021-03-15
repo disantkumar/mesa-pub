@@ -310,7 +310,7 @@ static void gfx10_get_bin_sizes(struct si_context *sctx, unsigned cb_target_enab
    const unsigned FcReadTags = 44;
 
    const unsigned num_rbs = sctx->screen->info.max_render_backends;
-   const unsigned num_pipes = MAX2(num_rbs, sctx->screen->info.num_tcc_blocks);
+   const unsigned num_pipes = MAX2(num_rbs, sctx->screen->info.num_sdp_interfaces);
 
    const unsigned depthBinSizeTagPart =
       ((ZsNumTags * num_rbs / num_pipes) * (ZsTagSize * num_pipes));
@@ -404,7 +404,7 @@ static void gfx10_get_bin_sizes(struct si_context *sctx, unsigned cb_target_enab
 
 static void si_emit_dpbb_disable(struct si_context *sctx)
 {
-   radeon_begin(&sctx->gfx_cs);
+   unsigned initial_cdw = sctx->gfx_cs.current.cdw;
 
    if (sctx->chip_class >= GFX10) {
       struct uvec2 bin_size = {};
@@ -441,7 +441,8 @@ static void si_emit_dpbb_disable(struct si_context *sctx)
    radeon_opt_set_context_reg(
       sctx, db_dfsm_control, SI_TRACKED_DB_DFSM_CONTROL,
       S_028060_PUNCHOUT_MODE(V_028060_FORCE_OFF) | S_028060_POPS_DRAIN_PS_ON_OVERLAP(1));
-   radeon_end_update_context_roll(sctx);
+   if (initial_cdw != sctx->gfx_cs.current.cdw)
+      sctx->context_roll = true;
 
    sctx->last_binning_enabled = false;
 }
@@ -525,7 +526,7 @@ void si_emit_dpbb_state(struct si_context *sctx)
    if (bin_size.y >= 32)
       bin_size_extend.y = util_logbase2(bin_size.y) - 5;
 
-   radeon_begin(&sctx->gfx_cs);
+   unsigned initial_cdw = sctx->gfx_cs.current.cdw;
    radeon_opt_set_context_reg(
       sctx, R_028C44_PA_SC_BINNER_CNTL_0, SI_TRACKED_PA_SC_BINNER_CNTL_0,
       S_028C44_BINNING_MODE(V_028C44_BINNING_ALLOWED) | S_028C44_BIN_SIZE_X(bin_size.x == 16) |
@@ -545,7 +546,8 @@ void si_emit_dpbb_state(struct si_context *sctx)
    radeon_opt_set_context_reg(
       sctx, db_dfsm_control, SI_TRACKED_DB_DFSM_CONTROL,
       S_028060_PUNCHOUT_MODE(punchout_mode) | S_028060_POPS_DRAIN_PS_ON_OVERLAP(1));
-   radeon_end_update_context_roll(sctx);
+   if (initial_cdw != sctx->gfx_cs.current.cdw)
+      sctx->context_roll = true;
 
    sctx->last_binning_enabled = true;
 }

@@ -166,7 +166,7 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 
 		OUT_REG(ring, A6XX_GRAS_SU_DEPTH_BUFFER_INFO(.depth_format = fmt));
 
-		OUT_PKT4(ring, REG_A6XX_RB_DEPTH_FLAG_BUFFER_BASE, 3);
+		OUT_PKT4(ring, REG_A6XX_RB_DEPTH_FLAG_BUFFER_BASE_LO, 3);
 		fd6_emit_flag_reference(ring, rsc,
 				zsbuf->u.tex.level, zsbuf->u.tex.first_layer);
 
@@ -175,9 +175,10 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 				A6XX_GRAS_LRZ_BUFFER_BASE(.bo = rsc->lrz),
 				A6XX_GRAS_LRZ_BUFFER_PITCH(.pitch = rsc->lrz_pitch),
 				// XXX a6xx seems to use a different buffer here.. not sure what for..
-				A6XX_GRAS_LRZ_FAST_CLEAR_BUFFER_BASE());
+				A6XX_GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_LO(0),
+				A6XX_GRAS_LRZ_FAST_CLEAR_BUFFER_BASE_HI(0));
 		} else {
-			OUT_PKT4(ring, REG_A6XX_GRAS_LRZ_BUFFER_BASE, 5);
+			OUT_PKT4(ring, REG_A6XX_GRAS_LRZ_BUFFER_BASE_LO, 5);
 			OUT_RING(ring, 0x00000000);
 			OUT_RING(ring, 0x00000000);
 			OUT_RING(ring, 0x00000000);     /* GRAS_LRZ_BUFFER_PITCH */
@@ -216,7 +217,7 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
 
 		OUT_REG(ring, A6XX_GRAS_SU_DEPTH_BUFFER_INFO(.depth_format = DEPTH6_NONE));
 
-		OUT_PKT4(ring, REG_A6XX_GRAS_LRZ_BUFFER_BASE, 5);
+		OUT_PKT4(ring, REG_A6XX_GRAS_LRZ_BUFFER_BASE_LO, 5);
 		OUT_RING(ring, 0x00000000);    /* RB_DEPTH_FLAG_BUFFER_BASE_LO */
 		OUT_RING(ring, 0x00000000);    /* RB_DEPTH_FLAG_BUFFER_BASE_HI */
 		OUT_RING(ring, 0x00000000);    /* GRAS_LRZ_BUFFER_PITCH */
@@ -533,7 +534,6 @@ set_bin_size(struct fd_ringbuffer *ring, uint32_t w, uint32_t h, uint32_t flag)
 
 static void
 emit_binning_pass(struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
@@ -648,7 +648,6 @@ static void prepare_tile_fini_ib(struct fd_batch *batch);
 /* before first tile */
 static void
 fd6_emit_tile_init(struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
@@ -849,7 +848,7 @@ emit_blit(struct fd_batch *batch,
 	/* separate stencil case: */
 	if (stencil) {
 		rsc = rsc->stencil;
-		pfmt = rsc->b.b.format;
+		pfmt = rsc->base.format;
 	}
 
 	offset = fd_resource_offset(rsc, psurf->u.tex.level,
@@ -863,8 +862,8 @@ emit_blit(struct fd_batch *batch,
 	uint32_t size = fd_resource_slice(rsc, psurf->u.tex.level)->size0;
 	enum a3xx_color_swap swap = fd6_resource_swap(rsc, pfmt);
 	enum a3xx_msaa_samples samples =
-			fd_msaa_samples(rsc->b.b.nr_samples);
-	uint32_t tile_mode = fd_resource_tile_mode(&rsc->b.b, psurf->u.tex.level);
+			fd_msaa_samples(rsc->base.nr_samples);
+	uint32_t tile_mode = fd_resource_tile_mode(&rsc->base, psurf->u.tex.level);
 
 	OUT_REG(ring,
 		A6XX_RB_BLIT_DST_INFO(.tile_mode = tile_mode, .samples = samples,
@@ -876,7 +875,7 @@ emit_blit(struct fd_batch *batch,
 	OUT_REG(ring, A6XX_RB_BLIT_BASE_GMEM(.dword = base));
 
 	if (ubwc_enabled) {
-		OUT_PKT4(ring, REG_A6XX_RB_BLIT_FLAG_DST, 3);
+		OUT_PKT4(ring, REG_A6XX_RB_BLIT_FLAG_DST_LO, 3);
 		fd6_emit_flag_reference(ring, rsc,
 				psurf->u.tex.level, psurf->u.tex.first_layer);
 	}
@@ -1130,72 +1129,18 @@ fd6_emit_tile_renderprep(struct fd_batch *batch, const struct fd_tile *tile)
 	trace_end_clear_restore(&batch->trace);
 }
 
-static bool
-blit_can_resolve(enum pipe_format format)
-{
-	const struct util_format_description *desc = util_format_description(format);
-
-	/* blit event can only do resolve for simple cases:
-	 * averaging samples as unsigned integers or choosing only one sample
-	 */
-	if (util_format_is_snorm(format) || util_format_is_srgb(format))
-		return false;
-
-	/* can't do formats with larger channel sizes
-	 * note: this includes all float formats
-	 * note2: single channel integer formats seem OK
-	 */
-	if (desc->channel[0].size > 10)
-		return false;
-
-	switch (format) {
-	/* for unknown reasons blit event can't msaa resolve these formats when tiled
-	 * likely related to these formats having different layout from other cpp=2 formats
-	 */
-	case PIPE_FORMAT_R8G8_UNORM:
-	case PIPE_FORMAT_R8G8_UINT:
-	case PIPE_FORMAT_R8G8_SINT:
-	/* TODO: this one should be able to work? */
-	case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-		return false;
-	default:
-		break;
-	}
-
-	return true;
-}
-
-static bool
-needs_resolve(struct pipe_surface *psurf)
-{
-	return psurf->nr_samples && (psurf->nr_samples != psurf->texture->nr_samples);
-}
-
 static void
 emit_resolve_blit(struct fd_batch *batch,
 				  struct fd_ringbuffer *ring,
 				  uint32_t base,
 				  struct pipe_surface *psurf,
 				  unsigned buffer)
-	assert_dt
 {
 	uint32_t info = 0;
 	bool stencil = false;
 
 	if (!fd_resource(psurf->texture)->valid)
 		return;
-
-	/* if we need to resolve, but cannot with BLIT event, we instead need
-	 * to generate per-tile CP_BLIT (r2d) commands:
-	 *
-	 * The separate-stencil is a special case, we might need to use CP_BLIT
-	 * for depth, but we can still resolve stencil with a BLIT event
-	 */
-	if (needs_resolve(psurf) && !blit_can_resolve(psurf->format) &&
-			(buffer != FD_BUFFER_STENCIL)) {
-		fd6_resolve_tile(batch, ring, base, psurf);
-		return;
-	}
 
 	switch (buffer) {
 	case FD_BUFFER_COLOR:
@@ -1224,7 +1169,6 @@ emit_resolve_blit(struct fd_batch *batch,
 
 static void
 prepare_tile_fini_ib(struct fd_batch *batch)
-	assert_dt
 {
 	const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
@@ -1330,7 +1274,6 @@ fd6_emit_tile_fini(struct fd_batch *batch)
 
 static void
 emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
-	assert_dt
 {
 	struct fd_context *ctx = batch->ctx;
 	struct pipe_framebuffer_state *pfb = &batch->framebuffer;
@@ -1362,7 +1305,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 		const bool has_depth = pfb->zsbuf;
 		struct pipe_resource *separate_stencil =
 			has_depth && fd_resource(pfb->zsbuf->texture)->stencil ?
-			&fd_resource(pfb->zsbuf->texture)->stencil->b.b : NULL;
+			&fd_resource(pfb->zsbuf->texture)->stencil->base : NULL;
 
 		if ((has_depth && (buffers & PIPE_CLEAR_DEPTH)) ||
 				(!separate_stencil && (buffers & PIPE_CLEAR_STENCIL))) {
@@ -1402,7 +1345,7 @@ setup_tess_buffers(struct fd_batch *batch, struct fd_ringbuffer *ring)
 			batch->tessparam_size,
 			DRM_FREEDRENO_GEM_TYPE_KMEM, "tessparam");
 
-	OUT_PKT4(ring, REG_A6XX_PC_TESSFACTOR_ADDR, 2);
+	OUT_PKT4(ring, REG_A6XX_PC_TESSFACTOR_ADDR_LO, 2);
 	OUT_RELOC(ring, batch->tessfactor_bo, 0, 0, 0);
 
 	batch->tess_addrs_constobj->cur = batch->tess_addrs_constobj->start;
@@ -1412,7 +1355,6 @@ setup_tess_buffers(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 static void
 fd6_emit_sysmem_prep(struct fd_batch *batch)
-	assert_dt
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 	struct fd_screen *screen = batch->ctx->screen;
@@ -1500,7 +1442,6 @@ fd6_emit_sysmem_fini(struct fd_batch *batch)
 
 void
 fd6_gmem_init(struct pipe_context *pctx)
-	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 

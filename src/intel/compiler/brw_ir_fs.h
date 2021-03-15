@@ -303,12 +303,8 @@ subscript(fs_reg reg, brw_reg_type type, unsigned i)
       reg.vstride += (reg.vstride ? delta : 0);
 
    } else if (reg.file == IMM) {
-      unsigned bit_size = type_sz(type) * 8;
-      reg.u64 >>= i * bit_size;
-      reg.u64 &= BITFIELD64_MASK(bit_size);
-      if (bit_size <= 16)
-         reg.u64 |= reg.u64 << 16;
-      return retype(reg, type);
+      assert(reg.type == type);
+
    } else {
       reg.stride *= type_sz(reg.type) / type_sz(type);
    }

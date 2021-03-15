@@ -60,7 +60,7 @@ void init()
 
 void init_program(Program *program, Stage stage, struct radv_shader_info *info,
                   enum chip_class chip_class, enum radeon_family family,
-                  bool wgp_mode, ac_shader_config *config)
+                  ac_shader_config *config)
 {
    program->stage = stage;
    program->config = config;
@@ -93,70 +93,34 @@ void init_program(Program *program, Stage stage, struct radv_shader_info *info,
    program->wave_size = info->wave_size;
    program->lane_mask = program->wave_size == 32 ? s1 : s2;
 
-   program->dev.lds_encoding_granule = chip_class >= GFX7 ? 512 : 256;
-   program->dev.lds_alloc_granule = chip_class >= GFX10_3 ? 1024 : program->dev.lds_encoding_granule;
-   program->dev.lds_limit = chip_class >= GFX7 ? 65536 : 32768;
+   program->lds_alloc_granule = chip_class >= GFX7 ? 512 : 256;
+   program->lds_limit = chip_class >= GFX7 ? 65536 : 32768;
    /* apparently gfx702 also has 16-bank LDS but I can't find a family for that */
-   program->dev.has_16bank_lds = family == CHIP_KABINI || family == CHIP_STONEY;
+   program->has_16bank_lds = family == CHIP_KABINI || family == CHIP_STONEY;
 
-   program->dev.vgpr_limit = 256;
-   program->dev.physical_vgprs = 256;
-   program->dev.vgpr_alloc_granule = 4;
+   program->vgpr_limit = 256;
+   program->vgpr_alloc_granule = 3;
 
    if (chip_class >= GFX10) {
-      program->dev.physical_sgprs = 5120; /* doesn't matter as long as it's at least 128 * 40 */
-      program->dev.physical_vgprs = program->wave_size == 32 ? 1024 : 512;
-      program->dev.sgpr_alloc_granule = 128;
-      program->dev.sgpr_limit = 108; /* includes VCC, which can be treated as s[106-107] on GFX10+ */
+      program->physical_sgprs = 2560; /* doesn't matter as long as it's at least 128 * 20 */
+      program->sgpr_alloc_granule = 127;
+      program->sgpr_limit = 106;
       if (chip_class >= GFX10_3)
-         program->dev.vgpr_alloc_granule = program->wave_size == 32 ? 16 : 8;
+         program->vgpr_alloc_granule = program->wave_size == 32 ? 15 : 7;
       else
-         program->dev.vgpr_alloc_granule = program->wave_size == 32 ? 8 : 4;
+         program->vgpr_alloc_granule = program->wave_size == 32 ? 7 : 3;
    } else if (program->chip_class >= GFX8) {
-      program->dev.physical_sgprs = 800;
-      program->dev.sgpr_alloc_granule = 16;
-      program->dev.sgpr_limit = 102;
+      program->physical_sgprs = 800;
+      program->sgpr_alloc_granule = 15;
       if (family == CHIP_TONGA || family == CHIP_ICELAND)
-         program->dev.sgpr_alloc_granule = 96; /* workaround hardware bug */
+         program->sgpr_limit = 94; /* workaround hardware bug */
+      else
+         program->sgpr_limit = 102;
    } else {
-      program->dev.physical_sgprs = 512;
-      program->dev.sgpr_alloc_granule = 8;
-      program->dev.sgpr_limit = 104;
+      program->physical_sgprs = 512;
+      program->sgpr_alloc_granule = 7;
+      program->sgpr_limit = 104;
    }
-
-   program->dev.max_wave64_per_simd = 10;
-   if (program->chip_class >= GFX10_3)
-      program->dev.max_wave64_per_simd = 16;
-   else if (program->chip_class == GFX10)
-      program->dev.max_wave64_per_simd = 20;
-   else if (program->family >= CHIP_POLARIS10 && program->family <= CHIP_VEGAM)
-      program->dev.max_wave64_per_simd = 8;
-
-   program->dev.simd_per_cu = program->chip_class >= GFX10 ? 2 : 4;
-
-   switch (program->family) {
-   /* GFX8 APUs */
-   case CHIP_CARRIZO:
-   case CHIP_STONEY:
-   /* GFX9 APUS */
-   case CHIP_RAVEN:
-   case CHIP_RAVEN2:
-   case CHIP_RENOIR:
-      program->dev.xnack_enabled = true;
-      break;
-   default:
-      break;
-   }
-
-   program->dev.sram_ecc_enabled = program->family == CHIP_ARCTURUS;
-   /* apparently gfx702 also has fast v_fma_f32 but I can't find a family for that */
-   program->dev.has_fast_fma32 = program->chip_class >= GFX9;
-   if (program->family == CHIP_TAHITI ||
-       program->family == CHIP_CARRIZO ||
-       program->family == CHIP_HAWAII)
-      program->dev.has_fast_fma32 = true;
-
-   program->wgp_mode = wgp_mode;
 
    program->next_fp_mode.preserve_signed_zero_inf_nan32 = false;
    program->next_fp_mode.preserve_signed_zero_inf_nan16_64 = false;
@@ -174,19 +138,19 @@ memory_sync_info get_sync_info(const Instruction* instr)
 {
    switch (instr->format) {
    case Format::SMEM:
-      return instr->smem().sync;
+      return static_cast<const SMEM_instruction*>(instr)->sync;
    case Format::MUBUF:
-      return instr->mubuf().sync;
+      return static_cast<const MUBUF_instruction*>(instr)->sync;
    case Format::MIMG:
-      return instr->mimg().sync;
+      return static_cast<const MIMG_instruction*>(instr)->sync;
    case Format::MTBUF:
-      return instr->mtbuf().sync;
+      return static_cast<const MTBUF_instruction*>(instr)->sync;
    case Format::FLAT:
    case Format::GLOBAL:
    case Format::SCRATCH:
-      return instr->flatlike().sync;
+      return static_cast<const FLAT_instruction*>(instr)->sync;
    case Format::DS:
-      return instr->ds().sync;
+      return static_cast<const DS_instruction*>(instr)->sync;
    default:
       return memory_sync_info();
    }
@@ -204,12 +168,12 @@ bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr)
       return true;
 
    if (instr->isVOP3()) {
-      VOP3_instruction& vop3 = instr->vop3();
+      VOP3A_instruction *vop3 = static_cast<VOP3A_instruction*>(instr.get());
       if (instr->format == Format::VOP3)
          return false;
-      if (vop3.clamp && instr->format == asVOP3(Format::VOPC) && chip != GFX8)
+      if (vop3->clamp && instr->format == asVOP3(Format::VOPC) && chip != GFX8)
          return false;
-      if (vop3.omod && chip < GFX9)
+      if (vop3->omod && chip < GFX9)
          return false;
 
       //TODO: return true if we know we will use vcc
@@ -240,7 +204,7 @@ bool can_use_SDWA(chip_class chip, const aco_ptr<Instruction>& instr)
       return false;
 
    //TODO: return true if we know we will use vcc
-   if (instr->isVOPC())
+   if ((unsigned)instr->format & (unsigned)Format::VOPC)
       return false;
    if (instr->operands.size() >= 3 && !is_mac)
       return false;
@@ -266,14 +230,14 @@ aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& inst
    std::copy(tmp->operands.cbegin(), tmp->operands.cend(), instr->operands.begin());
    std::copy(tmp->definitions.cbegin(), tmp->definitions.cend(), instr->definitions.begin());
 
-   SDWA_instruction& sdwa = instr->sdwa();
+   SDWA_instruction *sdwa = static_cast<SDWA_instruction*>(instr.get());
 
    if (tmp->isVOP3()) {
-      VOP3_instruction& vop3 = tmp->vop3();
-      memcpy(sdwa.neg, vop3.neg, sizeof(sdwa.neg));
-      memcpy(sdwa.abs, vop3.abs, sizeof(sdwa.abs));
-      sdwa.omod = vop3.omod;
-      sdwa.clamp = vop3.clamp;
+      VOP3A_instruction *vop3 = static_cast<VOP3A_instruction*>(tmp.get());
+      memcpy(sdwa->neg, vop3->neg, sizeof(sdwa->neg));
+      memcpy(sdwa->abs, vop3->abs, sizeof(sdwa->abs));
+      sdwa->omod = vop3->omod;
+      sdwa->clamp = vop3->clamp;
    }
 
    for (unsigned i = 0; i < instr->operands.size(); i++) {
@@ -283,27 +247,27 @@ aco_ptr<Instruction> convert_to_SDWA(chip_class chip, aco_ptr<Instruction>& inst
 
       switch (instr->operands[i].bytes()) {
       case 1:
-         sdwa.sel[i] = sdwa_ubyte;
+         sdwa->sel[i] = sdwa_ubyte;
          break;
       case 2:
-         sdwa.sel[i] = sdwa_uword;
+         sdwa->sel[i] = sdwa_uword;
          break;
       case 4:
-         sdwa.sel[i] = sdwa_udword;
+         sdwa->sel[i] = sdwa_udword;
          break;
       }
    }
    switch (instr->definitions[0].bytes()) {
    case 1:
-      sdwa.dst_sel = sdwa_ubyte;
-      sdwa.dst_preserve = true;
+      sdwa->dst_sel = sdwa_ubyte;
+      sdwa->dst_preserve = true;
       break;
    case 2:
-      sdwa.dst_sel = sdwa_uword;
-      sdwa.dst_preserve = true;
+      sdwa->dst_sel = sdwa_uword;
+      sdwa->dst_preserve = true;
       break;
    case 4:
-      sdwa.dst_sel = sdwa_udword;
+      sdwa->dst_sel = sdwa_udword;
       break;
    }
 
@@ -445,12 +409,12 @@ uint32_t get_reduction_identity(ReduceOp op, unsigned idx)
 bool needs_exec_mask(const Instruction* instr) {
    if (instr->isSALU())
       return instr->reads_exec();
-   if (instr->isSMEM() || instr->isSALU())
+   if (instr->format == Format::SMEM || instr->isSALU())
       return false;
-   if (instr->isBarrier())
+   if (instr->format == Format::PSEUDO_BARRIER)
       return false;
 
-   if (instr->isPseudo()) {
+   if (instr->format == Format::PSEUDO) {
       switch (instr->opcode) {
       case aco_opcode::p_create_vector:
       case aco_opcode::p_extract_vector:

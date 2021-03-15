@@ -983,8 +983,10 @@ bool Converter::assignSlots() {
    info_out->numOutputs = 0;
    info_out->numSysVals = 0;
 
-   uint8_t i;
-   BITSET_FOREACH_SET(i, nir->info.system_values_read, SYSTEM_VALUE_MAX) {
+   for (uint8_t i = 0; i < SYSTEM_VALUE_MAX; ++i) {
+      if (!(nir->info.system_values_read & 1ull << i))
+         continue;
+
       info_out->sv[info_out->numSysVals].sn = tgsi_get_sysval_semantic(i);
       info_out->sv[info_out->numSysVals].si = 0;
       info_out->sv[info_out->numSysVals].input = 0; // TODO inferSysValDirection(sn);
@@ -1297,14 +1299,14 @@ Converter::parseNIR()
    case Program::TYPE_FRAGMENT:
       info_out->prop.fp.earlyFragTests = nir->info.fs.early_fragment_tests;
       prog->persampleInvocation =
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID) ||
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS);
+         (nir->info.system_values_read & SYSTEM_BIT_SAMPLE_ID) ||
+         (nir->info.system_values_read & SYSTEM_BIT_SAMPLE_POS);
       info_out->prop.fp.postDepthCoverage = nir->info.fs.post_depth_coverage;
       info_out->prop.fp.readsSampleLocations =
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS);
+         (nir->info.system_values_read & SYSTEM_BIT_SAMPLE_POS);
       info_out->prop.fp.usesDiscard = nir->info.fs.uses_discard || nir->info.fs.uses_demote;
       info_out->prop.fp.usesSampleMaskIn =
-         !BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_MASK_IN);
+         !!(nir->info.system_values_read & SYSTEM_BIT_SAMPLE_MASK_IN);
       break;
    case Program::TYPE_GEOMETRY:
       info_out->prop.gp.instanceCount = nir->info.gs.invocations;
@@ -1325,9 +1327,9 @@ Converter::parseNIR()
       break;
    case Program::TYPE_VERTEX:
       info_out->prop.vp.usesDrawParameters =
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_VERTEX) ||
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_INSTANCE) ||
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID);
+         (nir->info.system_values_read & BITFIELD64_BIT(SYSTEM_VALUE_BASE_VERTEX)) ||
+         (nir->info.system_values_read & BITFIELD64_BIT(SYSTEM_VALUE_BASE_INSTANCE)) ||
+         (nir->info.system_values_read & BITFIELD64_BIT(SYSTEM_VALUE_DRAW_ID));
       break;
    default:
       break;

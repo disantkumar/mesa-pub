@@ -300,7 +300,6 @@ swr_set_sampler_views(struct pipe_context *pipe,
                       enum pipe_shader_type shader,
                       unsigned start,
                       unsigned num,
-                      unsigned unbind_num_trailing_slots,
                       struct pipe_sampler_view **views)
 {
    struct swr_context *ctx = swr_context(pipe);
@@ -316,10 +315,6 @@ swr_set_sampler_views(struct pipe_context *pipe,
    for (i = 0; i < num; i++) {
       pipe_sampler_view_reference(&ctx->sampler_views[shader][start + i],
                                   views[i]);
-   }
-   for (; i < num + unbind_num_trailing_slots; i++) {
-      pipe_sampler_view_reference(&ctx->sampler_views[shader][start + i],
-                                  NULL);
    }
 
    ctx->dirty |= SWR_NEW_SAMPLER_VIEW;
@@ -551,7 +546,7 @@ swr_delete_tes_state(struct pipe_context *pipe, void *tes)
 static void
 swr_set_constant_buffer(struct pipe_context *pipe,
                         enum pipe_shader_type shader,
-                        uint index, bool take_ownership,
+                        uint index,
                         const struct pipe_constant_buffer *cb)
 {
    struct swr_context *ctx = swr_context(pipe);
@@ -561,7 +556,7 @@ swr_set_constant_buffer(struct pipe_context *pipe,
    assert(index < ARRAY_SIZE(ctx->constants[shader]));
 
    /* note: reference counting */
-   util_copy_constant_buffer(&ctx->constants[shader][index], cb, take_ownership);
+   util_copy_constant_buffer(&ctx->constants[shader][index], cb);
 
    if (shader == PIPE_SHADER_VERTEX) {
       ctx->dirty |= SWR_NEW_VSCONSTANTS;
@@ -669,8 +664,6 @@ static void
 swr_set_vertex_buffers(struct pipe_context *pipe,
                        unsigned start_slot,
                        unsigned num_elements,
-                       unsigned unbind_num_trailing_slots,
-                       bool take_ownership,
                        const struct pipe_vertex_buffer *buffers)
 {
    struct swr_context *ctx = swr_context(pipe);
@@ -681,9 +674,7 @@ swr_set_vertex_buffers(struct pipe_context *pipe,
                                  &ctx->num_vertex_buffers,
                                  buffers,
                                  start_slot,
-                                 num_elements,
-                                 unbind_num_trailing_slots,
-                                 take_ownership);
+                                 num_elements);
 
    ctx->dirty |= SWR_NEW_VERTEX;
 }

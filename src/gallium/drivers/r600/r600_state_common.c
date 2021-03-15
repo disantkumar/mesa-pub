@@ -566,8 +566,6 @@ void r600_vertex_buffers_dirty(struct r600_context *rctx)
 
 static void r600_set_vertex_buffers(struct pipe_context *ctx,
 				    unsigned start_slot, unsigned count,
-				    unsigned unbind_num_trailing_slots,
-				    bool take_ownership,
 				    const struct pipe_vertex_buffer *input)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
@@ -588,13 +586,7 @@ static void r600_set_vertex_buffers(struct pipe_context *ctx,
 				if (input[i].buffer.resource) {
 					vb[i].stride = input[i].stride;
 					vb[i].buffer_offset = input[i].buffer_offset;
-					if (take_ownership) {
-						pipe_resource_reference(&vb[i].buffer.resource, NULL);
-						vb[i].buffer.resource = input[i].buffer.resource;
-					} else {
-						pipe_resource_reference(&vb[i].buffer.resource,
-									input[i].buffer.resource);
-					}
+					pipe_resource_reference(&vb[i].buffer.resource, input[i].buffer.resource);
 					new_buffer_mask |= 1 << i;
 					r600_context_add_resource_size(ctx, input[i].buffer.resource);
 				} else {
@@ -609,11 +601,6 @@ static void r600_set_vertex_buffers(struct pipe_context *ctx,
 		}
 		disable_mask = ((1ull << count) - 1);
 	}
-
-	for (i = 0; i < unbind_num_trailing_slots; i++) {
-		pipe_resource_reference(&vb[count + i].buffer.resource, NULL);
-	}
-	disable_mask |= ((1ull << unbind_num_trailing_slots) - 1) << count;
 
 	disable_mask <<= start_slot;
 	new_buffer_mask <<= start_slot;
@@ -639,7 +626,6 @@ void r600_sampler_views_dirty(struct r600_context *rctx,
 static void r600_set_sampler_views(struct pipe_context *pipe,
 				   enum pipe_shader_type shader,
 				   unsigned start, unsigned count,
-				   unsigned unbind_num_trailing_slots,
 				   struct pipe_sampler_view **views)
 {
 	struct r600_context *rctx = (struct r600_context *) pipe;
@@ -1200,7 +1186,6 @@ void r600_constant_buffers_dirty(struct r600_context *rctx, struct r600_constbuf
 
 static void r600_set_constant_buffer(struct pipe_context *ctx,
 				     enum pipe_shader_type shader, uint index,
-				     bool take_ownership,
 				     const struct pipe_constant_buffer *input)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
@@ -1251,12 +1236,7 @@ static void r600_set_constant_buffer(struct pipe_context *ctx,
 	} else {
 		/* Setup the hw buffer. */
 		cb->buffer_offset = input->buffer_offset;
-		if (take_ownership) {
-			pipe_resource_reference(&cb->buffer, NULL);
-			cb->buffer = input->buffer;
-		} else {
-			pipe_resource_reference(&cb->buffer, input->buffer);
-		}
+		pipe_resource_reference(&cb->buffer, input->buffer);
 		r600_context_add_resource_size(ctx, input->buffer);
 	}
 
@@ -1362,7 +1342,7 @@ void r600_update_driver_const_buffers(struct r600_context *rctx, bool compute_on
 		cb.user_buffer = ptr;
 		cb.buffer_offset = 0;
 		cb.buffer_size = size;
-		rctx->b.b.set_constant_buffer(&rctx->b.b, sh, R600_BUFFER_INFO_CONST_BUFFER, false, &cb);
+		rctx->b.b.set_constant_buffer(&rctx->b.b, sh, R600_BUFFER_INFO_CONST_BUFFER, &cb);
 		pipe_resource_reference(&cb.buffer, NULL);
 	}
 }
@@ -1551,21 +1531,21 @@ static void update_gs_block_state(struct r600_context *rctx, unsigned enable)
 
 		if (enable) {
 			r600_set_constant_buffer(&rctx->b.b, PIPE_SHADER_GEOMETRY,
-					R600_GS_RING_CONST_BUFFER, false, &rctx->gs_rings.esgs_ring);
+					R600_GS_RING_CONST_BUFFER, &rctx->gs_rings.esgs_ring);
 			if (rctx->tes_shader) {
 				r600_set_constant_buffer(&rctx->b.b, PIPE_SHADER_TESS_EVAL,
-							 R600_GS_RING_CONST_BUFFER, false, &rctx->gs_rings.gsvs_ring);
+							 R600_GS_RING_CONST_BUFFER, &rctx->gs_rings.gsvs_ring);
 			} else {
 				r600_set_constant_buffer(&rctx->b.b, PIPE_SHADER_VERTEX,
-							 R600_GS_RING_CONST_BUFFER, false, &rctx->gs_rings.gsvs_ring);
+							 R600_GS_RING_CONST_BUFFER, &rctx->gs_rings.gsvs_ring);
 			}
 		} else {
 			r600_set_constant_buffer(&rctx->b.b, PIPE_SHADER_GEOMETRY,
-					R600_GS_RING_CONST_BUFFER, false, NULL);
+					R600_GS_RING_CONST_BUFFER, NULL);
 			r600_set_constant_buffer(&rctx->b.b, PIPE_SHADER_VERTEX,
-					R600_GS_RING_CONST_BUFFER, false, NULL);
+					R600_GS_RING_CONST_BUFFER, NULL);
 			r600_set_constant_buffer(&rctx->b.b, PIPE_SHADER_TESS_EVAL,
-					R600_GS_RING_CONST_BUFFER, false, NULL);
+					R600_GS_RING_CONST_BUFFER, NULL);
 		}
 	}
 }

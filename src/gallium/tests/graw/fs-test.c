@@ -117,7 +117,7 @@ static void init_fs_constbuf( void )
    cb1.user_buffer = constants1;
 
    ctx->set_constant_buffer(ctx,
-                            PIPE_SHADER_FRAGMENT, 0, false,
+                            PIPE_SHADER_FRAGMENT, 0,
                             &cb1);
 
    memset(&cb2, 0, sizeof cb2);
@@ -125,7 +125,7 @@ static void init_fs_constbuf( void )
    cb2.user_buffer = constants2;
 
    ctx->set_constant_buffer(ctx,
-                            PIPE_SHADER_FRAGMENT, 1, false,
+                            PIPE_SHADER_FRAGMENT, 1,
                             &cb2);
 }
 
@@ -179,7 +179,7 @@ static void set_vertices( void )
                                               sizeof(vertices),
                                               vertices);
 
-   ctx->set_vertex_buffers(ctx, 0, 1, 0, false, &vbuf);
+   ctx->set_vertex_buffers(ctx, 0, 1, &vbuf);
 }
 
 static void set_vertex_shader( void )
@@ -350,7 +350,7 @@ static void init_tex( void )
    if (sv == NULL)
       exit(5);
 
-   ctx->set_sampler_views(ctx, PIPE_SHADER_FRAGMENT, 0, 1, 0, &sv);
+   ctx->set_sampler_views(ctx, PIPE_SHADER_FRAGMENT, 0, 1, &sv);
    
 
    memset(&sampler_desc, 0, sizeof sampler_desc);

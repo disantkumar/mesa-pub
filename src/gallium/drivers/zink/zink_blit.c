@@ -4,7 +4,6 @@
 #include "zink_screen.h"
 
 #include "util/u_blitter.h"
-#include "util/u_rect.h"
 #include "util/u_surface.h"
 #include "util/format/u_format.h"
 
@@ -34,18 +33,13 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info)
    if (src->format != zink_get_format(screen, info->src.format) ||
        dst->format != zink_get_format(screen, info->dst.format))
       return false;
-   if (info->dst.resource->target == PIPE_BUFFER)
-      util_range_add(info->dst.resource, &dst->valid_buffer_range,
-                     info->dst.box.x, info->dst.box.x + info->dst.box.width);
 
-   zink_fb_clears_apply_or_discard(ctx, info->dst.resource, zink_rect_from_box(&info->dst.box), false);
-   zink_fb_clears_apply_region(ctx, info->src.resource, zink_rect_from_box(&info->src.box));
    struct zink_batch *batch = zink_batch_no_rp(ctx);
 
    zink_batch_reference_resource_rw(batch, src, false);
    zink_batch_reference_resource_rw(batch, dst, true);
 
-   zink_resource_setup_transfer_layouts(ctx, src, dst);
+   zink_resource_setup_transfer_layouts(batch, src, dst);
 
    VkImageResolve region = {};
 
@@ -120,16 +114,12 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info)
        dst->format != zink_get_format(screen, info->dst.format))
       return false;
 
-   zink_fb_clears_apply_or_discard(ctx, info->dst.resource, zink_rect_from_box(&info->dst.box), false);
-   zink_fb_clears_apply_region(ctx, info->src.resource, zink_rect_from_box(&info->src.box));
    struct zink_batch *batch = zink_batch_no_rp(ctx);
    zink_batch_reference_resource_rw(batch, src, false);
    zink_batch_reference_resource_rw(batch, dst, true);
 
-   zink_resource_setup_transfer_layouts(ctx, src, dst);
-   if (info->dst.resource->target == PIPE_BUFFER)
-      util_range_add(info->dst.resource, &dst->valid_buffer_range,
-                     info->dst.box.x, info->dst.box.x + info->dst.box.width);
+   zink_resource_setup_transfer_layouts(batch, src, dst);
+
    VkImageBlit region = {};
    region.srcSubresource.aspectMask = src->aspect;
    region.srcSubresource.mipLevel = info->src.level;
@@ -213,82 +203,29 @@ zink_blit(struct pipe_context *pctx,
       return;
    }
 
-   zink_fb_clears_apply_or_discard(ctx, info->dst.resource, zink_rect_from_box(&info->dst.box), true);
-
-   if (info->dst.resource->target == PIPE_BUFFER)
-      util_range_add(info->dst.resource, &dst->valid_buffer_range,
-                     info->dst.box.x, info->dst.box.x + info->dst.box.width);
-   zink_blit_begin(ctx, ZINK_BLIT_SAVE_FB | ZINK_BLIT_SAVE_FS | ZINK_BLIT_SAVE_TEXTURES);
-
-   util_blitter_blit(ctx->blitter, info);
-}
-
-/* similar to radeonsi */
-void
-zink_blit_begin(struct zink_context *ctx, enum zink_blit_flags flags)
-{
+   util_blitter_save_blend(ctx->blitter, ctx->gfx_pipeline_state.blend_state);
+   util_blitter_save_depth_stencil_alpha(ctx->blitter, ctx->dsa_state);
    util_blitter_save_vertex_elements(ctx->blitter, ctx->element_state);
-   util_blitter_save_viewport(ctx->blitter, ctx->vp_state.viewport_states);
-
-   util_blitter_save_vertex_buffer_slot(ctx->blitter, ctx->vertex_buffers);
+   util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
+   util_blitter_save_rasterizer(ctx->blitter, ctx->rast_state);
+   util_blitter_save_fragment_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_FRAGMENT]);
    util_blitter_save_vertex_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_VERTEX]);
    util_blitter_save_tessctrl_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_TESS_CTRL]);
    util_blitter_save_tesseval_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_TESS_EVAL]);
    util_blitter_save_geometry_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_GEOMETRY]);
-   util_blitter_save_rasterizer(ctx->blitter, ctx->rast_state);
+   util_blitter_save_framebuffer(ctx->blitter, &ctx->fb_state);
+   util_blitter_save_viewport(ctx->blitter, ctx->viewport_states);
+   util_blitter_save_scissor(ctx->blitter, ctx->scissor_states);
+   util_blitter_save_fragment_sampler_states(ctx->blitter,
+                                             ctx->num_samplers[PIPE_SHADER_FRAGMENT],
+                                             ctx->sampler_states[PIPE_SHADER_FRAGMENT]);
+   util_blitter_save_fragment_sampler_views(ctx->blitter,
+                                            ctx->num_image_views[PIPE_SHADER_FRAGMENT],
+                                            ctx->image_views[PIPE_SHADER_FRAGMENT]);
+   util_blitter_save_fragment_constant_buffer_slot(ctx->blitter, ctx->ubos[PIPE_SHADER_FRAGMENT]);
+   util_blitter_save_vertex_buffer_slot(ctx->blitter, ctx->buffers);
+   util_blitter_save_sample_mask(ctx->blitter, ctx->gfx_pipeline_state.sample_mask);
    util_blitter_save_so_targets(ctx->blitter, ctx->num_so_targets, ctx->so_targets);
 
-   if (flags & ZINK_BLIT_SAVE_FS) {
-      util_blitter_save_fragment_constant_buffer_slot(ctx->blitter, ctx->ubos[PIPE_SHADER_FRAGMENT]);
-      util_blitter_save_blend(ctx->blitter, ctx->gfx_pipeline_state.blend_state);
-      util_blitter_save_depth_stencil_alpha(ctx->blitter, ctx->dsa_state);
-      util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
-      util_blitter_save_sample_mask(ctx->blitter, ctx->gfx_pipeline_state.sample_mask);
-      util_blitter_save_scissor(ctx->blitter, ctx->vp_state.scissor_states);
-      /* also util_blitter_save_window_rectangles when we have that? */
-
-      util_blitter_save_fragment_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_FRAGMENT]);
-   }
-
-   if (flags & ZINK_BLIT_SAVE_FB)
-      util_blitter_save_framebuffer(ctx->blitter, &ctx->fb_state);
-
-
-   if (flags & ZINK_BLIT_SAVE_TEXTURES) {
-      util_blitter_save_fragment_sampler_states(ctx->blitter,
-                                                ctx->num_samplers[PIPE_SHADER_FRAGMENT],
-                                                ctx->sampler_states[PIPE_SHADER_FRAGMENT]);
-      util_blitter_save_fragment_sampler_views(ctx->blitter,
-                                               ctx->num_sampler_views[PIPE_SHADER_FRAGMENT],
-                                               ctx->sampler_views[PIPE_SHADER_FRAGMENT]);
-   }
-}
-
-bool
-zink_blit_region_fills(struct u_rect region, unsigned width, unsigned height)
-{
-   struct u_rect intersect = {0, width, 0, height};
-
-   if (!u_rect_test_intersection(&region, &intersect))
-      /* is this even a thing? */
-      return false;
-
-    u_rect_find_intersection(&region, &intersect);
-    if (intersect.x0 != 0 || intersect.y0 != 0 ||
-        intersect.x1 != width || intersect.y1 != height)
-       return false;
-
-   return false;
-}
-
-bool
-zink_blit_region_covers(struct u_rect region, struct u_rect covers)
-{
-   struct u_rect intersect;
-   if (!u_rect_test_intersection(&region, &covers))
-      return false;
-
-    u_rect_union(&intersect, &region, &covers);
-    return intersect.x0 == covers.x0 && intersect.y0 == covers.y0 &&
-           intersect.x1 == covers.x1 && intersect.y1 == covers.y1;
+   util_blitter_blit(ctx->blitter, info);
 }

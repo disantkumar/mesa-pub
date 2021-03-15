@@ -652,7 +652,7 @@ nir_lower_io_block(nir_block *block,
                nir_imm_zero(b, intrin->dest.ssa.num_components,
                              intrin->dest.ssa.bit_size);
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                  zero);
+                                  nir_src_for_ssa(zero));
          }
 
          nir_instr_remove(&intrin->instr);
@@ -692,7 +692,7 @@ nir_lower_io_block(nir_block *block,
 
       if (replacement) {
          nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                  replacement);
+                                  nir_src_for_ssa(replacement));
       }
       nir_instr_remove(&intrin->instr);
       progress = true;
@@ -1771,7 +1771,7 @@ nir_lower_explicit_io_instr(nir_builder *b,
                                         deref->modes, align_mul, align_offset,
                                         intrin->num_components);
       }
-      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, value);
+      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(value));
       break;
    }
 
@@ -1806,7 +1806,7 @@ nir_lower_explicit_io_instr(nir_builder *b,
                                                   deref->modes,
                                                   align_mul, align_offset,
                                                   intrin->num_components);
-      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, value);
+      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(value));
       break;
    }
 
@@ -1823,7 +1823,7 @@ nir_lower_explicit_io_instr(nir_builder *b,
    default: {
       nir_ssa_def *value =
          build_explicit_io_atomic(b, intrin, addr, addr_format, deref->modes);
-      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, value);
+      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(value));
       break;
    }
    }
@@ -1957,7 +1957,7 @@ lower_explicit_io_deref(nir_builder *b, nir_deref_instr *deref,
    assert(addr->num_components == deref->dest.ssa.num_components);
 
    nir_instr_remove(&deref->instr);
-   nir_ssa_def_rewrite_uses(&deref->dest.ssa, addr);
+   nir_ssa_def_rewrite_uses(&deref->dest.ssa, nir_src_for_ssa(addr));
 }
 
 static void
@@ -1985,13 +1985,12 @@ lower_explicit_io_array_length(nir_builder *b, nir_intrinsic_instr *intrin,
    nir_ssa_def *addr = &deref->dest.ssa;
    nir_ssa_def *index = addr_to_index(b, addr, addr_format);
    nir_ssa_def *offset = addr_to_offset(b, addr, addr_format);
-   unsigned access = nir_intrinsic_access(intrin);
 
-   nir_ssa_def *arr_size = nir_get_ssbo_size(b, index, .access=access);
-   arr_size = nir_imax(b, nir_isub(b, arr_size, offset), nir_imm_int(b, 0u));
-   arr_size = nir_idiv(b, arr_size, nir_imm_int(b, stride));
+   nir_ssa_def *arr_size =
+      nir_idiv(b, nir_isub(b, nir_get_ssbo_size(b, index), offset),
+                  nir_imm_int(b, stride));
 
-   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, arr_size);
+   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(arr_size));
    nir_instr_remove(&intrin->instr);
 }
 
@@ -2003,7 +2002,7 @@ lower_explicit_io_mode_check(nir_builder *b, nir_intrinsic_instr *intrin,
       /* If the address format is always global, then the driver can use
        * global addresses regardless of the mode.  In that case, don't create
        * a check, just whack the intrinsic to addr_mode_is and delegate to the
-       * driver lowering.
+       * driver lowering that.
        */
       intrin->intrinsic = nir_intrinsic_addr_mode_is;
       return;
@@ -2018,7 +2017,7 @@ lower_explicit_io_mode_check(nir_builder *b, nir_intrinsic_instr *intrin,
       build_runtime_addr_mode_check(b, addr, addr_format,
                                     nir_intrinsic_memory_modes(intrin));
 
-   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, is_mode);
+   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(is_mode));
 }
 
 static bool
@@ -2138,8 +2137,8 @@ nir_lower_explicit_io_impl(nir_function_impl *impl, nir_variable_mode modes,
  * the deref chain.
  *
  * This pass is also capable of handling OpenCL generic pointers.  If the
- * address mode is global, it will lower any ambiguous (more than one mode)
- * access to global and pass through the deref_mode_is run-time checks as
+ * address mode is global, it will lowering any ambiguous (more than one mode)
+ * access to global and passing through the deref_mode_is run-time checks as
  * addr_mode_is.  This assumes the driver has somehow mapped shared and
  * scratch memory to the global address space.  For other modes such as
  * 62bit_generic, there is an enum embedded in the address and we lower
@@ -2303,12 +2302,8 @@ nir_lower_vars_to_explicit_types(nir_shader *shader,
 
    if (modes & nir_var_uniform)
       progress |= lower_vars_to_explicit(shader, &shader->variables, nir_var_uniform, type_info);
-
-   if (modes & nir_var_mem_shared) {
-      assert(!shader->info.cs.shared_memory_explicit_layout);
+   if (modes & nir_var_mem_shared)
       progress |= lower_vars_to_explicit(shader, &shader->variables, nir_var_mem_shared, type_info);
-   }
-
    if (modes & nir_var_shader_temp)
       progress |= lower_vars_to_explicit(shader, &shader->variables, nir_var_shader_temp, type_info);
    if (modes & nir_var_mem_constant)

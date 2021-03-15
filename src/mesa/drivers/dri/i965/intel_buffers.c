@@ -33,7 +33,7 @@
 #include "main/renderbuffer.h"
 
 static void
-brw_drawbuffer(struct gl_context *ctx)
+intelDrawBuffer(struct gl_context *ctx)
 {
    if (_mesa_is_front_buffer_drawing(ctx->DrawBuffer)) {
       struct brw_context *const brw = brw_context(ctx);
@@ -43,13 +43,13 @@ brw_drawbuffer(struct gl_context *ctx)
        * (including the fake front) before we start rendering again.
        */
       dri2InvalidateDrawable(brw->driContext->driDrawablePriv);
-      brw_prepare_render(brw);
+      intel_prepare_render(brw);
    }
 }
 
 
 static void
-brw_readbuffer(struct gl_context * ctx, GLenum mode)
+intelReadBuffer(struct gl_context * ctx, GLenum mode)
 {
    if (_mesa_is_front_buffer_reading(ctx->ReadBuffer)) {
       struct brw_context *const brw = brw_context(ctx);
@@ -59,14 +59,14 @@ brw_readbuffer(struct gl_context * ctx, GLenum mode)
        * (including the fake front) before we start reading again.
        */
       dri2InvalidateDrawable(brw->driContext->driReadablePriv);
-      brw_prepare_render(brw);
+      intel_prepare_render(brw);
    }
 }
 
 
 void
-brw_init_buffer_functions(struct dd_function_table *functions)
+intelInitBufferFuncs(struct dd_function_table *functions)
 {
-   functions->DrawBuffer = brw_drawbuffer;
-   functions->ReadBuffer = brw_readbuffer;
+   functions->DrawBuffer = intelDrawBuffer;
+   functions->ReadBuffer = intelReadBuffer;
 }

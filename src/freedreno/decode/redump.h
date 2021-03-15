@@ -66,9 +66,7 @@ void rd_write_section(enum rd_sect_type type, const void *buf, int sz) __attribu
 #define RD_END()                 do { if (rd_end) rd_end(); } while (0)
 #define RD_WRITE_SECTION(t,b,s)  do { if (rd_write_section) rd_write_section(t,b,s); } while (0)
 
-#ifndef ARRAY_SIZE
-#  define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
-#endif
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #undef ALIGN
 #define ALIGN(v,a) (((v) + (a) - 1) & ~((a) - 1))
 

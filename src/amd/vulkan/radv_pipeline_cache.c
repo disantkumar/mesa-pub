@@ -393,8 +393,8 @@ radv_pipeline_cache_insert_shaders(struct radv_device *device,
 	for (int i = 0; i < MESA_SHADER_STAGES; ++i)
 		if (variants[i])
 			size += binaries[i]->total_size;
-	const size_t size_without_align = size;
-	size = align(size_without_align, alignof(struct cache_entry));
+	size = align(size, alignof(struct cache_entry));
+
 
 	entry = vk_alloc(&cache->alloc, size, 8,
 			   VK_SYSTEM_ALLOCATION_SCOPE_CACHE);
@@ -417,11 +417,6 @@ radv_pipeline_cache_insert_shaders(struct radv_device *device,
 		memcpy(p, binaries[i], binaries[i]->total_size);
 		p += binaries[i]->total_size;
 	}
-
-	// Make valgrind happy by filling the alignment hole at the end.
-	assert(p == (char*)entry + size_without_align);
-	assert(sizeof(*entry) + (p - entry->code) == size_without_align);
-	memset((char*)entry + size_without_align, 0, size - size_without_align);
 
 	/* Always add cache items to disk. This will allow collection of
 	 * compiled shaders by third parties such as steam, even if the app
@@ -482,8 +477,8 @@ radv_pipeline_cache_load(struct radv_pipeline_cache *cache,
 	if (memcmp(header.uuid, device->physical_device->cache_uuid, VK_UUID_SIZE) != 0)
 		return false;
 
-	char *end = (char *) data + size;
-	char *p = (char *) data + header.header_size;
+	char *end = (void *) data + size;
+	char *p = (void *) data + header.header_size;
 
 	while (end - p >= sizeof(struct cache_entry)) {
 		struct cache_entry *entry = (struct cache_entry*)p;
@@ -585,14 +580,14 @@ VkResult radv_GetPipelineCacheData(
 		*pDataSize = 0;
 		return VK_INCOMPLETE;
 	}
-	void *p = pData, *end = (char *) pData + *pDataSize;
+	void *p = pData, *end = pData + *pDataSize;
 	header = p;
 	header->header_size = align(sizeof(*header), alignof(struct cache_entry));
 	header->header_version = VK_PIPELINE_CACHE_HEADER_VERSION_ONE;
 	header->vendor_id = ATI_VENDOR_ID;
 	header->device_id = device->physical_device->rad_info.pci_id;
 	memcpy(header->uuid, device->physical_device->cache_uuid, VK_UUID_SIZE);
-	p = (char *)p + header->header_size;
+	p += header->header_size;
 
 	struct cache_entry *entry;
 	for (uint32_t i = 0; i < cache->table_size; i++) {
@@ -600,7 +595,7 @@ VkResult radv_GetPipelineCacheData(
 			continue;
 		entry = cache->hash_table[i];
 		const uint32_t size_of_entry = entry_size(entry);
-		if ((char *)end < (char *)p + size_of_entry) {
+		if (end < p + size_of_entry) {
 			result = VK_INCOMPLETE;
 			break;
 		}
@@ -608,9 +603,9 @@ VkResult radv_GetPipelineCacheData(
 		memcpy(p, entry, size_of_entry);
 		for(int j = 0; j < MESA_SHADER_STAGES; ++j)
 			((struct cache_entry*)p)->variants[j] = NULL;
-		p = (char *)p + size_of_entry;
+		p += size_of_entry;
 	}
-	*pDataSize = (char *)p - (char *)pData;
+	*pDataSize = p - pData;
 
 	radv_pipeline_cache_unlock(cache);
 	return result;

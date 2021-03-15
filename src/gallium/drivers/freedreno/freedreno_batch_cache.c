@@ -76,7 +76,7 @@
  *   not have been destroyed.
  */
 
-struct fd_batch_key {
+struct key {
 	uint32_t width;
 	uint32_t height;
 	uint16_t layers;
@@ -91,20 +91,20 @@ struct fd_batch_key {
 	} surf[0];
 };
 
-static struct fd_batch_key *
+static struct key *
 key_alloc(unsigned num_surfs)
 {
-	struct fd_batch_key *key =
-		CALLOC_VARIANT_LENGTH_STRUCT(fd_batch_key, sizeof(key->surf[0]) * num_surfs);
+	struct key *key =
+		CALLOC_VARIANT_LENGTH_STRUCT(key, sizeof(key->surf[0]) * num_surfs);
 	return key;
 }
 
 static uint32_t
 key_hash(const void *_key)
 {
-	const struct fd_batch_key *key = _key;
+	const struct key *key = _key;
 	uint32_t hash = 0;
-	hash = XXH32(key, offsetof(struct fd_batch_key, surf[0]), hash);
+	hash = XXH32(key, offsetof(struct key, surf[0]), hash);
 	hash = XXH32(key->surf, sizeof(key->surf[0]) * key->num_surfs , hash);
 	return hash;
 }
@@ -112,9 +112,9 @@ key_hash(const void *_key)
 static bool
 key_equals(const void *_a, const void *_b)
 {
-	const struct fd_batch_key *a = _a;
-	const struct fd_batch_key *b = _b;
-	return (memcmp(a, b, offsetof(struct fd_batch_key, surf[0])) == 0) &&
+	const struct key *a = _a;
+	const struct key *b = _b;
+	return (memcmp(a, b, offsetof(struct key, surf[0])) == 0) &&
 		(memcmp(a->surf, b->surf, sizeof(a->surf[0]) * a->num_surfs) == 0);
 }
 
@@ -132,7 +132,6 @@ fd_bc_fini(struct fd_batch_cache *cache)
 
 static void
 bc_flush(struct fd_batch_cache *cache, struct fd_context *ctx, bool deferred)
-	assert_dt
 {
 	/* fd_batch_flush() (and fd_batch_add_dep() which calls it indirectly)
 	 * can cause batches to be unref'd and freed under our feet, so grab
@@ -265,7 +264,7 @@ fd_bc_invalidate_batch(struct fd_batch *batch, bool remove)
 		return;
 
 	struct fd_batch_cache *cache = &batch->ctx->screen->batch_cache;
-	struct fd_batch_key *key = (struct fd_batch_key *)batch->key;
+	struct key *key = (struct key *)batch->key;
 
 	fd_screen_assert_locked(batch->ctx->screen);
 
@@ -280,7 +279,7 @@ fd_bc_invalidate_batch(struct fd_batch *batch, bool remove)
 	DBG("%p: key=%p", batch, batch->key);
 	for (unsigned idx = 0; idx < key->num_surfs; idx++) {
 		struct fd_resource *rsc = fd_resource(key->surf[idx].texture);
-		rsc->track->bc_batch_mask &= ~(1 << batch->idx);
+		rsc->bc_batch_mask &= ~(1 << batch->idx);
 	}
 
 	struct hash_entry *entry =
@@ -294,32 +293,31 @@ fd_bc_invalidate_batch(struct fd_batch *batch, bool remove)
 void
 fd_bc_invalidate_resource(struct fd_resource *rsc, bool destroy)
 {
-	struct fd_screen *screen = fd_screen(rsc->b.b.screen);
+	struct fd_screen *screen = fd_screen(rsc->base.screen);
 	struct fd_batch *batch;
 
 	fd_screen_lock(screen);
 
 	if (destroy) {
-		foreach_batch (batch, &screen->batch_cache, rsc->track->batch_mask) {
+		foreach_batch(batch, &screen->batch_cache, rsc->batch_mask) {
 			struct set_entry *entry = _mesa_set_search(batch->resources, rsc);
 			_mesa_set_remove(batch->resources, entry);
 		}
-		rsc->track->batch_mask = 0;
+		rsc->batch_mask = 0;
 
-		fd_batch_reference_locked(&rsc->track->write_batch, NULL);
+		fd_batch_reference_locked(&rsc->write_batch, NULL);
 	}
 
-	foreach_batch (batch, &screen->batch_cache, rsc->track->bc_batch_mask)
+	foreach_batch(batch, &screen->batch_cache, rsc->bc_batch_mask)
 		fd_bc_invalidate_batch(batch, false);
 
-	rsc->track->bc_batch_mask = 0;
+	rsc->bc_batch_mask = 0;
 
 	fd_screen_unlock(screen);
 }
 
 static struct fd_batch *
 alloc_batch_locked(struct fd_batch_cache *cache, struct fd_context *ctx, bool nondraw)
-	assert_dt
 {
 	struct fd_batch *batch;
 	uint32_t idx;
@@ -415,9 +413,8 @@ fd_bc_alloc_batch(struct fd_batch_cache *cache, struct fd_context *ctx, bool non
 }
 
 static struct fd_batch *
-batch_from_key(struct fd_batch_cache *cache, struct fd_batch_key *key,
+batch_from_key(struct fd_batch_cache *cache, struct key *key,
 		struct fd_context *ctx)
-	assert_dt
 {
 	struct fd_batch *batch = NULL;
 	uint32_t hash = key_hash(key);
@@ -459,14 +456,14 @@ batch_from_key(struct fd_batch_cache *cache, struct fd_batch_key *key,
 
 	for (unsigned idx = 0; idx < key->num_surfs; idx++) {
 		struct fd_resource *rsc = fd_resource(key->surf[idx].texture);
-		rsc->track->bc_batch_mask = (1 << batch->idx);
+		rsc->bc_batch_mask = (1 << batch->idx);
 	}
 
 	return batch;
 }
 
 static void
-key_surf(struct fd_batch_key *key, unsigned idx, unsigned pos, struct pipe_surface *psurf)
+key_surf(struct key *key, unsigned idx, unsigned pos, struct pipe_surface *psurf)
 {
 	key->surf[idx].texture = psurf->texture;
 	key->surf[idx].u = psurf->u;
@@ -480,7 +477,7 @@ fd_batch_from_fb(struct fd_batch_cache *cache, struct fd_context *ctx,
 		const struct pipe_framebuffer_state *pfb)
 {
 	unsigned idx = 0, n = pfb->nr_cbufs + (pfb->zsbuf ? 1 : 0);
-	struct fd_batch_key *key = key_alloc(n);
+	struct key *key = key_alloc(n);
 
 	key->width = pfb->width;
 	key->height = pfb->height;

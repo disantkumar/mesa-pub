@@ -225,7 +225,7 @@ _eglQueryDeviceAttribEXT(_EGLDevice *dev, EGLint attribute,
 {
    switch (attribute) {
    default:
-      _eglError(EGL_BAD_ATTRIBUTE, "eglQueryDeviceAttribEXT");
+      _eglError(EGL_BAD_ATTRIBUTE, "eglQueryDeviceStringEXT");
       return EGL_FALSE;
    }
 }

@@ -1621,73 +1621,6 @@ fs_visitor::assign_curb_setup()
 
    uint64_t used = 0;
 
-   if (stage == MESA_SHADER_COMPUTE && devinfo->genx10 >= 125) {
-      fs_builder ubld = bld.exec_all().group(8, 0).at(
-         cfg->first_block(), cfg->first_block()->start());
-
-      /* The base address for our push data is passed in as R0.0[31:6].  We
-       * have to mask off the bottom 6 bits.
-       */
-      fs_reg base_addr = ubld.vgrf(BRW_REGISTER_TYPE_UD);
-      ubld.group(1, 0).AND(base_addr,
-                           retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_UD),
-                           brw_imm_ud(INTEL_MASK(31, 6)));
-
-      fs_reg header0 = ubld.vgrf(BRW_REGISTER_TYPE_UD);
-      ubld.MOV(header0, brw_imm_ud(0));
-      ubld.group(1, 0).SHR(component(header0, 2), base_addr, brw_imm_ud(4));
-
-      /* On Gen12-HP we load constants at the start of the program using A32
-       * stateless messages.
-       */
-      for (unsigned i = 0; i < uniform_push_length;) {
-         unsigned num_regs = MIN2(uniform_push_length - i, 8);
-         assert(num_regs > 0);
-         num_regs = 1 << util_logbase2(num_regs);
-
-         fs_reg header;
-         if (i == 0) {
-            header = header0;
-         } else {
-            header = ubld.vgrf(BRW_REGISTER_TYPE_UD);
-            ubld.MOV(header, brw_imm_ud(0));
-            ubld.group(1, 0).ADD(component(header, 2),
-                                 component(header0, 2),
-                                 brw_imm_ud(i * 2));
-         }
-
-         fs_reg srcs[4] = {
-            brw_imm_ud(0), /* desc */
-            brw_imm_ud(0), /* ex_desc */
-            header, /* payload */
-            fs_reg(), /* payload2 */
-         };
-
-         fs_reg dest = retype(brw_vec8_grf(payload.num_regs + i, 0),
-                              BRW_REGISTER_TYPE_UD);
-
-         /* This instruction has to be run SIMD16 if we're filling more than a
-          * single register.
-          */
-         unsigned send_width = MIN2(16, num_regs * 8);
-
-         fs_inst *send = ubld.group(send_width, 0).emit(SHADER_OPCODE_SEND,
-                                                        dest, srcs, 4);
-         send->sfid = GEN7_SFID_DATAPORT_DATA_CACHE;
-         send->desc = brw_dp_desc(devinfo, GEN8_BTI_STATELESS_NON_COHERENT,
-                                  GEN7_DATAPORT_DC_OWORD_BLOCK_READ,
-                                  BRW_DATAPORT_OWORD_BLOCK_OWORDS(num_regs * 2));
-         send->header_size = 1;
-         send->mlen = 1;
-         send->size_written = num_regs * REG_SIZE;
-         send->send_is_volatile = true;
-
-         i += num_regs;
-      }
-
-      invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
-   }
-
    /* Map the offsets in the UNIFORM file to fixed HW regs. */
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
       for (unsigned int i = 0; i < inst->sources; i++) {
@@ -2262,13 +2195,9 @@ fs_visitor::compact_virtual_grfs()
 }
 
 static int
-get_subgroup_id_param_index(const gen_device_info *devinfo,
-                            const brw_stage_prog_data *prog_data)
+get_subgroup_id_param_index(const brw_stage_prog_data *prog_data)
 {
    if (prog_data->nr_params == 0)
-      return -1;
-
-   if (devinfo->genx10 >= 125)
       return -1;
 
    /* The local thread id is always the last parameter in the list */
@@ -2442,8 +2371,7 @@ fs_visitor::assign_constant_locations()
          }
       }
 
-      int subgroup_id_index = get_subgroup_id_param_index(devinfo,
-                                                          stage_prog_data);
+      int subgroup_id_index = get_subgroup_id_param_index(stage_prog_data);
 
       /* Only allow 16 registers (128 uniform components) as push constants.
        *
@@ -2714,10 +2642,17 @@ fs_visitor::opt_algebraic()
             assert(!inst->src[0].negate);
             const brw::fs_builder ibld(this, block, inst);
 
-            ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 1),
-                     subscript(inst->src[0], BRW_REGISTER_TYPE_UD, 1));
-            ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 0),
-                     subscript(inst->src[0], BRW_REGISTER_TYPE_UD, 0));
+            if (inst->src[0].file == IMM) {
+               ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 1),
+                        brw_imm_ud(inst->src[0].u64 >> 32));
+               ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 0),
+                        brw_imm_ud(inst->src[0].u64));
+            } else {
+               ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 1),
+                        subscript(inst->src[0], BRW_REGISTER_TYPE_UD, 1));
+               ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 0),
+                        subscript(inst->src[0], BRW_REGISTER_TYPE_UD, 0));
+            }
 
             inst->remove(block);
             progress = true;
@@ -4121,14 +4056,7 @@ fs_visitor::lower_mul_qword_inst(fs_inst *inst, bblock_t *block)
    ibld.ADD(subscript(bd, BRW_REGISTER_TYPE_UD, 1),
             subscript(bd, BRW_REGISTER_TYPE_UD, 1), ad);
 
-   if (devinfo->has_64bit_int) {
-      ibld.MOV(inst->dst, bd);
-   } else {
-      ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 0),
-               subscript(bd, BRW_REGISTER_TYPE_UD, 0));
-      ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 1),
-               subscript(bd, BRW_REGISTER_TYPE_UD, 1));
-   }
+   ibld.MOV(inst->dst, bd);
 }
 
 void
@@ -4257,19 +4185,11 @@ fs_visitor::lower_minmax()
 
       if (inst->opcode == BRW_OPCODE_SEL &&
           inst->predicate == BRW_PREDICATE_NONE) {
-         /* If src1 is an immediate value that is not NaN, then it can't be
-          * NaN.  In that case, emit CMP because it is much better for cmod
-          * propagation.  Likewise if src1 is not float.  Gen4 and Gen5 don't
-          * support HF or DF, so it is not necessary to check for those.
+         /* FIXME: Using CMP doesn't preserve the NaN propagation semantics of
+          *        the original SEL.L/GE instruction
           */
-         if (inst->src[1].type != BRW_REGISTER_TYPE_F ||
-             (inst->src[1].file == IMM && !isnan(inst->src[1].f))) {
-            ibld.CMP(ibld.null_reg_d(), inst->src[0], inst->src[1],
-                     inst->conditional_mod);
-         } else {
-            ibld.CMPN(ibld.null_reg_d(), inst->src[0], inst->src[1],
-                      inst->conditional_mod);
-         }
+         ibld.CMP(ibld.null_reg_d(), inst->src[0], inst->src[1],
+                  inst->conditional_mod);
          inst->predicate = BRW_PREDICATE_NORMAL;
          inst->conditional_mod = BRW_CONDITIONAL_NONE;
 
@@ -4654,6 +4574,7 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
       load->dst = payload;
 
       uint32_t msg_ctl = brw_fb_write_msg_control(inst, prog_data);
+      uint32_t ex_desc = 0;
 
       inst->desc =
          (inst->group / 16) << 11 | /* rt slot group */
@@ -4661,7 +4582,6 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
                            GEN6_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_WRITE,
                            inst->last_rt, false);
 
-      uint32_t ex_desc = 0;
       if (devinfo->gen >= 11) {
          /* Set the "Render Target Index" and "Src0 Alpha Present" fields
           * in the extended message descriptor, in lieu of using a header.
@@ -4671,13 +4591,12 @@ lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
          if (key->nr_color_regions == 0)
             ex_desc |= 1 << 20; /* Null Render Target */
       }
-      inst->ex_desc = ex_desc;
 
       inst->opcode = SHADER_OPCODE_SEND;
       inst->resize_sources(3);
       inst->sfid = GEN6_SFID_DATAPORT_RENDER_CACHE;
-      inst->src[0] = brw_imm_ud(0);
-      inst->src[1] = brw_imm_ud(0);
+      inst->src[0] = brw_imm_ud(inst->desc);
+      inst->src[1] = brw_imm_ud(ex_desc);
       inst->src[2] = payload;
       inst->mlen = regs_written(load);
       inst->ex_mlen = 0;
@@ -5496,7 +5415,7 @@ static void
 setup_surface_descriptors(const fs_builder &bld, fs_inst *inst, uint32_t desc,
                           const fs_reg &surface, const fs_reg &surface_handle)
 {
-   const ASSERTED gen_device_info *devinfo = bld.shader->devinfo;
+   const gen_device_info *devinfo = bld.shader->devinfo;
 
    /* We must have exactly one of surface and surface_handle */
    assert((surface.file == BAD_FILE) != (surface_handle.file == BAD_FILE));
@@ -7939,13 +7858,7 @@ fs_visitor::optimize()
    }
 
    OPT(opt_combine_constants);
-   if (OPT(lower_integer_multiplication)) {
-      /* If lower_integer_multiplication made progress, it may have produced
-       * some 32x32-bit MULs in the process of lowering 64-bit MULs.  Run it
-       * one more time to clean those up if they exist.
-       */
-      OPT(lower_integer_multiplication);
-   }
+   OPT(lower_integer_multiplication);
    OPT(lower_sub_sat);
 
    if (devinfo->gen <= 5 && OPT(lower_minmax)) {
@@ -8592,7 +8505,7 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
          emit_shader_time_begin();
 
       if (nir->info.inputs_read > 0 ||
-          BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FRAG_COORD) ||
+          (nir->info.system_values_read & (1ull << SYSTEM_VALUE_FRAG_COORD)) ||
           (nir->info.outputs_read > 0 && !wm_key->coherent_fb_fetch)) {
          if (devinfo->gen < 6)
             emit_interpolation_setup_gen4();
@@ -8953,7 +8866,7 @@ brw_nir_demote_sample_qualifiers(nir_shader *nir)
                nir_load_barycentric(&b, nir_intrinsic_load_barycentric_centroid,
                                     nir_intrinsic_interp_mode(intrin));
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                     centroid);
+                                     nir_src_for_ssa(centroid));
             nir_instr_remove(instr);
             progress = true;
          }
@@ -8973,7 +8886,7 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
                               struct brw_wm_prog_data *prog_data)
 {
    prog_data->uses_src_depth = prog_data->uses_src_w =
-      BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_FRAG_COORD);
+      shader->info.system_values_read & BITFIELD64_BIT(SYSTEM_VALUE_FRAG_COORD);
 
    /* key->alpha_test_func means simulating alpha testing via discards,
     * so the shader definitely kills pixels.
@@ -8989,14 +8902,14 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
    prog_data->persample_dispatch =
       key->multisample_fbo &&
       (key->persample_interp ||
-       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID) ||
-       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS) ||
+       (shader->info.system_values_read & (SYSTEM_BIT_SAMPLE_ID |
+                                            SYSTEM_BIT_SAMPLE_POS)) ||
        shader->info.fs.uses_sample_qualifier ||
        shader->info.outputs_read);
 
    if (devinfo->gen >= 6) {
       prog_data->uses_sample_mask =
-         BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_MASK_IN);
+         shader->info.system_values_read & SYSTEM_BIT_SAMPLE_MASK_IN;
 
       /* From the Ivy Bridge PRM documentation for 3DSTATE_PS:
        *
@@ -9008,7 +8921,7 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
        * persample dispatch, we hard-code it to 0.5.
        */
       prog_data->uses_pos_offset = prog_data->persample_dispatch &&
-         BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS);
+         (shader->info.system_values_read & SYSTEM_BIT_SAMPLE_POS);
    }
 
    prog_data->has_render_target_reads = shader->info.outputs_read != 0ull;
@@ -9300,7 +9213,7 @@ cs_fill_push_const_info(const struct gen_device_info *devinfo,
                         struct brw_cs_prog_data *cs_prog_data)
 {
    const struct brw_stage_prog_data *prog_data = &cs_prog_data->base;
-   int subgroup_id_index = get_subgroup_id_param_index(devinfo, prog_data);
+   int subgroup_id_index = get_subgroup_id_param_index(prog_data);
    bool cross_thread_supported = devinfo->gen > 7 || devinfo->is_haswell;
 
    /* The thread ID should be stored in the last param dword */

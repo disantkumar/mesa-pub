@@ -38,19 +38,16 @@
 
 #include "brw_blorp.h"
 
-static void blorp_measure_start(struct blorp_batch *batch,
-                                const struct blorp_params *params) { }
-
 static void *
 blorp_emit_dwords(struct blorp_batch *batch, unsigned n)
 {
    assert(batch->blorp->driver_ctx == batch->driver_batch);
    struct brw_context *brw = batch->driver_batch;
 
-   brw_batch_begin(brw, n);
+   intel_batchbuffer_begin(brw, n);
    uint32_t *map = brw->batch.map_next;
    brw->batch.map_next += n;
-   brw_batch_advance(brw);
+   intel_batchbuffer_advance(brw);
    return map;
 }
 
@@ -256,7 +253,7 @@ blorp_flush_range(UNUSED struct blorp_batch *batch, UNUSED void *start,
 }
 
 #if GEN_GEN >= 7
-static const struct intel_l3_config *
+static const struct gen_l3_config *
 blorp_get_l3_config(struct blorp_batch *batch)
 {
    assert(batch->blorp->driver_ctx == batch->driver_batch);
@@ -328,10 +325,10 @@ genX(blorp_exec)(struct blorp_batch *batch,
    brw_emit_l3_state(brw);
 
 retry:
-   brw_batch_require_space(brw, 1400);
+   intel_batchbuffer_require_space(brw, 1400);
    brw_require_statebuffer_space(brw, 600);
-   brw_batch_save_state(brw);
-   check_aperture_failed_once |= brw_batch_saved_state_is_empty(brw);
+   intel_batchbuffer_save_state(brw);
+   check_aperture_failed_once |= intel_batchbuffer_saved_state_is_empty(brw);
    brw->batch.no_wrap = true;
 
 #if GEN_GEN == 6
@@ -375,18 +372,18 @@ retry:
    if (!brw_batch_has_aperture_space(brw, 0)) {
       if (!check_aperture_failed_once) {
          check_aperture_failed_once = true;
-         brw_batch_reset_to_saved(brw);
-         brw_batch_flush(brw);
+         intel_batchbuffer_reset_to_saved(brw);
+         intel_batchbuffer_flush(brw);
          goto retry;
       } else {
-         int ret = brw_batch_flush(brw);
+         int ret = intel_batchbuffer_flush(brw);
          WARN_ONCE(ret == -ENOSPC,
                    "i965: blorp emit exceeded available aperture space\n");
       }
    }
 
    if (unlikely(brw->always_flush_batch))
-      brw_batch_flush(brw);
+      intel_batchbuffer_flush(brw);
 
    /* We've smashed all state compared to what the normal 3D pipeline
     * rendering tracks for GL.

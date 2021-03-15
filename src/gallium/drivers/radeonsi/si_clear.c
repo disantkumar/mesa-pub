@@ -259,7 +259,7 @@ bool vi_dcc_clear_level(struct si_context *sctx, struct si_texture *tex, unsigne
    }
 
    si_clear_buffer(sctx, dcc_buffer, dcc_offset, clear_size, &clear_value, 4, SI_COHERENCY_CB_META,
-                   SI_AUTO_SELECT_CLEAR_METHOD);
+                   false);
    return true;
 }
 
@@ -487,8 +487,7 @@ static void si_do_fast_color_clear(struct si_context *sctx, unsigned *buffers,
          if (tex->buffer.b.b.nr_samples >= 2 && tex->cmask_buffer) {
             uint32_t clear_value = 0xCCCCCCCC;
             si_clear_buffer(sctx, &tex->cmask_buffer->b.b, tex->surface.cmask_offset,
-                            tex->surface.cmask_size, &clear_value, 4, SI_COHERENCY_CB_META,
-                            SI_AUTO_SELECT_CLEAR_METHOD);
+                            tex->surface.cmask_size, &clear_value, 4, SI_COHERENCY_CB_META, false);
             fmask_decompress_needed = true;
          }
       } else {
@@ -516,8 +515,7 @@ static void si_do_fast_color_clear(struct si_context *sctx, unsigned *buffers,
          /* Do the fast clear. */
          uint32_t clear_value = 0;
          si_clear_buffer(sctx, &tex->cmask_buffer->b.b, tex->surface.cmask_offset,
-                         tex->surface.cmask_size, &clear_value, 4, SI_COHERENCY_CB_META,
-                         SI_AUTO_SELECT_CLEAR_METHOD);
+                         tex->surface.cmask_size, &clear_value, 4, SI_COHERENCY_CB_META, false);
          eliminate_needed = true;
       }
 
@@ -610,7 +608,7 @@ static void si_clear(struct pipe_context *ctx, unsigned buffers,
                                 sctx->chip_class == GFX8 ? 0xfffff30f : 0xfffc000f;
          si_clear_buffer(sctx, &zstex->buffer.b.b, zstex->surface.htile_offset,
                          zstex->surface.htile_size, &clear_value, 4,
-                         SI_COHERENCY_DB_META, SI_AUTO_SELECT_CLEAR_METHOD);
+                         SI_COHERENCY_DB_META, false);
       }
 
       /* TC-compatible HTILE only supports depth clears to 0 or 1. */
@@ -661,13 +659,6 @@ static void si_clear(struct pipe_context *ctx, unsigned buffers,
 
       if (needs_db_flush)
          sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_DB;
-   }
-
-   if (unlikely(sctx->thread_trace_enabled)) {
-      if (buffers & PIPE_CLEAR_COLOR)
-         sctx->sqtt_next_event = EventCmdClearColorImage;
-      else if (buffers & PIPE_CLEAR_DEPTHSTENCIL)
-         sctx->sqtt_next_event = EventCmdClearDepthStencilImage;
    }
 
    si_blitter_begin(sctx, SI_CLEAR);

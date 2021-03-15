@@ -93,7 +93,7 @@ public:
 
    int sid() const {return m_sid;}
 
-   void update_mask(int additional_comps, int frac);
+   void update_mask(int additional_comps);
 
    size_t location() const {return m_driver_location;}
    int location_frac() const {return m_location_frac;}
@@ -155,7 +155,7 @@ public:
 
    size_t size() const {return m_inputs.size();}
 
-   PShaderInput find_varying(tgsi_semantic name, int sid);
+   PShaderInput find_varying(tgsi_semantic name, int sid, int frac);
 
    void update_lds_pos();
 

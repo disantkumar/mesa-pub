@@ -44,22 +44,13 @@ struct lima_depth_stencil_alpha_state {
 };
 
 struct lima_fs_shader_state {
+   struct pipe_shader_state base;
    void *shader;
    int shader_size;
    int stack_size;
+   uint8_t swizzles[PIPE_MAX_SAMPLERS][4];
    bool uses_discard;
    struct lima_bo *bo;
-};
-
-struct lima_fs_bind_state {
-   struct pipe_shader_state base;
-};
-
-struct lima_fs_key {
-   struct lima_fs_bind_state *shader_state;
-   struct {
-      uint8_t swizzle[4];
-   } tex[PIPE_MAX_SAMPLERS];
 };
 
 #define LIMA_MAX_VARYING_NUM 13
@@ -87,14 +78,6 @@ struct lima_vs_shader_state {
    int point_size_idx;
 
    struct lima_bo *bo;
-};
-
-struct lima_vs_bind_state {
-   struct pipe_shader_state base;
-};
-
-struct lima_vs_key {
-   struct lima_vs_bind_state *shader_state;
 };
 
 struct lima_rasterizer_state {
@@ -181,8 +164,8 @@ struct lima_context {
    enum {
       LIMA_CONTEXT_DIRTY_FRAMEBUFFER  = (1 << 0),
       LIMA_CONTEXT_DIRTY_CLEAR        = (1 << 1),
-      LIMA_CONTEXT_DIRTY_COMPILED_VS  = (1 << 2),
-      LIMA_CONTEXT_DIRTY_COMPILED_FS  = (1 << 3),
+      LIMA_CONTEXT_DIRTY_SHADER_VERT  = (1 << 2),
+      LIMA_CONTEXT_DIRTY_SHADER_FRAG  = (1 << 3),
       LIMA_CONTEXT_DIRTY_VERTEX_ELEM  = (1 << 4),
       LIMA_CONTEXT_DIRTY_VERTEX_BUFF  = (1 << 5),
       LIMA_CONTEXT_DIRTY_VIEWPORT     = (1 << 6),
@@ -195,8 +178,6 @@ struct lima_context {
       LIMA_CONTEXT_DIRTY_CONST_BUFF   = (1 << 13),
       LIMA_CONTEXT_DIRTY_TEXTURES     = (1 << 14),
       LIMA_CONTEXT_DIRTY_CLIP         = (1 << 15),
-      LIMA_CONTEXT_DIRTY_UNCOMPILED_VS = (1 << 16),
-      LIMA_CONTEXT_DIRTY_UNCOMPILED_FS = (1 << 17),
    } dirty;
 
    struct u_upload_mgr *uploader;
@@ -210,8 +191,6 @@ struct lima_context {
    struct pipe_scissor_state clipped_scissor;
    struct lima_vs_shader_state *vs;
    struct lima_fs_shader_state *fs;
-   struct lima_vs_bind_state *bind_vs;
-   struct lima_fs_bind_state *bind_fs;
    struct lima_vertex_element_state *vertex_elements;
    struct lima_context_vertex_buffer vertex_buffers;
    struct lima_rasterizer_state *rasterizer;
@@ -246,9 +225,6 @@ struct lima_context {
    struct list_head plb_pp_stream_lru_list;
    uint32_t plb_index;
    size_t plb_stream_cache_size;
-
-   struct hash_table *fs_cache;
-   struct hash_table *vs_cache;
 
    struct lima_ctx_buff_state buffer_state[lima_ctx_buff_num];
 
@@ -291,7 +267,6 @@ lima_sampler_state(struct pipe_sampler_state *psstate)
 
 struct lima_sampler_view {
    struct pipe_sampler_view base;
-   uint8_t swizzle[4];
 };
 
 static inline struct lima_sampler_view *
@@ -309,7 +284,6 @@ void lima_state_init(struct lima_context *ctx);
 void lima_state_fini(struct lima_context *ctx);
 void lima_draw_init(struct lima_context *ctx);
 void lima_program_init(struct lima_context *ctx);
-void lima_program_fini(struct lima_context *ctx);
 void lima_query_init(struct lima_context *ctx);
 
 struct pipe_context *

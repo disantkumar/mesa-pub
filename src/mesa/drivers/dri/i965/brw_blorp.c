@@ -118,7 +118,7 @@ brw_blorp_init(struct brw_context *brw)
 static void
 blorp_surf_for_miptree(struct brw_context *brw,
                        struct blorp_surf *surf,
-                       const struct brw_mipmap_tree *mt,
+                       const struct intel_mipmap_tree *mt,
                        enum isl_aux_usage aux_usage,
                        bool is_render_target,
                        unsigned *level,
@@ -131,12 +131,12 @@ blorp_surf_for_miptree(struct brw_context *brw,
       for (unsigned i = 0; i < num_layers; i++) {
          for (unsigned s = 0; s < num_samples; s++) {
             const unsigned phys_layer = (start_layer + i) * num_samples + s;
-            brw_miptree_check_level_layer(mt, *level, phys_layer);
+            intel_miptree_check_level_layer(mt, *level, phys_layer);
          }
       }
    } else {
       for (unsigned i = 0; i < num_layers; i++)
-         brw_miptree_check_level_layer(mt, *level, start_layer + i);
+         intel_miptree_check_level_layer(mt, *level, start_layer + i);
    }
 
    *surf = (struct blorp_surf) {
@@ -153,7 +153,7 @@ blorp_surf_for_miptree(struct brw_context *brw,
    };
 
    if (surf->aux_usage == ISL_AUX_USAGE_HIZ &&
-       !brw_miptree_level_has_hiz(mt, *level))
+       !intel_miptree_level_has_hiz(mt, *level))
       surf->aux_usage = ISL_AUX_USAGE_NONE;
 
    if (surf->aux_usage != ISL_AUX_USAGE_NONE) {
@@ -161,9 +161,9 @@ blorp_surf_for_miptree(struct brw_context *brw,
        * surface.  Without one, it does nothing.
        */
       surf->clear_color =
-         brw_miptree_get_clear_color(mt, (struct brw_bo **)
-                                     &surf->clear_color_addr.buffer,
-                                     &surf->clear_color_addr.offset);
+         intel_miptree_get_clear_color(mt, (struct brw_bo **)
+                                       &surf->clear_color_addr.buffer,
+                                       &surf->clear_color_addr.offset);
 
       surf->aux_surf = &mt->aux_buf->surf;
       surf->aux_addr = (struct blorp_address) {
@@ -271,10 +271,10 @@ swizzle_to_scs(GLenum swizzle)
  */
 void
 brw_blorp_blit_miptrees(struct brw_context *brw,
-                        struct brw_mipmap_tree *src_mt,
+                        struct intel_mipmap_tree *src_mt,
                         unsigned src_level, unsigned src_layer,
                         mesa_format src_format, int src_swizzle,
-                        struct brw_mipmap_tree *dst_mt,
+                        struct intel_mipmap_tree *dst_mt,
                         unsigned dst_level, unsigned dst_layer,
                         mesa_format dst_format,
                         float src_x0, float src_y0,
@@ -386,8 +386,8 @@ brw_blorp_blit_miptrees(struct brw_context *brw,
    enum isl_format src_isl_format =
       brw_blorp_to_isl_format(brw, src_format, false);
    enum isl_aux_usage src_aux_usage =
-      brw_miptree_texture_aux_usage(brw, src_mt, src_isl_format,
-                                    0 /* The astc5x5 WA isn't needed */);
+      intel_miptree_texture_aux_usage(brw, src_mt, src_isl_format,
+                                      0 /* The astc5x5 WA isn't needed */);
    /* We do format workarounds for some depth formats so we can't reliably
     * sample with HiZ.  One of these days, we should fix that.
     */
@@ -395,16 +395,17 @@ brw_blorp_blit_miptrees(struct brw_context *brw,
       src_aux_usage = ISL_AUX_USAGE_NONE;
    const bool src_clear_supported =
       src_aux_usage != ISL_AUX_USAGE_NONE && src_mt->format == src_format;
-   brw_miptree_prepare_access(brw, src_mt, src_level, 1, src_layer, 1,
-                              src_aux_usage, src_clear_supported);
+   intel_miptree_prepare_access(brw, src_mt, src_level, 1, src_layer, 1,
+                                src_aux_usage, src_clear_supported);
 
    enum isl_format dst_isl_format =
       brw_blorp_to_isl_format(brw, dst_format, true);
    enum isl_aux_usage dst_aux_usage =
-      brw_miptree_render_aux_usage(brw, dst_mt, dst_isl_format, false, false);
+      intel_miptree_render_aux_usage(brw, dst_mt, dst_isl_format,
+                                     false, false);
    const bool dst_clear_supported = dst_aux_usage != ISL_AUX_USAGE_NONE;
-   brw_miptree_prepare_access(brw, dst_mt, dst_level, 1, dst_layer, 1,
-                              dst_aux_usage, dst_clear_supported);
+   intel_miptree_prepare_access(brw, dst_mt, dst_level, 1, dst_layer, 1,
+                                dst_aux_usage, dst_clear_supported);
 
    struct blorp_surf src_surf, dst_surf;
    blorp_surf_for_miptree(brw, &src_surf, src_mt, src_aux_usage, false,
@@ -430,15 +431,15 @@ brw_blorp_blit_miptrees(struct brw_context *brw,
               blorp_filter, mirror_x, mirror_y);
    blorp_batch_finish(&batch);
 
-   brw_miptree_finish_write(brw, dst_mt, dst_level, dst_layer, 1,
-                            dst_aux_usage);
+   intel_miptree_finish_write(brw, dst_mt, dst_level, dst_layer, 1,
+                              dst_aux_usage);
 }
 
 void
 brw_blorp_copy_miptrees(struct brw_context *brw,
-                        struct brw_mipmap_tree *src_mt,
+                        struct intel_mipmap_tree *src_mt,
                         unsigned src_level, unsigned src_layer,
-                        struct brw_mipmap_tree *dst_mt,
+                        struct intel_mipmap_tree *dst_mt,
                         unsigned dst_level, unsigned dst_layer,
                         unsigned src_x, unsigned src_y,
                         unsigned dst_x, unsigned dst_y,
@@ -457,7 +458,7 @@ brw_blorp_copy_miptrees(struct brw_context *brw,
 
    switch (src_mt->aux_usage) {
    case ISL_AUX_USAGE_HIZ:
-      if (brw_miptree_sample_with_hiz(brw, src_mt)) {
+      if (intel_miptree_sample_with_hiz(brw, src_mt)) {
          src_aux_usage = src_mt->aux_usage;
          src_clear_supported = true;
       } else {
@@ -488,10 +489,10 @@ brw_blorp_copy_miptrees(struct brw_context *brw,
       break;
    }
 
-   brw_miptree_prepare_access(brw, src_mt, src_level, 1, src_layer, 1,
-                              src_aux_usage, src_clear_supported);
-   brw_miptree_prepare_access(brw, dst_mt, dst_level, 1, dst_layer, 1,
-                              dst_aux_usage, dst_clear_supported);
+   intel_miptree_prepare_access(brw, src_mt, src_level, 1, src_layer, 1,
+                                src_aux_usage, src_clear_supported);
+   intel_miptree_prepare_access(brw, dst_mt, dst_level, 1, dst_layer, 1,
+                                dst_aux_usage, dst_clear_supported);
 
    struct blorp_surf src_surf, dst_surf;
    blorp_surf_for_miptree(brw, &src_surf, src_mt, src_aux_usage, false,
@@ -521,8 +522,8 @@ brw_blorp_copy_miptrees(struct brw_context *brw,
    brw_emit_pipe_control_flush(brw, PIPE_CONTROL_CS_STALL |
                                     PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE);
 
-   brw_miptree_finish_write(brw, dst_mt, dst_level, dst_layer, 1,
-                            dst_aux_usage);
+   intel_miptree_finish_write(brw, dst_mt, dst_level, dst_layer, 1,
+                              dst_aux_usage);
 }
 
 void
@@ -546,17 +547,17 @@ brw_blorp_copy_buffers(struct brw_context *brw,
 }
 
 
-static struct brw_mipmap_tree *
-find_miptree(GLbitfield buffer_bit, struct brw_renderbuffer *irb)
+static struct intel_mipmap_tree *
+find_miptree(GLbitfield buffer_bit, struct intel_renderbuffer *irb)
 {
-   struct brw_mipmap_tree *mt = irb->mt;
+   struct intel_mipmap_tree *mt = irb->mt;
    if (buffer_bit == GL_STENCIL_BUFFER_BIT && mt->stencil_mt)
       mt = mt->stencil_mt;
    return mt;
 }
 
 static int
-blorp_get_texture_swizzle(const struct brw_renderbuffer *irb)
+blorp_get_texture_swizzle(const struct intel_renderbuffer *irb)
 {
    return irb->Base.Base._BaseFormat == GL_RGB ?
       MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_ONE) :
@@ -565,8 +566,8 @@ blorp_get_texture_swizzle(const struct brw_renderbuffer *irb)
 
 static void
 do_blorp_blit(struct brw_context *brw, GLbitfield buffer_bit,
-              struct brw_renderbuffer *src_irb, mesa_format src_format,
-              struct brw_renderbuffer *dst_irb, mesa_format dst_format,
+              struct intel_renderbuffer *src_irb, mesa_format src_format,
+              struct intel_renderbuffer *dst_irb, mesa_format dst_format,
               GLfloat srcX0, GLfloat srcY0, GLfloat srcX1, GLfloat srcY1,
               GLfloat dstX0, GLfloat dstY0, GLfloat dstX1, GLfloat dstY1,
               GLenum filter, bool mirror_x, bool mirror_y)
@@ -574,8 +575,8 @@ do_blorp_blit(struct brw_context *brw, GLbitfield buffer_bit,
    const struct gl_context *ctx = &brw->ctx;
 
    /* Find source/dst miptrees */
-   struct brw_mipmap_tree *src_mt = find_miptree(buffer_bit, src_irb);
-   struct brw_mipmap_tree *dst_mt = find_miptree(buffer_bit, dst_irb);
+   struct intel_mipmap_tree *src_mt = find_miptree(buffer_bit, src_irb);
+   struct intel_mipmap_tree *dst_mt = find_miptree(buffer_bit, dst_irb);
 
    const bool do_srgb = ctx->Color.sRGBEnabled;
 
@@ -607,7 +608,7 @@ try_blorp_blit(struct brw_context *brw,
    /* Sync up the state of window system buffers.  We need to do this before
     * we go looking for the buffers.
     */
-   brw_prepare_render(brw);
+   intel_prepare_render(brw);
 
    bool mirror_x, mirror_y;
    if (brw_meta_mirror_clip_and_scissor(ctx, read_fb, draw_fb,
@@ -617,15 +618,15 @@ try_blorp_blit(struct brw_context *brw,
       return true;
 
    /* Find buffers */
-   struct brw_renderbuffer *src_irb;
-   struct brw_renderbuffer *dst_irb;
-   struct brw_mipmap_tree *src_mt;
-   struct brw_mipmap_tree *dst_mt;
+   struct intel_renderbuffer *src_irb;
+   struct intel_renderbuffer *dst_irb;
+   struct intel_mipmap_tree *src_mt;
+   struct intel_mipmap_tree *dst_mt;
    switch (buffer_bit) {
    case GL_COLOR_BUFFER_BIT:
-      src_irb = brw_renderbuffer(read_fb->_ColorReadBuffer);
+      src_irb = intel_renderbuffer(read_fb->_ColorReadBuffer);
       for (unsigned i = 0; i < draw_fb->_NumColorDrawBuffers; ++i) {
-         dst_irb = brw_renderbuffer(draw_fb->_ColorDrawBuffers[i]);
+         dst_irb = intel_renderbuffer(draw_fb->_ColorDrawBuffers[i]);
 	 if (dst_irb)
             do_blorp_blit(brw, buffer_bit,
                           src_irb, src_irb->Base.Base.Format,
@@ -637,9 +638,9 @@ try_blorp_blit(struct brw_context *brw,
       break;
    case GL_DEPTH_BUFFER_BIT:
       src_irb =
-         brw_renderbuffer(read_fb->Attachment[BUFFER_DEPTH].Renderbuffer);
+         intel_renderbuffer(read_fb->Attachment[BUFFER_DEPTH].Renderbuffer);
       dst_irb =
-         brw_renderbuffer(draw_fb->Attachment[BUFFER_DEPTH].Renderbuffer);
+         intel_renderbuffer(draw_fb->Attachment[BUFFER_DEPTH].Renderbuffer);
       src_mt = find_miptree(buffer_bit, src_irb);
       dst_mt = find_miptree(buffer_bit, dst_irb);
 
@@ -663,9 +664,9 @@ try_blorp_blit(struct brw_context *brw,
          return false;
 
       src_irb =
-         brw_renderbuffer(read_fb->Attachment[BUFFER_STENCIL].Renderbuffer);
+         intel_renderbuffer(read_fb->Attachment[BUFFER_STENCIL].Renderbuffer);
       dst_irb =
-         brw_renderbuffer(draw_fb->Attachment[BUFFER_STENCIL].Renderbuffer);
+         intel_renderbuffer(draw_fb->Attachment[BUFFER_STENCIL].Renderbuffer);
       do_blorp_blit(brw, buffer_bit, src_irb, MESA_FORMAT_NONE,
                     dst_irb, MESA_FORMAT_NONE, srcX0, srcY0,
                     srcX1, srcY1, dstX0, dstY0, dstX1, dstY1,
@@ -696,8 +697,8 @@ brw_blorp_copytexsubimage(struct brw_context *brw,
                           int width, int height)
 {
    struct gl_context *ctx = &brw->ctx;
-   struct brw_renderbuffer *src_irb = brw_renderbuffer(src_rb);
-   struct brw_texture_image *intel_image = brw_texture_image(dst_image);
+   struct intel_renderbuffer *src_irb = intel_renderbuffer(src_rb);
+   struct intel_texture_image *intel_image = intel_texture_image(dst_image);
 
    /* No pixel transfer operations (zoom, bias, mapping), just a blit */
    if (brw->ctx._ImageTransferState)
@@ -706,10 +707,10 @@ brw_blorp_copytexsubimage(struct brw_context *brw,
    /* Sync up the state of window system buffers.  We need to do this before
     * we go looking at the src renderbuffer's miptree.
     */
-   brw_prepare_render(brw);
+   intel_prepare_render(brw);
 
-   struct brw_mipmap_tree *src_mt = src_irb->mt;
-   struct brw_mipmap_tree *dst_mt = intel_image->mt;
+   struct intel_mipmap_tree *src_mt = src_irb->mt;
+   struct intel_mipmap_tree *dst_mt = intel_image->mt;
 
    /* We can't handle any combined depth-stencil formats because we have to
     * reinterpret as a color format.
@@ -744,8 +745,8 @@ brw_blorp_copytexsubimage(struct brw_context *brw,
       apply_y_flip(&srcY0, &srcY1, src_rb->Height);
 
    /* Account for face selection and texture view MinLayer */
-   int dst_slice = slice + dst_image->TexObject->Attrib.MinLayer + dst_image->Face;
-   int dst_level = dst_image->Level + dst_image->TexObject->Attrib.MinLevel;
+   int dst_slice = slice + dst_image->TexObject->MinLayer + dst_image->Face;
+   int dst_level = dst_image->Level + dst_image->TexObject->MinLevel;
 
    brw_blorp_blit_miptrees(brw,
                            src_mt, src_irb->mt_level, src_irb->mt_layer,
@@ -764,7 +765,7 @@ brw_blorp_copytexsubimage(struct brw_context *brw,
    src_rb = ctx->ReadBuffer->Attachment[BUFFER_STENCIL].Renderbuffer;
    if (_mesa_get_format_bits(dst_image->TexFormat, GL_STENCIL_BITS) > 0 &&
        src_rb != NULL) {
-      src_irb = brw_renderbuffer(src_rb);
+      src_irb = intel_renderbuffer(src_rb);
       src_mt = src_irb->mt;
 
       if (src_mt->stencil_mt)
@@ -855,10 +856,10 @@ blorp_get_client_bo(struct brw_context *brw,
       }
 
       /* This is a user-provided PBO. We just need to get the BO out */
-      struct brw_buffer_object *intel_pbo =
-         brw_buffer_object(packing->BufferObj);
+      struct intel_buffer_object *intel_pbo =
+         intel_buffer_object(packing->BufferObj);
       struct brw_bo *bo =
-         brw_bufferobj_buffer(brw, intel_pbo, offset, size, !read_only);
+         intel_bufferobj_buffer(brw, intel_pbo, offset, size, !read_only);
 
       /* We take a reference to the BO so that the caller can just always
        * unref without having to worry about whether it's a user PBO or one
@@ -882,13 +883,13 @@ blorp_get_client_bo(struct brw_context *brw,
          brw_bo_alloc(brw->bufmgr, "tmp_tex_subimage_src", size,
                       BRW_MEMZONE_OTHER);
       if (bo == NULL) {
-         perf_debug("%s: temp bo creation failed: size = %u\n", __func__,
+         perf_debug("intel_texsubimage: temp bo creation failed: size = %u\n",
                     size);
          return NULL;
       }
 
       if (brw_bo_subdata(bo, 0, size, pixels + first_pixel)) {
-         perf_debug("%s: temp bo upload failed\n", __func__);
+         perf_debug("intel_texsubimage: temp bo upload failed\n");
          brw_bo_unreference(bo);
          return NULL;
       }
@@ -908,7 +909,7 @@ blorp_get_client_format(struct brw_context *brw,
       return MESA_FORMAT_NONE;
 
    if (packing->SwapBytes || packing->LsbFirst || packing->Invert) {
-      perf_debug("%s: unsupported gl_pixelstore_attrib\n", __func__);
+      perf_debug("intel_texsubimage_blorp: unsupported gl_pixelstore_attrib\n");
       return MESA_FORMAT_NONE;
    }
 
@@ -925,7 +926,7 @@ blorp_get_client_format(struct brw_context *brw,
        format != GL_BGR_INTEGER &&
        format != GL_RGBA_INTEGER &&
        format != GL_BGRA_INTEGER) {
-      perf_debug("%s: %s not supported", __func__,
+      perf_debug("intel_texsubimage_blorp: %s not supported",
                  _mesa_enum_to_string(format));
       return MESA_FORMAT_NONE;
    }
@@ -935,7 +936,7 @@ blorp_get_client_format(struct brw_context *brw,
 
 bool
 brw_blorp_upload_miptree(struct brw_context *brw,
-                         struct brw_mipmap_tree *dst_mt,
+                         struct intel_mipmap_tree *dst_mt,
                          mesa_format dst_format,
                          uint32_t level, uint32_t x, uint32_t y, uint32_t z,
                          uint32_t width, uint32_t height, uint32_t depth,
@@ -949,7 +950,7 @@ brw_blorp_upload_miptree(struct brw_context *brw,
       return false;
 
    if (!brw->mesa_format_supports_render[dst_format]) {
-      perf_debug("%s: can't use %s as render target\n", __func__,
+      perf_debug("intel_texsubimage: can't use %s as render target\n",
                  _mesa_get_format_name(dst_format));
       return false;
    }
@@ -976,7 +977,7 @@ brw_blorp_upload_miptree(struct brw_context *brw,
       src_image_stride = src_row_stride;
    }
 
-   brw_miptree_check_level_layer(dst_mt, level, z + depth - 1);
+   intel_miptree_check_level_layer(dst_mt, level, z + depth - 1);
 
    bool result = false;
 
@@ -986,15 +987,15 @@ brw_blorp_upload_miptree(struct brw_context *brw,
     * source alignment will do.
     */
    for (unsigned i = 0; i < depth; ++i) {
-      struct brw_mipmap_tree *src_mt =
-         brw_miptree_create_for_bo(brw, src_bo, src_format,
-                                   src_offset + i * src_image_stride,
-                                   width, height, 1,
-                                   src_row_stride,
-                                   ISL_TILING_LINEAR, 0);
+      struct intel_mipmap_tree *src_mt = intel_miptree_create_for_bo(
+                                            brw, src_bo, src_format,
+                                            src_offset + i * src_image_stride,
+                                            width, height, 1,
+                                            src_row_stride,
+                                            ISL_TILING_LINEAR, 0);
 
       if (!src_mt) {
-         perf_debug("%s: miptree creation for src failed\n", __func__);
+         perf_debug("intel_texsubimage: miptree creation for src failed\n");
          goto err;
       }
 
@@ -1015,7 +1016,7 @@ brw_blorp_upload_miptree(struct brw_context *brw,
                                  GL_NEAREST, false, false, false, false);
       }
 
-      brw_miptree_release(&src_mt);
+      intel_miptree_release(&src_mt);
    }
 
    result = true;
@@ -1028,7 +1029,7 @@ err:
 
 bool
 brw_blorp_download_miptree(struct brw_context *brw,
-                           struct brw_mipmap_tree *src_mt,
+                           struct intel_mipmap_tree *src_mt,
                            mesa_format src_format, uint32_t src_swizzle,
                            uint32_t level, uint32_t x, uint32_t y, uint32_t z,
                            uint32_t width, uint32_t height, uint32_t depth,
@@ -1042,7 +1043,7 @@ brw_blorp_download_miptree(struct brw_context *brw,
       return false;
 
    if (!brw->mesa_format_supports_render[dst_format]) {
-      perf_debug("%s: can't use %s as render target\n", __func__,
+      perf_debug("intel_texsubimage: can't use %s as render target\n",
                  _mesa_get_format_name(dst_format));
       return false;
    }
@@ -1084,7 +1085,7 @@ brw_blorp_download_miptree(struct brw_context *brw,
       dst_image_stride = dst_row_stride;
    }
 
-   brw_miptree_check_level_layer(src_mt, level, z + depth - 1);
+   intel_miptree_check_level_layer(src_mt, level, z + depth - 1);
 
    int y0 = y;
    int y1 = y + height;
@@ -1101,15 +1102,15 @@ brw_blorp_download_miptree(struct brw_context *brw,
     * source alignment will do.
     */
    for (unsigned i = 0; i < depth; ++i) {
-      struct brw_mipmap_tree *dst_mt =
-         brw_miptree_create_for_bo(brw, dst_bo, dst_format,
-                                   dst_offset + i * dst_image_stride,
-                                   width, height, 1,
-                                   dst_row_stride,
-                                   ISL_TILING_LINEAR, 0);
+      struct intel_mipmap_tree *dst_mt = intel_miptree_create_for_bo(
+                                            brw, dst_bo, dst_format,
+                                            dst_offset + i * dst_image_stride,
+                                            width, height, 1,
+                                            dst_row_stride,
+                                            ISL_TILING_LINEAR, 0);
 
       if (!dst_mt) {
-         perf_debug("%s: miptree creation for src failed\n", __func__);
+         perf_debug("intel_texsubimage: miptree creation for src failed\n");
          goto err;
       }
 
@@ -1130,7 +1131,7 @@ brw_blorp_download_miptree(struct brw_context *brw,
                                  GL_NEAREST, false, y_flip, false, false);
       }
 
-      brw_miptree_release(&dst_mt);
+      intel_miptree_release(&dst_mt);
    }
 
    result = true;
@@ -1164,7 +1165,7 @@ err:
 }
 
 static bool
-set_write_disables(const struct brw_renderbuffer *irb,
+set_write_disables(const struct intel_renderbuffer *irb,
                    const unsigned color_mask, bool *color_write_disable)
 {
    /* Format information in the renderbuffer represents the requirements
@@ -1192,7 +1193,7 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
                       bool partial_clear, bool encode_srgb)
 {
    struct gl_context *ctx = &brw->ctx;
-   struct brw_renderbuffer *irb = brw_renderbuffer(rb);
+   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
    uint32_t x0, x1, y0, y1;
 
    mesa_format format = irb->Base.Base.Format;
@@ -1251,7 +1252,7 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
     */
    if (can_fast_clear && !irb->mt->aux_buf) {
       assert(irb->mt->aux_usage == ISL_AUX_USAGE_CCS_D);
-      if (!brw_miptree_alloc_aux(brw, irb->mt)) {
+      if (!intel_miptree_alloc_aux(brw, irb->mt)) {
          /* We're out of memory. Fall back to a non-fast clear. */
          can_fast_clear = false;
       }
@@ -1259,7 +1260,7 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
 
    if (can_fast_clear) {
       const enum isl_aux_state aux_state =
-         brw_miptree_get_aux_state(irb->mt, irb->mt_level, irb->mt_layer);
+         intel_miptree_get_aux_state(irb->mt, irb->mt_level, irb->mt_layer);
       union isl_color_value clear_color =
          brw_meta_convert_fast_clear_color(brw, irb->mt,
                                            &ctx->Color.ClearColor);
@@ -1267,7 +1268,7 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
       /* If the buffer is already in ISL_AUX_STATE_CLEAR and the clear color
        * hasn't changed, the clear is redundant and can be skipped.
        */
-      if (!brw_miptree_set_clear_color(brw, irb->mt, clear_color) &&
+      if (!intel_miptree_set_clear_color(brw, irb->mt, clear_color) &&
           aux_state == ISL_AUX_STATE_CLEAR) {
          return;
       }
@@ -1307,17 +1308,18 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
        * INTEL_FAST_CLEAR_STATE_CLEAR so that we won't waste time doing
        * redundant clears.
        */
-      brw_miptree_set_aux_state(brw, irb->mt, irb->mt_level,
-                                irb->mt_layer, num_layers,
-                                ISL_AUX_STATE_CLEAR);
+      intel_miptree_set_aux_state(brw, irb->mt, irb->mt_level,
+                                  irb->mt_layer, num_layers,
+                                  ISL_AUX_STATE_CLEAR);
    } else {
       DBG("%s (slow) to mt %p level %d layer %d+%d\n", __FUNCTION__,
           irb->mt, irb->mt_level, irb->mt_layer, num_layers);
 
       enum isl_aux_usage aux_usage =
-         brw_miptree_render_aux_usage(brw, irb->mt, isl_format, false, false);
-      brw_miptree_prepare_render(brw, irb->mt, level, irb->mt_layer,
-                                 num_layers, aux_usage);
+         intel_miptree_render_aux_usage(brw, irb->mt, isl_format,
+                                        false, false);
+      intel_miptree_prepare_render(brw, irb->mt, level, irb->mt_layer,
+                                   num_layers, aux_usage);
 
       struct blorp_surf surf;
       blorp_surf_for_miptree(brw, &surf, irb->mt, aux_usage, true,
@@ -1334,8 +1336,8 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
                   clear_color, color_write_disable);
       blorp_batch_finish(&batch);
 
-      brw_miptree_finish_render(brw, irb->mt, level, irb->mt_layer,
-                                num_layers, aux_usage);
+      intel_miptree_finish_render(brw, irb->mt, level, irb->mt_layer,
+                                  num_layers, aux_usage);
    }
 
    return;
@@ -1347,7 +1349,7 @@ brw_blorp_clear_color(struct brw_context *brw, struct gl_framebuffer *fb,
 {
    for (unsigned buf = 0; buf < fb->_NumColorDrawBuffers; buf++) {
       struct gl_renderbuffer *rb = fb->_ColorDrawBuffers[buf];
-      struct brw_renderbuffer *irb = brw_renderbuffer(rb);
+      struct intel_renderbuffer *irb = intel_renderbuffer(rb);
 
       /* Only clear the buffers present in the provided mask */
       if (((1 << fb->_ColorDrawBufferIndexes[buf]) & mask) == 0)
@@ -1416,16 +1418,17 @@ brw_blorp_clear_depth_stencil(struct brw_context *brw,
    uint32_t level = 0, start_layer = 0, num_layers;
    struct blorp_surf depth_surf, stencil_surf;
 
-   struct brw_mipmap_tree *depth_mt = NULL;
+   struct intel_mipmap_tree *depth_mt = NULL;
    if (mask & BUFFER_BIT_DEPTH) {
-      struct brw_renderbuffer *irb = brw_renderbuffer(depth_rb);
+      struct intel_renderbuffer *irb = intel_renderbuffer(depth_rb);
       depth_mt = find_miptree(GL_DEPTH_BUFFER_BIT, irb);
 
       level = irb->mt_level;
       start_layer = irb->mt_layer;
       num_layers = fb->MaxNumLayers ? irb->layer_count : 1;
 
-      brw_miptree_prepare_depth(brw, depth_mt, level, start_layer, num_layers);
+      intel_miptree_prepare_depth(brw, depth_mt, level,
+                                  start_layer, num_layers);
 
       unsigned depth_level = level;
       blorp_surf_for_miptree(brw, &depth_surf, depth_mt, depth_mt->aux_usage,
@@ -1434,9 +1437,9 @@ brw_blorp_clear_depth_stencil(struct brw_context *brw,
    }
 
    uint8_t stencil_mask = 0;
-   struct brw_mipmap_tree *stencil_mt = NULL;
+   struct intel_mipmap_tree *stencil_mt = NULL;
    if (mask & BUFFER_BIT_STENCIL) {
-      struct brw_renderbuffer *irb = brw_renderbuffer(stencil_rb);
+      struct intel_renderbuffer *irb = intel_renderbuffer(stencil_rb);
       stencil_mt = find_miptree(GL_STENCIL_BUFFER_BIT, irb);
 
       if (mask & BUFFER_BIT_DEPTH) {
@@ -1451,9 +1454,9 @@ brw_blorp_clear_depth_stencil(struct brw_context *brw,
 
       stencil_mask = ctx->Stencil.WriteMask[0] & 0xff;
 
-      brw_miptree_prepare_access(brw, stencil_mt, level, 1,
-                                 start_layer, num_layers,
-                                 ISL_AUX_USAGE_NONE, false);
+      intel_miptree_prepare_access(brw, stencil_mt, level, 1,
+                                   start_layer, num_layers,
+                                   ISL_AUX_USAGE_NONE, false);
 
       unsigned stencil_level = level;
       blorp_surf_for_miptree(brw, &stencil_surf, stencil_mt,
@@ -1473,19 +1476,19 @@ brw_blorp_clear_depth_stencil(struct brw_context *brw,
    blorp_batch_finish(&batch);
 
    if (mask & BUFFER_BIT_DEPTH) {
-      brw_miptree_finish_depth(brw, depth_mt, level,
-                               start_layer, num_layers, true);
+      intel_miptree_finish_depth(brw, depth_mt, level,
+                                 start_layer, num_layers, true);
    }
 
    if (stencil_mask) {
-      brw_miptree_finish_write(brw, stencil_mt, level,
-                               start_layer, num_layers,
-                               ISL_AUX_USAGE_NONE);
+      intel_miptree_finish_write(brw, stencil_mt, level,
+                                 start_layer, num_layers,
+                                 ISL_AUX_USAGE_NONE);
    }
 }
 
 void
-brw_blorp_resolve_color(struct brw_context *brw, struct brw_mipmap_tree *mt,
+brw_blorp_resolve_color(struct brw_context *brw, struct intel_mipmap_tree *mt,
                         unsigned level, unsigned layer,
                         enum isl_aux_op resolve_op)
 {
@@ -1525,7 +1528,7 @@ brw_blorp_resolve_color(struct brw_context *brw, struct brw_mipmap_tree *mt,
 
 void
 brw_blorp_mcs_partial_resolve(struct brw_context *brw,
-                              struct brw_mipmap_tree *mt,
+                              struct intel_mipmap_tree *mt,
                               uint32_t start_layer, uint32_t num_layers)
 {
    DBG("%s to mt %p layers %u-%u\n", __FUNCTION__, mt,
@@ -1558,11 +1561,11 @@ brw_blorp_mcs_partial_resolve(struct brw_context *brw,
  *   - 7.5.3.3 Hierarchical Depth Buffer Resolve
  */
 void
-brw_hiz_exec(struct brw_context *brw, struct brw_mipmap_tree *mt,
-             unsigned int level, unsigned int start_layer,
-             unsigned int num_layers, enum isl_aux_op op)
+intel_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
+               unsigned int level, unsigned int start_layer,
+               unsigned int num_layers, enum isl_aux_op op)
 {
-   assert(brw_miptree_level_has_hiz(mt, level));
+   assert(intel_miptree_level_has_hiz(mt, level));
    assert(op != ISL_AUX_OP_NONE);
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
    const char *opname = NULL;

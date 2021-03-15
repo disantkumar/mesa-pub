@@ -86,7 +86,7 @@ panfrost_needs_explicit_stride(const struct panfrost_device *dev,
                                unsigned last_level)
 {
         /* Stride is explicit on Bifrost */
-        if (pan_is_bifrost(dev))
+        if (dev->quirks & IS_BIFROST)
                 return true;
 
         if (layout->modifier != DRM_FORMAT_MOD_LINEAR)
@@ -135,11 +135,13 @@ panfrost_compression_tag(const struct panfrost_device *dev,
                          enum mali_texture_dimension dim,
                          uint64_t modifier)
 {
+        bool is_bifrost = dev->quirks & IS_BIFROST;
+
         if (drm_is_afbc(modifier)) {
                 unsigned flags = (modifier & AFBC_FORMAT_MOD_YTR) ?
                                  MALI_AFBC_SURFACE_FLAG_YTR : 0;
 
-                if (!pan_is_bifrost(dev))
+                if (!is_bifrost)
                         return flags;
 
                 /* Prefetch enable */
@@ -227,8 +229,9 @@ panfrost_estimate_texture_payload_size(const struct panfrost_device *dev,
                                        enum mali_texture_dimension dim,
                                        uint64_t modifier)
 {
+        bool is_bifrost = dev->quirks & IS_BIFROST;
         /* Assume worst case */
-        unsigned manual_stride = pan_is_bifrost(dev) ||
+        unsigned manual_stride = is_bifrost ||
                                  (modifier == DRM_FORMAT_MOD_LINEAR);
 
         unsigned elements = panfrost_texture_num_elements(
@@ -426,6 +429,7 @@ panfrost_new_texture(const struct panfrost_device *dev,
         const struct util_format_description *desc =
                 util_format_description(format);
 
+        bool is_bifrost = dev->quirks & IS_BIFROST;
         bool manual_stride =
                 panfrost_needs_explicit_stride(dev, layout, format, width,
                                                first_level, last_level);
@@ -439,7 +443,7 @@ panfrost_new_texture(const struct panfrost_device *dev,
                                       manual_stride,
                                       base);
 
-        if (pan_is_bifrost(dev)) {
+        if (is_bifrost) {
                 pan_pack(out, BIFROST_TEXTURE, cfg) {
                         cfg.dimension = dim;
                         cfg.format = dev->formats[format].hw;

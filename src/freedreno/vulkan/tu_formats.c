@@ -385,6 +385,7 @@ tu_physical_device_get_format_properties(
       optimal |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
                  VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT |
                  VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT |
                  VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT;
@@ -400,12 +401,8 @@ tu_physical_device_get_format_properties(
       if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED)
          optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
 
-      if (!vk_format_is_int(format)) {
-         optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-
-         if (physical_device->vk.supported_extensions.EXT_filter_cubic)
-            optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT;
-      }
+      if (physical_device->supported_extensions.EXT_filter_cubic)
+         optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT;
    }
 
    if (native_fmt.supported & FMT_COLOR) {
@@ -433,8 +430,12 @@ tu_physical_device_get_format_properties(
          buffer |= VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
       }
 
-      if (!vk_format_is_int(format))
+      if (vk_format_is_float(format) ||
+          vk_format_is_unorm(format) ||
+          vk_format_is_snorm(format) ||
+          vk_format_is_srgb(format)) {
          optimal |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+      }
    }
 
    /* For the most part, we can do anything with a linear image that we could
@@ -499,7 +500,7 @@ tu_GetPhysicalDeviceFormatProperties2(
 
       /* note: ubwc_possible() argument values to be ignored except for format */
       if (pFormatProperties->formatProperties.optimalTilingFeatures &&
-          ubwc_possible(format, VK_IMAGE_TYPE_2D, 0, false, VK_SAMPLE_COUNT_1_BIT)) {
+          ubwc_possible(format, VK_IMAGE_TYPE_2D, 0, false)) {
          vk_outarray_append(&out, mod_props) {
             mod_props->drmFormatModifier = DRM_FORMAT_MOD_QCOM_COMPRESSED;
             mod_props->drmFormatModifierPlaneCount = 1;
@@ -546,8 +547,7 @@ tu_get_image_format_properties(
          if (info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
-
-         if (!ubwc_possible(info->format, info->type, info->usage, physical_device->info.a6xx.has_z24uint_s8uint, sampleCounts))
+         if (!ubwc_possible(info->format, info->type, info->usage, physical_device->info.a6xx.has_z24uint_s8uint))
             return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
          format_feature_flags = format_props.optimalTilingFeatures;

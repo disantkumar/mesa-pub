@@ -35,9 +35,9 @@
  *
  * Original OpenGL allowed texture miplevels to be specified in arbitrary
  * order, and a texture may change size over time.  Thus, each
- * brw_texture_image has a reference to a miptree that contains the pixel
+ * intel_texture_image has a reference to a miptree that contains the pixel
  * data sized appropriately for it, which will later be referenced by/copied
- * to the brw_texture_object at draw time (brw_finalize_mipmap_tree()) so
+ * to the intel_texture_object at draw time (intel_finalize_mipmap_tree()) so
  * that there's a single miptree for the complete texture.
  */
 
@@ -58,24 +58,24 @@ extern "C" {
 #endif
 
 struct brw_context;
-struct brw_renderbuffer;
+struct intel_renderbuffer;
 
-struct brw_texture_image;
+struct intel_texture_image;
 
 /**
  * This bit extends the set of GL_MAP_*_BIT enums.
  *
- * When calling brw_miptree_map() on an ETC-transcoded-to-RGB miptree or a
+ * When calling intel_miptree_map() on an ETC-transcoded-to-RGB miptree or a
  * depthstencil-split-to-separate-stencil miptree, we'll normally make a
  * temporary and recreate the kind of data requested by Mesa core, since we're
  * satisfying some glGetTexImage() request or something.
  *
  * However, occasionally you want to actually map the miptree's current data
- * without transcoding back.  This flag to brw_miptree_map() gets you that.
+ * without transcoding back.  This flag to intel_miptree_map() gets you that.
  */
-#define BRW_MAP_DIRECT_BIT 0x80000000
+#define BRW_MAP_DIRECT_BIT	0x80000000
 
-struct brw_miptree_map {
+struct intel_miptree_map {
    /** Bitfield of GL_MAP_*_BIT and BRW_MAP_*_BIT. */
    GLbitfield mode;
    /** Region of interest for the map. */
@@ -83,15 +83,15 @@ struct brw_miptree_map {
    /** Possibly malloced temporary buffer for the mapping. */
    void *buffer;
    /** Possible pointer to a temporary linear miptree for the mapping. */
-   struct brw_mipmap_tree *linear_mt;
+   struct intel_mipmap_tree *linear_mt;
    /** Pointer to the start of (map_x, map_y) returned by the mapping. */
    void *ptr;
    /** Stride of the mapping. */
    int stride;
 
    void (*unmap)(struct brw_context *brw,
-                 struct brw_mipmap_tree *mt,
-                 struct brw_miptree_map *map,
+                 struct intel_mipmap_tree *mt,
+                 struct intel_miptree_map *map,
                  unsigned int level,
                  unsigned int slice);
 };
@@ -99,7 +99,7 @@ struct brw_miptree_map {
 /**
  * Describes the location of each texture image within a miptree.
  */
-struct brw_mipmap_level
+struct intel_mipmap_level
 {
    /** Offset to this miptree level, used in computing x_offset. */
    GLuint level_x;
@@ -121,12 +121,12 @@ struct brw_mipmap_level
     * This may be a list of cube faces, array slices in 2D array texture, or
     * layers in a 3D texture. The list's length is \c depth.
     */
-   struct brw_mipmap_slice {
+   struct intel_mipmap_slice {
       /**
        * Mapping information. Persistent for the duration of
-       * brw_miptree_map/unmap on this slice.
+       * intel_miptree_map/unmap on this slice.
        */
-      struct brw_miptree_map *map;
+      struct intel_miptree_map *map;
    } *slice;
 };
 
@@ -138,7 +138,7 @@ struct brw_mipmap_level
  * handle all accesses to the buffer. Therefore we don't need the full miptree
  * layout structure for this buffer.
  */
-struct brw_miptree_aux_buffer
+struct intel_miptree_aux_buffer
 {
    struct isl_surf surf;
 
@@ -153,7 +153,7 @@ struct brw_miptree_aux_buffer
    /**
     * Offset into bo where the surface starts.
     *
-    * @see brw_mipmap_aux_buffer::bo
+    * @see intel_mipmap_aux_buffer::bo
     *
     * @see RENDER_SURFACE_STATE.AuxiliarySurfaceBaseAddress
     * @see 3DSTATE_DEPTH_BUFFER.SurfaceBaseAddress
@@ -179,14 +179,14 @@ struct brw_miptree_aux_buffer
    uint32_t clear_color_offset;
 };
 
-struct brw_mipmap_tree
+struct intel_mipmap_tree
 {
    struct isl_surf surf;
 
    /**
     * Buffer object containing the surface.
     *
-    * @see brw_mipmap_tree::offset
+    * @see intel_mipmap_tree::offset
     * @see RENDER_SURFACE_STATE.SurfaceBaseAddress
     * @see RENDER_SURFACE_STATE.AuxiliarySurfaceBaseAddress
     * @see 3DSTATE_DEPTH_BUFFER.SurfaceBaseAddress
@@ -229,12 +229,12 @@ struct brw_mipmap_tree
    bool compressed;
 
    /* Includes image offset tables: */
-   struct brw_mipmap_level level[MAX_TEXTURE_LEVELS];
+   struct intel_mipmap_level level[MAX_TEXTURE_LEVELS];
 
    /**
     * Offset into bo where the surface starts.
     *
-    * @see brw_mipmap_tree::bo
+    * @see intel_mipmap_tree::bo
     *
     * @see RENDER_SURFACE_STATE.AuxiliarySurfaceBaseAddress
     * @see 3DSTATE_DEPTH_BUFFER.SurfaceBaseAddress
@@ -278,10 +278,10 @@ struct brw_mipmap_tree
     * bits, regardless of mt->format.
     *
     * \see 3DSTATE_STENCIL_BUFFER
-    * \see brw_miptree_map_depthstencil()
-    * \see brw_miptree_unmap_depthstencil()
+    * \see intel_miptree_map_depthstencil()
+    * \see intel_miptree_unmap_depthstencil()
     */
-   struct brw_mipmap_tree *stencil_mt;
+   struct intel_mipmap_tree *stencil_mt;
 
    /**
     * \brief Shadow miptree for sampling when the main isn't supported by HW.
@@ -294,7 +294,7 @@ struct brw_mipmap_tree
     * - To store the decompressed ETC/EAC data in case we emulate the ETC
     *   compression on Gen 7 or earlier GPUs.
     */
-   struct brw_mipmap_tree *shadow_mt;
+   struct intel_mipmap_tree *shadow_mt;
    bool shadow_needs_update;
 
    /**
@@ -318,14 +318,14 @@ struct brw_mipmap_tree
     *    depth clear behavior.
     *
     *    To determine if HiZ is enabled, do not check this pointer. Instead,
-    *    use brw_miptree_level_has_hiz().
+    *    use intel_miptree_level_has_hiz().
     */
-   struct brw_miptree_aux_buffer *aux_buf;
+   struct intel_miptree_aux_buffer *aux_buf;
 
    /**
     * Planes 1 and 2 in case this is a planar surface.
     */
-   struct brw_mipmap_tree *plane[2];
+   struct intel_mipmap_tree *plane[2];
 
    /**
     * Fast clear color for this surface.  For depth surfaces, the clear value
@@ -346,10 +346,10 @@ struct brw_mipmap_tree
 };
 
 bool
-brw_miptree_alloc_aux(struct brw_context *brw,
-                        struct brw_mipmap_tree *mt);
+intel_miptree_alloc_aux(struct brw_context *brw,
+                        struct intel_mipmap_tree *mt);
 
-enum brw_miptree_create_flags {
+enum intel_miptree_create_flags {
    /** No miptree create flags */
    MIPTREE_CREATE_DEFAULT  = 0,
 
@@ -364,47 +364,47 @@ enum brw_miptree_create_flags {
 
    /** Create the miptree with auxiliary compression disabled
     *
-    * This does not prevent the caller of brw_miptree_create from coming
+    * This does not prevent the caller of intel_miptree_create from coming
     * along later and turning auxiliary compression back on but it does mean
     * that the miptree will be created with mt->aux_usage == NONE.
     */
    MIPTREE_CREATE_NO_AUX   = 1 << 1,
 };
 
-struct brw_mipmap_tree *brw_miptree_create(struct brw_context *brw,
-                                           GLenum target,
-                                           mesa_format format,
-                                           GLuint first_level,
-                                           GLuint last_level,
-                                           GLuint width0,
-                                           GLuint height0,
-                                           GLuint depth0,
-                                           GLuint num_samples,
-                                           enum brw_miptree_create_flags flags);
+struct intel_mipmap_tree *intel_miptree_create(struct brw_context *brw,
+                                               GLenum target,
+					       mesa_format format,
+                                               GLuint first_level,
+                                               GLuint last_level,
+                                               GLuint width0,
+                                               GLuint height0,
+                                               GLuint depth0,
+                                               GLuint num_samples,
+                                               enum intel_miptree_create_flags flags);
 
-struct brw_mipmap_tree *
-brw_miptree_create_for_bo(struct brw_context *brw,
-                          struct brw_bo *bo,
-                          mesa_format format,
-                          uint32_t offset,
-                          uint32_t width,
-                          uint32_t height,
-                          uint32_t depth,
-                          int pitch,
-                          enum isl_tiling tiling,
-                          enum brw_miptree_create_flags flags);
+struct intel_mipmap_tree *
+intel_miptree_create_for_bo(struct brw_context *brw,
+                            struct brw_bo *bo,
+                            mesa_format format,
+                            uint32_t offset,
+                            uint32_t width,
+                            uint32_t height,
+                            uint32_t depth,
+                            int pitch,
+                            enum isl_tiling tiling,
+                            enum intel_miptree_create_flags flags);
 
-struct brw_mipmap_tree *
-brw_miptree_create_for_dri_image(struct brw_context *brw,
-                                 __DRIimage *image,
-                                 GLenum target,
-                                 mesa_format format,
-                                 bool allow_internal_aux);
+struct intel_mipmap_tree *
+intel_miptree_create_for_dri_image(struct brw_context *brw,
+                                   __DRIimage *image,
+                                   GLenum target,
+                                   mesa_format format,
+                                   bool allow_internal_aux);
 
 bool
-brw_update_winsys_renderbuffer_miptree(struct brw_context *intel,
-                                         struct brw_renderbuffer *irb,
-                                         struct brw_mipmap_tree *singlesample_mt,
+intel_update_winsys_renderbuffer_miptree(struct brw_context *intel,
+                                         struct intel_renderbuffer *irb,
+                                         struct intel_mipmap_tree *singlesample_mt,
                                          uint32_t width, uint32_t height,
                                          uint32_t pitch);
 
@@ -415,42 +415,42 @@ brw_update_winsys_renderbuffer_miptree(struct brw_context *intel,
  *     - There are no levels other than the base level 0.
  *     - Depth is 1.
  */
-struct brw_mipmap_tree*
-brw_miptree_create_for_renderbuffer(struct brw_context *brw,
-                                    mesa_format format,
-                                    uint32_t width,
-                                    uint32_t height,
-                                    uint32_t num_samples);
+struct intel_mipmap_tree*
+intel_miptree_create_for_renderbuffer(struct brw_context *brw,
+                                      mesa_format format,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      uint32_t num_samples);
 
 mesa_format
-brw_depth_format_for_depthstencil_format(mesa_format format);
+intel_depth_format_for_depthstencil_format(mesa_format format);
 
 mesa_format
-brw_lower_compressed_format(struct brw_context *brw, mesa_format format);
+intel_lower_compressed_format(struct brw_context *brw, mesa_format format);
 
 unsigned
-brw_get_num_logical_layers(const struct brw_mipmap_tree *mt, unsigned level);
+brw_get_num_logical_layers(const struct intel_mipmap_tree *mt, unsigned level);
 
 /** \brief Assert that the level and layer are valid for the miptree. */
 void
-brw_miptree_check_level_layer(const struct brw_mipmap_tree *mt,
+intel_miptree_check_level_layer(const struct intel_mipmap_tree *mt,
                                 uint32_t level,
                                 uint32_t layer);
 
-void brw_miptree_reference(struct brw_mipmap_tree **dst,
-                           struct brw_mipmap_tree *src);
+void intel_miptree_reference(struct intel_mipmap_tree **dst,
+                             struct intel_mipmap_tree *src);
 
-void brw_miptree_release(struct brw_mipmap_tree **mt);
+void intel_miptree_release(struct intel_mipmap_tree **mt);
 
 /* Check if an image fits an existing mipmap tree layout
  */
-bool brw_miptree_match_image(struct brw_mipmap_tree *mt,
+bool intel_miptree_match_image(struct intel_mipmap_tree *mt,
                                     struct gl_texture_image *image);
 
 void
-brw_miptree_get_image_offset(const struct brw_mipmap_tree *mt,
-                             GLuint level, GLuint slice,
-                             GLuint *x, GLuint *y);
+intel_miptree_get_image_offset(const struct intel_mipmap_tree *mt,
+			       GLuint level, GLuint slice,
+			       GLuint *x, GLuint *y);
 
 enum isl_surf_dim
 get_isl_surf_dim(GLenum target);
@@ -460,29 +460,29 @@ get_isl_dim_layout(const struct gen_device_info *devinfo,
                    enum isl_tiling tiling, GLenum target);
 
 void
-brw_get_image_dims(struct gl_texture_image *image,
+intel_get_image_dims(struct gl_texture_image *image,
                      int *width, int *height, int *depth);
 
 uint32_t
-brw_miptree_get_tile_offsets(const struct brw_mipmap_tree *mt,
+intel_miptree_get_tile_offsets(const struct intel_mipmap_tree *mt,
                                GLuint level, GLuint slice,
                                uint32_t *tile_x,
                                uint32_t *tile_y);
 uint32_t
-brw_miptree_get_aligned_offset(const struct brw_mipmap_tree *mt,
+intel_miptree_get_aligned_offset(const struct intel_mipmap_tree *mt,
                                  uint32_t x, uint32_t y);
 
 void
-brw_miptree_copy_slice(struct brw_context *brw,
-                         struct brw_mipmap_tree *src_mt,
+intel_miptree_copy_slice(struct brw_context *brw,
+                         struct intel_mipmap_tree *src_mt,
                          unsigned src_level, unsigned src_layer,
-                         struct brw_mipmap_tree *dst_mt,
+                         struct intel_mipmap_tree *dst_mt,
                          unsigned dst_level, unsigned dst_layer);
 
 void
-brw_miptree_copy_teximage(struct brw_context *brw,
-                            struct brw_texture_image *brw_image,
-                            struct brw_mipmap_tree *dst_mt);
+intel_miptree_copy_teximage(struct brw_context *brw,
+                            struct intel_texture_image *intelImage,
+                            struct intel_mipmap_tree *dst_mt);
 
 /**
  * \name Miptree HiZ functions
@@ -493,12 +493,12 @@ brw_miptree_copy_teximage(struct brw_context *brw,
  */
 
 bool
-brw_miptree_level_has_hiz(const struct brw_mipmap_tree *mt, uint32_t level);
+intel_miptree_level_has_hiz(const struct intel_mipmap_tree *mt, uint32_t level);
 
 /**\}*/
 
 bool
-brw_miptree_has_color_unresolved(const struct brw_mipmap_tree *mt,
+intel_miptree_has_color_unresolved(const struct intel_mipmap_tree *mt,
                                    unsigned start_level, unsigned num_levels,
                                    unsigned start_layer, unsigned num_layers);
 
@@ -532,8 +532,8 @@ brw_miptree_has_color_unresolved(const struct brw_mipmap_tree *mt,
  *                                  compression format
  */
 void
-brw_miptree_prepare_access(struct brw_context *brw,
-                             struct brw_mipmap_tree *mt,
+intel_miptree_prepare_access(struct brw_context *brw,
+                             struct intel_mipmap_tree *mt,
                              uint32_t start_level, uint32_t num_levels,
                              uint32_t start_layer, uint32_t num_layers,
                              enum isl_aux_usage aux_usage,
@@ -545,7 +545,7 @@ brw_miptree_prepare_access(struct brw_context *brw,
  * This will update the miptree's compression state so that future resolves
  * happen correctly.  Technically, this function can be called before the
  * write occurs but the caller must ensure that they don't interlace
- * brw_miptree_prepare_access and brw_miptree_finish_write calls to
+ * intel_miptree_prepare_access and intel_miptree_finish_write calls to
  * overlapping layer/level ranges.
  *
  * \param[in]  level             The mip level that was written
@@ -560,14 +560,14 @@ brw_miptree_prepare_access(struct brw_context *brw,
  *                               auxiliary compression enabled
  */
 void
-brw_miptree_finish_write(struct brw_context *brw,
-                           struct brw_mipmap_tree *mt, uint32_t level,
+intel_miptree_finish_write(struct brw_context *brw,
+                           struct intel_mipmap_tree *mt, uint32_t level,
                            uint32_t start_layer, uint32_t num_layers,
                            enum isl_aux_usage aux_usage);
 
 /** Get the auxiliary compression state of a miptree slice */
 enum isl_aux_state
-brw_miptree_get_aux_state(const struct brw_mipmap_tree *mt,
+intel_miptree_get_aux_state(const struct intel_mipmap_tree *mt,
                             uint32_t level, uint32_t layer);
 
 /** Set the auxiliary compression state of a miptree slice range
@@ -576,11 +576,11 @@ brw_miptree_get_aux_state(const struct brw_mipmap_tree *mt,
  * range of a miptree.  It only modifies data structures and does not do any
  * resolves.  This should only be called by code which directly performs
  * compression operations such as fast clears and resolves.  Most code should
- * use brw_miptree_prepare_access or brw_miptree_finish_write.
+ * use intel_miptree_prepare_access or intel_miptree_finish_write.
  */
 void
-brw_miptree_set_aux_state(struct brw_context *brw,
-                            struct brw_mipmap_tree *mt, uint32_t level,
+intel_miptree_set_aux_state(struct brw_context *brw,
+                            struct intel_mipmap_tree *mt, uint32_t level,
                             uint32_t start_layer, uint32_t num_layers,
                             enum isl_aux_state aux_state);
 
@@ -592,115 +592,115 @@ brw_miptree_set_aux_state(struct brw_context *brw,
  * using it with the blitter.
  */
 static inline void
-brw_miptree_access_raw(struct brw_context *brw,
-                         struct brw_mipmap_tree *mt,
+intel_miptree_access_raw(struct brw_context *brw,
+                         struct intel_mipmap_tree *mt,
                          uint32_t level, uint32_t layer,
                          bool write)
 {
-   brw_miptree_prepare_access(brw, mt, level, 1, layer, 1,
+   intel_miptree_prepare_access(brw, mt, level, 1, layer, 1,
                                 ISL_AUX_USAGE_NONE, false);
    if (write)
-      brw_miptree_finish_write(brw, mt, level, layer, 1, ISL_AUX_USAGE_NONE);
+      intel_miptree_finish_write(brw, mt, level, layer, 1, ISL_AUX_USAGE_NONE);
 }
 
 enum isl_aux_usage
-brw_miptree_texture_aux_usage(struct brw_context *brw,
-                                struct brw_mipmap_tree *mt,
+intel_miptree_texture_aux_usage(struct brw_context *brw,
+                                struct intel_mipmap_tree *mt,
                                 enum isl_format view_format,
                                 enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits);
 void
-brw_miptree_prepare_texture(struct brw_context *brw,
-                              struct brw_mipmap_tree *mt,
+intel_miptree_prepare_texture(struct brw_context *brw,
+                              struct intel_mipmap_tree *mt,
                               enum isl_format view_format,
                               uint32_t start_level, uint32_t num_levels,
                               uint32_t start_layer, uint32_t num_layers,
                               enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits);
 void
-brw_miptree_prepare_image(struct brw_context *brw,
-                            struct brw_mipmap_tree *mt);
+intel_miptree_prepare_image(struct brw_context *brw,
+                            struct intel_mipmap_tree *mt);
 
 enum isl_aux_usage
-brw_miptree_render_aux_usage(struct brw_context *brw,
-                               struct brw_mipmap_tree *mt,
+intel_miptree_render_aux_usage(struct brw_context *brw,
+                               struct intel_mipmap_tree *mt,
                                enum isl_format render_format,
                                bool blend_enabled,
                                bool draw_aux_disabled);
 void
-brw_miptree_prepare_render(struct brw_context *brw,
-                             struct brw_mipmap_tree *mt, uint32_t level,
+intel_miptree_prepare_render(struct brw_context *brw,
+                             struct intel_mipmap_tree *mt, uint32_t level,
                              uint32_t start_layer, uint32_t layer_count,
                              enum isl_aux_usage aux_usage);
 void
-brw_miptree_finish_render(struct brw_context *brw,
-                            struct brw_mipmap_tree *mt, uint32_t level,
+intel_miptree_finish_render(struct brw_context *brw,
+                            struct intel_mipmap_tree *mt, uint32_t level,
                             uint32_t start_layer, uint32_t layer_count,
                             enum isl_aux_usage aux_usage);
 void
-brw_miptree_prepare_depth(struct brw_context *brw,
-                            struct brw_mipmap_tree *mt, uint32_t level,
+intel_miptree_prepare_depth(struct brw_context *brw,
+                            struct intel_mipmap_tree *mt, uint32_t level,
                             uint32_t start_layer, uint32_t layer_count);
 void
-brw_miptree_finish_depth(struct brw_context *brw,
-                           struct brw_mipmap_tree *mt, uint32_t level,
+intel_miptree_finish_depth(struct brw_context *brw,
+                           struct intel_mipmap_tree *mt, uint32_t level,
                            uint32_t start_layer, uint32_t layer_count,
                            bool depth_written);
 void
-brw_miptree_prepare_external(struct brw_context *brw,
-                               struct brw_mipmap_tree *mt);
+intel_miptree_prepare_external(struct brw_context *brw,
+                               struct intel_mipmap_tree *mt);
 void
-brw_miptree_finish_external(struct brw_context *brw,
-                              struct brw_mipmap_tree *mt);
+intel_miptree_finish_external(struct brw_context *brw,
+                              struct intel_mipmap_tree *mt);
 
 void
-brw_miptree_make_shareable(struct brw_context *brw,
-                             struct brw_mipmap_tree *mt);
+intel_miptree_make_shareable(struct brw_context *brw,
+                             struct intel_mipmap_tree *mt);
 
 void
-brw_miptree_updownsample(struct brw_context *brw,
-                           struct brw_mipmap_tree *src,
-                           struct brw_mipmap_tree *dst);
+intel_miptree_updownsample(struct brw_context *brw,
+                           struct intel_mipmap_tree *src,
+                           struct intel_mipmap_tree *dst);
 
 void
-brw_update_r8stencil(struct brw_context *brw,
-                       struct brw_mipmap_tree *mt);
+intel_update_r8stencil(struct brw_context *brw,
+                       struct intel_mipmap_tree *mt);
 
 void
-brw_miptree_map(struct brw_context *brw,
-                struct brw_mipmap_tree *mt,
-                unsigned int level,
-                unsigned int slice,
-                unsigned int x,
-                unsigned int y,
-                unsigned int w,
-                unsigned int h,
-                GLbitfield mode,
-                void **out_ptr,
-                ptrdiff_t *out_stride);
+intel_miptree_map(struct brw_context *brw,
+		  struct intel_mipmap_tree *mt,
+		  unsigned int level,
+		  unsigned int slice,
+		  unsigned int x,
+		  unsigned int y,
+		  unsigned int w,
+		  unsigned int h,
+		  GLbitfield mode,
+		  void **out_ptr,
+		  ptrdiff_t *out_stride);
 
 void
-brw_miptree_unmap(struct brw_context *brw,
-                  struct brw_mipmap_tree *mt,
-                  unsigned int level,
-                  unsigned int slice);
+intel_miptree_unmap(struct brw_context *brw,
+		    struct intel_mipmap_tree *mt,
+		    unsigned int level,
+		    unsigned int slice);
 
 bool
-brw_miptree_sample_with_hiz(struct brw_context *brw,
-                              struct brw_mipmap_tree *mt);
+intel_miptree_sample_with_hiz(struct brw_context *brw,
+                              struct intel_mipmap_tree *mt);
 
 bool
-brw_miptree_set_clear_color(struct brw_context *brw,
-                              struct brw_mipmap_tree *mt,
+intel_miptree_set_clear_color(struct brw_context *brw,
+                              struct intel_mipmap_tree *mt,
                               union isl_color_value clear_color);
 
 /* Get a clear color suitable for filling out an ISL surface state. */
 union isl_color_value
-brw_miptree_get_clear_color(const struct brw_mipmap_tree *mt,
+intel_miptree_get_clear_color(const struct intel_mipmap_tree *mt,
                               struct brw_bo **clear_color_bo,
                               uint64_t *clear_color_offset);
 
 
 static inline int
-brw_miptree_blt_pitch(struct brw_mipmap_tree *mt)
+intel_miptree_blt_pitch(struct intel_mipmap_tree *mt)
 {
    int pitch = mt->surf.row_pitch_B;
    if (mt->surf.tiling != ISL_TILING_LINEAR)
@@ -709,12 +709,12 @@ brw_miptree_blt_pitch(struct brw_mipmap_tree *mt)
 }
 
 isl_memcpy_type
-brw_miptree_get_memcpy_type(mesa_format tiledFormat, GLenum format, GLenum type,
+intel_miptree_get_memcpy_type(mesa_format tiledFormat, GLenum format, GLenum type,
                               uint32_t *cpp);
 
 static inline bool
-brw_miptree_needs_fake_etc(struct brw_context *brw,
-                             struct brw_mipmap_tree *mt)
+intel_miptree_needs_fake_etc(struct brw_context *brw,
+                             struct intel_mipmap_tree *mt)
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
    bool is_etc = _mesa_is_format_etc2(mt->format) ||
@@ -724,15 +724,15 @@ brw_miptree_needs_fake_etc(struct brw_context *brw,
 }
 
 static inline bool
-brw_miptree_has_etc_shadow(struct brw_context *brw,
-                             struct brw_mipmap_tree *mt)
+intel_miptree_has_etc_shadow(struct brw_context *brw,
+                             struct intel_mipmap_tree *mt)
 {
-   return brw_miptree_needs_fake_etc(brw, mt) && mt->shadow_mt;
+   return intel_miptree_needs_fake_etc(brw, mt) && mt->shadow_mt;
 }
 
 void
-brw_miptree_update_etc_shadow_levels(struct brw_context *brw,
-                                       struct brw_mipmap_tree *mt);
+intel_miptree_update_etc_shadow_levels(struct brw_context *brw,
+                                       struct intel_mipmap_tree *mt);
 
 #ifdef __cplusplus
 }

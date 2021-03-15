@@ -166,10 +166,6 @@ class PrintGlOffsets(gl_XML.gl_print_base):
 #error RETURN_DISPATCH must be defined
 #endif
 
-#ifdef MemoryBarrier
-#undef MemoryBarrier
-#endif
-
 """)
         return
 

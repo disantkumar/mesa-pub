@@ -19,14 +19,33 @@
 # SOFTWARE.
 
 radv_entrypoints = custom_target(
-  'radv_entrypoints',
-  input : [vk_entrypoints_gen, vk_api_xml],
+  'radv_entrypoints.[ch]',
+  input : ['radv_entrypoints_gen.py', vk_api_xml],
   output : ['radv_entrypoints.h', 'radv_entrypoints.c'],
   command : [
-    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
-    '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'radv',
-    '--device-prefix', 'sqtt',
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--outdir',
+    meson.current_build_dir()
   ],
+  depend_files : files('radv_extensions.py'),
+)
+
+radv_extensions_c = custom_target(
+  'radv_extensions.c',
+  input : ['radv_extensions.py', vk_api_xml],
+  output : ['radv_extensions.c', 'radv_extensions.h'],
+  command : [
+    prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--out-c', '@OUTPUT0@',
+    '--out-h', '@OUTPUT1@'
+  ],
+)
+
+amd_vk_format_table_c = custom_target(
+  'amd_vk_format_table.c',
+  input : ['vk_format_table.py', 'vk_format_layout.csv'],
+  output : 'vk_format_table.c',
+  command : [prog_python, '@INPUT@'],
+  depend_files : files('vk_format_parse.py'),
+  capture : true,
 )
 
 libradv_files = files(
@@ -56,7 +75,6 @@ libradv_files = files(
   'radv_meta_bufimage.c',
   'radv_meta_clear.c',
   'radv_meta_copy.c',
-  'radv_meta_dcc_retile.c',
   'radv_meta_decompress.c',
   'radv_meta_fast_clear.c',
   'radv_meta_fmask_expand.c',
@@ -79,6 +97,7 @@ libradv_files = files(
   'radv_sqtt.c',
   'radv_query.c',
   'radv_util.c',
+  'radv_util.h',
   'radv_wsi.c',
   'si_cmd_buffer.c',
   'vk_format.h',
@@ -152,7 +171,7 @@ endif
 
 libvulkan_radeon = shared_library(
   'vulkan_radeon',
-  [libradv_files, radv_entrypoints, sha1_h],
+  [libradv_files, radv_entrypoints, radv_extensions_c, amd_vk_format_table_c, sha1_h],
   include_directories : [
     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_amd, inc_amd_common, inc_amd_common_llvm, inc_compiler, inc_util, inc_vulkan_wsi,
   ],
@@ -188,25 +207,17 @@ if with_symbols_check
   )
 endif
 
-icd_lib_path = join_paths(get_option('prefix'), get_option('libdir'))
-icd_file_name = 'libvulkan_radeon.so'
-if with_platform_windows
-  icd_lib_path = '.'
-  icd_file_name = 'vulkan_radeon.dll'
-endif
-
 radeon_icd = custom_target(
   'radeon_icd',
-  input : [vk_icd_gen, vk_api_xml],
+  input : 'radv_icd.py',
   output : 'radeon_icd.@0@.json'.format(host_machine.cpu()),
   command : [
-    prog_python, '@INPUT0@',
-    '--api-version', '1.2', '--xml', '@INPUT1@',
-    '--lib-path', join_paths(icd_lib_path, icd_file_name),
+    prog_python, '@INPUT@',
+    '--lib-path', join_paths(get_option('prefix'), get_option('libdir')),
     '--out', '@OUTPUT@',
   ],
+  depend_files : files('radv_extensions.py'),
   build_by_default : true,
   install_dir : with_vulkan_icd_dir,
   install : true,
 )
-

@@ -1275,7 +1275,9 @@ try_pbo_upload_common(struct gl_context *ctx,
    if (!fs)
       return false;
 
-   cso_save_state(cso, (CSO_BIT_VERTEX_ELEMENTS |
+   cso_save_state(cso, (CSO_BIT_FRAGMENT_SAMPLER_VIEWS |
+                        CSO_BIT_VERTEX_ELEMENTS |
+                        CSO_BIT_AUX_VERTEX_BUFFER_SLOT |
                         CSO_BIT_FRAMEBUFFER |
                         CSO_BIT_VIEWPORT |
                         CSO_BIT_BLEND |
@@ -1287,6 +1289,7 @@ try_pbo_upload_common(struct gl_context *ctx,
                         CSO_BIT_MIN_SAMPLES |
                         CSO_BIT_RENDER_CONDITION |
                         CSO_BITS_ALL_SHADERS));
+   cso_save_constant_buffer_slot0(cso, PIPE_SHADER_FRAGMENT);
 
    cso_set_sample_mask(cso, ~0);
    cso_set_min_samples(cso, 1);
@@ -1312,10 +1315,7 @@ try_pbo_upload_common(struct gl_context *ctx,
       if (sampler_view == NULL)
          goto fail;
 
-      pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 1, 0,
-                              &sampler_view);
-      st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] =
-         MAX2(st->state.num_sampler_views[PIPE_SHADER_FRAGMENT], 1);
+      cso_set_sampler_views(cso, PIPE_SHADER_FRAGMENT, 1, &sampler_view);
 
       pipe_sampler_view_reference(&sampler_view, NULL);
    }
@@ -1351,18 +1351,7 @@ try_pbo_upload_common(struct gl_context *ctx,
 
 fail:
    cso_restore_state(cso);
-
-   /* Unbind all because st/mesa won't do it if the current shader doesn't
-    * use them.
-    */
-   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0,
-                           st->state.num_sampler_views[PIPE_SHADER_FRAGMENT],
-                           NULL);
-   st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = 0;
-
-   st->dirty |= ST_NEW_VERTEX_ARRAYS |
-                ST_NEW_FS_CONSTANTS |
-                ST_NEW_FS_SAMPLER_VIEWS;
+   cso_restore_constant_buffer_slot0(cso, PIPE_SHADER_FRAGMENT);
 
    return success;
 }
@@ -1459,10 +1448,10 @@ try_pbo_upload(struct gl_context *ctx, GLuint dims,
    /* Set up the surface */
    {
       unsigned level = stObj->pt != stImage->pt
-         ? 0 : texImage->TexObject->Attrib.MinLevel + texImage->Level;
+         ? 0 : texImage->TexObject->MinLevel + texImage->Level;
       unsigned max_layer = util_max_layer(texture, level);
 
-      zoffset += texImage->Face + texImage->TexObject->Attrib.MinLayer;
+      zoffset += texImage->Face + texImage->TexObject->MinLayer;
 
       struct pipe_surface templ;
       memset(&templ, 0, sizeof(templ));
@@ -1507,7 +1496,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
    GLenum gl_target = texImage->TexObject->Target;
    unsigned bind;
    GLubyte *map;
-   unsigned dstz = texImage->Face + texImage->TexObject->Attrib.MinLayer;
+   unsigned dstz = texImage->Face + texImage->TexObject->MinLayer;
    unsigned dst_level = 0;
    bool throttled = false;
 
@@ -1515,7 +1504,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
    st_invalidate_readpix_cache(st);
 
    if (stObj->pt == stImage->pt)
-      dst_level = texImage->TexObject->Attrib.MinLevel + texImage->Level;
+      dst_level = texImage->TexObject->MinLevel + texImage->Level;
 
    assert(!_mesa_is_format_etc2(texImage->TexFormat) &&
           !_mesa_is_format_astc_2d(texImage->TexFormat) &&
@@ -1889,10 +1878,10 @@ st_CompressedTexSubImage(struct gl_context *ctx, GLuint dims,
    /* Set up the surface. */
    {
       unsigned level = stObj->pt != stImage->pt
-         ? 0 : texImage->TexObject->Attrib.MinLevel + texImage->Level;
+         ? 0 : texImage->TexObject->MinLevel + texImage->Level;
       unsigned max_layer = util_max_layer(texture, level);
 
-      GLint layer = z + texImage->Face + texImage->TexObject->Attrib.MinLayer;
+      GLint layer = z + texImage->Face + texImage->TexObject->MinLayer;
 
       struct pipe_surface templ;
       memset(&templ, 0, sizeof(templ));
@@ -2188,12 +2177,12 @@ st_GetTexSubImage(struct gl_context * ctx,
    }
 
    assert(texImage->Face == 0 ||
-          texImage->TexObject->Attrib.MinLayer == 0 ||
+          texImage->TexObject->MinLayer == 0 ||
           zoffset == 0);
 
    memset(&blit, 0, sizeof(blit));
    blit.src.resource = src;
-   blit.src.level = texImage->Level + texImage->TexObject->Attrib.MinLevel;
+   blit.src.level = texImage->Level + texImage->TexObject->MinLevel;
    blit.src.format = src_format;
    blit.dst.resource = dst;
    blit.dst.level = 0;
@@ -2202,7 +2191,7 @@ st_GetTexSubImage(struct gl_context * ctx,
    blit.dst.box.x = 0;
    blit.src.box.y = yoffset;
    blit.dst.box.y = 0;
-   blit.src.box.z = texImage->Face + texImage->TexObject->Attrib.MinLayer + zoffset;
+   blit.src.box.z = texImage->Face + texImage->TexObject->MinLayer + zoffset;
    blit.dst.box.z = 0;
    blit.src.box.width = blit.dst.box.width = width;
    blit.src.box.height = blit.dst.box.height = height;
@@ -2592,11 +2581,10 @@ st_CopyTexSubImage(struct gl_context *ctx, GLuint dims,
    blit.dst.resource = stImage->pt;
    blit.dst.format = dst_format;
    blit.dst.level = stObj->pt != stImage->pt
-      ? 0 : texImage->Level + texImage->TexObject->Attrib.MinLevel;
+      ? 0 : texImage->Level + texImage->TexObject->MinLevel;
    blit.dst.box.x = destX;
    blit.dst.box.y = destY;
-   blit.dst.box.z = stImage->base.Face + slice +
-                    texImage->TexObject->Attrib.MinLayer;
+   blit.dst.box.z = stImage->base.Face + slice + texImage->TexObject->MinLayer;
    blit.dst.box.width = width;
    blit.dst.box.height = height;
    blit.dst.box.depth = 1;
@@ -3135,7 +3123,7 @@ st_TextureView(struct gl_context *ctx,
    struct gl_texture_image *image = texObj->Image[0][0];
 
    const int numFaces = _mesa_num_tex_faces(texObj->Target);
-   const int numLevels = texObj->Attrib.NumLevels;
+   const int numLevels = texObj->NumLevels;
 
    int face;
    int level;
@@ -3245,8 +3233,8 @@ st_ClearTexSubImage(struct gl_context *ctx,
        * not a texture view, the offsets will be zero.
        */
       assert(stImage->pt == st_texture_object(texObj)->pt);
-      level = texImage->Level + texObj->Attrib.MinLevel;
-      box.z += texObj->Attrib.MinLayer;
+      level = texImage->Level + texObj->MinLevel;
+      box.z += texObj->MinLayer;
    }
    else {
       /* Texture level sizes may be inconsistent.  We my have "loose",

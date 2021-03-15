@@ -180,12 +180,7 @@ st_deserialise_ir_program(struct gl_context *ctx,
    uint8_t *buffer = (uint8_t *) prog->driver_cache_blob;
 
    st_set_prog_affected_state_flags(prog);
-
-   /* Avoid reallocation of the program parameter list, because the uniform
-    * storage is only associated with the original parameter list.
-    * This should be enough for Bitmap and DrawPixels constants.
-    */
-   _mesa_ensure_and_associate_uniform_storage(ctx, shProg, prog, 16);
+   _mesa_associate_uniform_storage(ctx, shProg, prog);
 
    assert(prog->driver_cache_blob && prog->driver_cache_blob_size > 0);
 

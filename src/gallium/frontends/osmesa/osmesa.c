@@ -820,8 +820,7 @@ OSMesaMakeCurrent(OSMesaContext osmesa, void *buffer, GLenum type,
       if (any_pp_enabled) {
          osmesa->pp = pp_init(osmesa->stctx->pipe,
                               osmesa->pp_enabled,
-                              osmesa->stctx->cso_context,
-                              osmesa->stctx);
+                              osmesa->stctx->cso_context);
 
          pp_init_fbos(osmesa->pp, width, height);
       }

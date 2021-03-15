@@ -187,7 +187,7 @@ build_depth_stencil_resolve_compute_shader(struct radv_device *dev, int samples,
 
 	nir_ssa_def *input_img_deref = &nir_build_deref_var(&b, input_img)->dest.ssa;
 
-	nir_alu_type type = index == DEPTH_RESOLVE ? nir_type_float32 : nir_type_uint32;
+	nir_alu_type type = index == DEPTH_RESOLVE ? nir_type_float : nir_type_uint;
 
 	nir_tex_instr *tex = nir_tex_instr_create(b.shader, 3);
 	tex->sampler_dim = GLSL_SAMPLER_DIM_MS;
@@ -968,27 +968,21 @@ radv_depth_stencil_resolve_subpass_cs(struct radv_cmd_buffer *cmd_buffer,
 		radv_dst_access_flush(cmd_buffer, VK_ACCESS_SHADER_READ_BIT, NULL) |
 		radv_dst_access_flush(cmd_buffer, VK_ACCESS_SHADER_WRITE_BIT, NULL);
 
-	struct radv_subpass_attachment src_att = *subpass->depth_stencil_attachment;
-	struct radv_image_view *src_iview =
-		cmd_buffer->state.attachments[src_att.attachment].iview;
-	struct radv_image *src_image = src_iview->image;
-
-	VkImageResolve2KHR region = {0};
-	region.sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2_KHR;
-	region.srcSubresource.aspectMask = aspects;
-	region.srcSubresource.mipLevel = 0;
-	region.srcSubresource.baseArrayLayer = src_iview->base_layer;
-	region.srcSubresource.layerCount = layer_count;
-
-	radv_decompress_resolve_src(cmd_buffer, src_image, src_att.layout, &region);
+	radv_decompress_resolve_subpass_src(cmd_buffer);
 
 	radv_meta_save(&saved_state, cmd_buffer,
 		       RADV_META_SAVE_COMPUTE_PIPELINE |
 		       RADV_META_SAVE_DESCRIPTORS);
 
+	struct radv_subpass_attachment src_att = *subpass->depth_stencil_attachment;
 	struct radv_subpass_attachment dest_att = *subpass->ds_resolve_attachment;
+
+	struct radv_image_view *src_iview =
+		cmd_buffer->state.attachments[src_att.attachment].iview;
 	struct radv_image_view *dst_iview =
 		cmd_buffer->state.attachments[dest_att.attachment].iview;
+
+	struct radv_image *src_image = src_iview->image;
 	struct radv_image *dst_image = dst_iview->image;
 
 	struct radv_image_view tsrc_iview;

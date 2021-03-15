@@ -38,7 +38,7 @@
 #include <getopt.h>
 #include <zlib.h>
 
-#include "common/intel_decoder.h"
+#include "common/gen_decoder.h"
 #include "dev/gen_debug.h"
 #include "util/macros.h"
 
@@ -65,14 +65,14 @@ print_head(unsigned int reg)
 }
 
 static void
-print_register(struct intel_spec *spec, const char *name, uint32_t reg)
+print_register(struct gen_spec *spec, const char *name, uint32_t reg)
 {
-   struct intel_group *reg_spec =
-      name ? intel_spec_find_register_by_name(spec, name) : NULL;
+   struct gen_group *reg_spec =
+      name ? gen_spec_find_register_by_name(spec, name) : NULL;
 
    if (reg_spec) {
-      intel_print_group(stdout, reg_spec, 0, &reg, 0,
-                        option_color == COLOR_ALWAYS);
+      gen_print_group(stdout, reg_spec, 0, &reg, 0,
+                      option_color == COLOR_ALWAYS);
    }
 }
 
@@ -393,13 +393,13 @@ static int qsort_hw_context_first(const void *a, const void *b)
       return 0;
 }
 
-static struct intel_batch_decode_bo
+static struct gen_batch_decode_bo
 get_gen_batch_bo(void *user_data, bool ppgtt, uint64_t address)
 {
    for (int s = 0; s < num_sections; s++) {
       if (sections[s].gtt_offset <= address &&
           address < sections[s].gtt_offset + sections[s].dword_count * 4) {
-         return (struct intel_batch_decode_bo) {
+         return (struct gen_batch_decode_bo) {
             .addr = sections[s].gtt_offset,
             .map = sections[s].data,
             .size = sections[s].dword_count * 4,
@@ -407,13 +407,13 @@ get_gen_batch_bo(void *user_data, bool ppgtt, uint64_t address)
       }
    }
 
-   return (struct intel_batch_decode_bo) { .map = NULL };
+   return (struct gen_batch_decode_bo) { .map = NULL };
 }
 
 static void
 read_data_file(FILE *file)
 {
-   struct intel_spec *spec = NULL;
+   struct gen_spec *spec = NULL;
    long long unsigned fence;
    int matched;
    char *line = NULL;
@@ -515,9 +515,9 @@ read_data_file(FILE *file)
             printf("Detected GEN%i chipset\n", devinfo.gen);
 
             if (xml_path == NULL)
-               spec = intel_spec_load(&devinfo);
+               spec = gen_spec_load(&devinfo);
             else
-               spec = intel_spec_load_from_path(&devinfo, xml_path);
+               spec = gen_spec_load_from_path(&devinfo, xml_path);
          }
 
          matched = sscanf(line, "  CTL: 0x%08x\n", &reg);
@@ -652,18 +652,18 @@ read_data_file(FILE *file)
       }
    }
 
-   enum intel_batch_decode_flags batch_flags = 0;
+   enum gen_batch_decode_flags batch_flags = 0;
    if (option_color == COLOR_ALWAYS)
-      batch_flags |= INTEL_BATCH_DECODE_IN_COLOR;
+      batch_flags |= GEN_BATCH_DECODE_IN_COLOR;
    if (option_full_decode)
-      batch_flags |= INTEL_BATCH_DECODE_FULL;
+      batch_flags |= GEN_BATCH_DECODE_FULL;
    if (option_print_offsets)
-      batch_flags |= INTEL_BATCH_DECODE_OFFSETS;
-   batch_flags |= INTEL_BATCH_DECODE_FLOATS;
+      batch_flags |= GEN_BATCH_DECODE_OFFSETS;
+   batch_flags |= GEN_BATCH_DECODE_FLOATS;
 
-   struct intel_batch_decode_ctx batch_ctx;
-   intel_batch_decode_ctx_init(&batch_ctx, &devinfo, stdout, batch_flags,
-                               xml_path, get_gen_batch_bo, NULL, NULL);
+   struct gen_batch_decode_ctx batch_ctx;
+   gen_batch_decode_ctx_init(&batch_ctx, &devinfo, stdout, batch_flags,
+                             xml_path, get_gen_batch_bo, NULL, NULL);
 
 
    for (int s = 0; s < num_sections; s++) {
@@ -680,18 +680,18 @@ read_data_file(FILE *file)
           strcmp(sections[s].buffer_name, "batch buffer") == 0 ||
           strcmp(sections[s].buffer_name, "HW Context") == 0) {
          if (is_ring_buffer && ring_wraps)
-            batch_ctx.flags &= ~INTEL_BATCH_DECODE_OFFSETS;
+            batch_ctx.flags &= ~GEN_BATCH_DECODE_OFFSETS;
          batch_ctx.engine = class;
          uint8_t *data = (uint8_t *)sections[s].data + sections[s].data_offset;
          uint64_t batch_addr = sections[s].gtt_offset + sections[s].data_offset;
-         intel_print_batch(&batch_ctx, (uint32_t *)data,
-                           sections[s].dword_count * 4, batch_addr,
-                           is_ring_buffer);
+         gen_print_batch(&batch_ctx, (uint32_t *)data,
+                         sections[s].dword_count * 4, batch_addr,
+                         is_ring_buffer);
          batch_ctx.flags = batch_flags;
       }
    }
 
-   intel_batch_decode_ctx_finish(&batch_ctx);
+   gen_batch_decode_ctx_finish(&batch_ctx);
 
    for (int s = 0; s < num_sections; s++) {
       free(sections[s].ring_name);

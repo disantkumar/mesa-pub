@@ -313,17 +313,13 @@ vc4_set_viewport_states(struct pipe_context *pctx,
 static void
 vc4_set_vertex_buffers(struct pipe_context *pctx,
                        unsigned start_slot, unsigned count,
-                       unsigned unbind_num_trailing_slots,
-                       bool take_ownership,
                        const struct pipe_vertex_buffer *vb)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
         struct vc4_vertexbuf_stateobj *so = &vc4->vertexbuf;
 
         util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb,
-                                     start_slot, count,
-                                     unbind_num_trailing_slots,
-                                     take_ownership);
+                                     start_slot, count);
         so->count = util_last_bit(so->enabled_mask);
 
         vc4->dirty |= VC4_DIRTY_VTXBUF;
@@ -386,7 +382,6 @@ vc4_vertex_state_bind(struct pipe_context *pctx, void *hwcso)
 static void
 vc4_set_constant_buffer(struct pipe_context *pctx,
                         enum pipe_shader_type shader, uint index,
-                        bool take_ownership,
                         const struct pipe_constant_buffer *cb)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
@@ -404,7 +399,10 @@ vc4_set_constant_buffer(struct pipe_context *pctx,
         if (index == 1 && so->cb[index].buffer_size != cb->buffer_size)
                 vc4->dirty |= VC4_DIRTY_UBO_1_SIZE;
 
-        util_copy_constant_buffer(&so->cb[index], cb, take_ownership);
+        pipe_resource_reference(&so->cb[index].buffer, cb->buffer);
+        so->cb[index].buffer_offset = cb->buffer_offset;
+        so->cb[index].buffer_size   = cb->buffer_size;
+        so->cb[index].user_buffer   = cb->user_buffer;
 
         so->enabled_mask |= 1 << index;
         so->dirty_mask |= 1 << index;
@@ -651,7 +649,6 @@ static void
 vc4_set_sampler_views(struct pipe_context *pctx,
                       enum pipe_shader_type shader,
                       unsigned start, unsigned nr,
-                      unsigned unbind_num_trailing_slots,
                       struct pipe_sampler_view **views)
 {
         struct vc4_context *vc4 = vc4_context(pctx);

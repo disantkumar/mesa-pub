@@ -277,8 +277,8 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
           * then we need to emit slightly different code to first sample the
           * MCS surface.
           */
-         struct brw_texture_object *intel_tex =
-            brw_texture_object((struct gl_texture_object *)t);
+         struct intel_texture_object *intel_tex =
+            intel_texture_object((struct gl_texture_object *)t);
 
          /* From gen9 onwards some single sampled buffers can also be
           * compressed. These don't need ld2dms sampling along with mcs fetch.
@@ -397,8 +397,8 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
    /* Build the index for table lookup
     */
    if (devinfo->gen < 6) {
-      struct brw_renderbuffer *depth_irb =
-         brw_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
+      struct intel_renderbuffer *depth_irb =
+         intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
 
       /* _NEW_COLOR */
       if (prog->info.fs.uses_discard || ctx->Color.AlphaEnabled) {
@@ -480,7 +480,7 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
 
    /* _NEW_COLOR */
    key->force_dual_color_blend = brw->dual_color_blend_by_location &&
-      (ctx->Color.BlendEnabled & 1) && ctx->Color._BlendUsesDualSrc & 0x1;
+      (ctx->Color.BlendEnabled & 1) && ctx->Color.Blend[0]._UsesDualSrc;
 
    /* _NEW_MULTISAMPLE, _NEW_BUFFERS */
    key->alpha_to_coverage =  _mesa_is_alpha_to_coverage_enabled(ctx);

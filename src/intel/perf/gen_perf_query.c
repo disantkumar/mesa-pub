@@ -23,7 +23,7 @@
 
 #include <unistd.h>
 
-#include "common/intel_gem.h"
+#include "common/gen_gem.h"
 
 #include "dev/gen_debug.h"
 #include "dev/gen_device_info.h"
@@ -39,25 +39,10 @@
 #include "util/u_math.h"
 
 #define FILE_DEBUG_FLAG DEBUG_PERFMON
-
-#define MI_RPC_BO_SIZE                (4096)
-#define MI_FREQ_OFFSET_BYTES          (256)
-#define MI_PERF_COUNTERS_OFFSET_BYTES (260)
-
-#define ALIGN(x, y) (((x) + (y)-1) & ~((y)-1))
-
-/* Align to 64bytes, requirement for OA report write address. */
-#define TOTAL_QUERY_DATA_SIZE            \
-   ALIGN(256 /* OA report */ +           \
-         4  /* freq register */ +        \
-         8 + 8 /* perf counter 1 & 2 */, \
-         64)
-
-
-static uint32_t field_offset(bool end, uint32_t offset)
-{
-   return (end ? TOTAL_QUERY_DATA_SIZE : 0) + offset;
-}
+#define MI_RPC_BO_SIZE              4096
+#define MI_FREQ_START_OFFSET_BYTES  (3072)
+#define MI_RPC_BO_END_OFFSET_BYTES  (MI_RPC_BO_SIZE / 2)
+#define MI_FREQ_END_OFFSET_BYTES    (3076)
 
 #define MAP_READ  (1 << 0)
 #define MAP_WRITE (1 << 1)
@@ -234,6 +219,11 @@ struct gen_perf_query_object
          bool results_accumulated;
 
          /**
+          * Frequency of the GT at begin and end of the query.
+          */
+         uint64_t gt_frequency[2];
+
+         /**
           * Accumulated OA results between begin and end of the query.
           */
          struct gen_perf_query_result result;
@@ -252,7 +242,6 @@ struct gen_perf_query_object
 struct gen_perf_context {
    struct gen_perf_config *perf;
 
-   void * mem_ctx; /* ralloc context */
    void * ctx;  /* driver context (eg, brw_context) */
    void * bufmgr;
    const struct gen_device_info *devinfo;
@@ -319,7 +308,7 @@ static bool
 inc_n_users(struct gen_perf_context *perf_ctx)
 {
    if (perf_ctx->n_oa_users == 0 &&
-       intel_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_ENABLE, 0) < 0)
+       gen_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_ENABLE, 0) < 0)
    {
       return false;
    }
@@ -338,7 +327,7 @@ dec_n_users(struct gen_perf_context *perf_ctx)
     */
    --perf_ctx->n_oa_users;
    if (perf_ctx->n_oa_users == 0 &&
-       intel_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_DISABLE, 0) < 0)
+       gen_ioctl(perf_ctx->oa_stream_fd, I915_PERF_IOCTL_DISABLE, 0) < 0)
    {
       DBG("WARNING: Error disabling gen perf stream: %m\n");
    }
@@ -359,6 +348,8 @@ gen_perf_close(struct gen_perf_context *perfquery,
    }
 }
 
+#define NUM_PERF_PROPERTIES(array) (ARRAY_SIZE(array) / 2)
+
 static bool
 gen_perf_open(struct gen_perf_context *perf_ctx,
               int metrics_set_id,
@@ -367,43 +358,31 @@ gen_perf_open(struct gen_perf_context *perf_ctx,
               int drm_fd,
               uint32_t ctx_id)
 {
-   uint64_t properties[DRM_I915_PERF_PROP_MAX * 2];
-   uint32_t p = 0;
+   uint64_t properties[] = {
+      /* Single context sampling */
+      DRM_I915_PERF_PROP_CTX_HANDLE, ctx_id,
 
-   /* Single context sampling */
-   properties[p++] = DRM_I915_PERF_PROP_CTX_HANDLE;
-   properties[p++] = ctx_id;
+      /* Include OA reports in samples */
+      DRM_I915_PERF_PROP_SAMPLE_OA, true,
 
-   /* Include OA reports in samples */
-   properties[p++] = DRM_I915_PERF_PROP_SAMPLE_OA;
-   properties[p++] = true;
+      /* OA unit configuration */
+      DRM_I915_PERF_PROP_OA_METRICS_SET, metrics_set_id,
+      DRM_I915_PERF_PROP_OA_FORMAT, report_format,
+      DRM_I915_PERF_PROP_OA_EXPONENT, period_exponent,
 
-   /* OA unit configuration */
-   properties[p++] = DRM_I915_PERF_PROP_OA_METRICS_SET;
-   properties[p++] = metrics_set_id;
-
-   properties[p++] = DRM_I915_PERF_PROP_OA_FORMAT;
-   properties[p++] = report_format;
-
-   properties[p++] = DRM_I915_PERF_PROP_OA_EXPONENT;
-   properties[p++] = period_exponent;
-
-   /* SSEU configuration */
-   if (gen_perf_has_global_sseu(perf_ctx->perf)) {
-      properties[p++] = DRM_I915_PERF_PROP_GLOBAL_SSEU;
-      properties[p++] = to_user_pointer(&perf_ctx->perf->sseu);
-   }
-
-   assert(p <= ARRAY_SIZE(properties));
-
+      /* SSEU configuration */
+      DRM_I915_PERF_PROP_GLOBAL_SSEU, to_user_pointer(&perf_ctx->perf->sseu),
+   };
    struct drm_i915_perf_open_param param = {
       .flags = I915_PERF_FLAG_FD_CLOEXEC |
                I915_PERF_FLAG_FD_NONBLOCK |
                I915_PERF_FLAG_DISABLED,
-      .num_properties = p / 2,
+      .num_properties = perf_ctx->perf->i915_perf_version >= 4 ?
+                        NUM_PERF_PROPERTIES(properties) :
+                        NUM_PERF_PROPERTIES(properties) - 1,
       .properties_ptr = (uintptr_t) properties,
    };
-   int fd = intel_ioctl(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param);
+   int fd = gen_ioctl(drm_fd, DRM_IOCTL_I915_PERF_OPEN, &param);
    if (fd == -1) {
       DBG("Error opening gen perf OA stream: %m\n");
       return false;
@@ -569,7 +548,6 @@ gen_perf_config(struct gen_perf_context *ctx)
 void
 gen_perf_init_context(struct gen_perf_context *perf_ctx,
                       struct gen_perf_config *perf_cfg,
-                      void * mem_ctx, /* ralloc context */
                       void * ctx,  /* driver context (eg, brw_context) */
                       void * bufmgr,  /* eg brw_bufmgr */
                       const struct gen_device_info *devinfo,
@@ -577,7 +555,6 @@ gen_perf_init_context(struct gen_perf_context *perf_ctx,
                       int drm_fd)
 {
    perf_ctx->perf = perf_cfg;
-   perf_ctx->mem_ctx = mem_ctx;
    perf_ctx->ctx = ctx;
    perf_ctx->bufmgr = bufmgr;
    perf_ctx->drm_fd = drm_fd;
@@ -585,7 +562,7 @@ gen_perf_init_context(struct gen_perf_context *perf_ctx,
    perf_ctx->devinfo = devinfo;
 
    perf_ctx->unaccumulated =
-      ralloc_array(mem_ctx, struct gen_perf_query_object *, 2);
+      ralloc_array(ctx, struct gen_perf_query_object *, 2);
    perf_ctx->unaccumulated_elements = 0;
    perf_ctx->unaccumulated_array_size = 2;
 
@@ -620,7 +597,7 @@ add_to_unaccumulated_query_list(struct gen_perf_context *perf_ctx,
    {
       perf_ctx->unaccumulated_array_size *= 1.5;
       perf_ctx->unaccumulated =
-         reralloc(perf_ctx->mem_ctx, perf_ctx->unaccumulated,
+         reralloc(perf_ctx->ctx, perf_ctx->unaccumulated,
                   struct gen_perf_query_object *,
                   perf_ctx->unaccumulated_array_size);
    }
@@ -653,37 +630,17 @@ snapshot_statistics_registers(struct gen_perf_context *ctx,
 }
 
 static void
-snapshot_query_layout(struct gen_perf_context *perf_ctx,
-                      struct gen_perf_query_object *query,
-                      bool end_snapshot)
+snapshot_freq_register(struct gen_perf_context *ctx,
+                       struct gen_perf_query_object *query,
+                       uint32_t bo_offset)
 {
-   struct gen_perf_config *perf_cfg = perf_ctx->perf;
-   const struct gen_perf_query_field_layout *layout = &perf_cfg->query_layout;
-   uint32_t offset = end_snapshot ? align(layout->size, layout->alignment) : 0;
+   struct gen_perf_config *perf = ctx->perf;
+   const struct gen_device_info *devinfo = ctx->devinfo;
 
-   for (uint32_t f = 0; f < layout->n_fields; f++) {
-      const struct gen_perf_query_field *field =
-         &layout->fields[end_snapshot ? f : (layout->n_fields - 1 - f)];
-
-      switch (field->type) {
-      case GEN_PERF_QUERY_FIELD_TYPE_MI_RPC:
-         perf_cfg->vtbl.emit_mi_report_perf_count(perf_ctx->ctx, query->oa.bo,
-                                                  offset + field->location,
-                                                  query->oa.begin_report_id +
-                                                  (end_snapshot ? 1 : 0));
-         break;
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
-      case GEN_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
-         perf_cfg->vtbl.store_register_mem(perf_ctx->ctx, query->oa.bo,
-                                           field->mmio_offset, field->size,
-                                           offset + field->location);
-         break;
-      default:
-         unreachable("Invalid field type");
-      }
-   }
+   if (devinfo->gen == 8 && !devinfo->is_cherryview)
+      perf->vtbl.store_register_mem(ctx->ctx, query->oa.bo, GEN7_RPSTAT1, 4, bo_offset);
+   else if (devinfo->gen >= 9)
+      perf->vtbl.store_register_mem(ctx->ctx, query->oa.bo, GEN9_RPSTAT0, 4, bo_offset);
 }
 
 bool
@@ -844,7 +801,10 @@ gen_perf_begin_query(struct gen_perf_context *perf_ctx,
       query->oa.begin_report_id = perf_ctx->next_query_start_report_id;
       perf_ctx->next_query_start_report_id += 2;
 
-      snapshot_query_layout(perf_ctx, query, false /* end_snapshot */);
+      /* Take a starting OA counter snapshot. */
+      perf_cfg->vtbl.emit_mi_report_perf_count(perf_ctx->ctx, query->oa.bo, 0,
+                                               query->oa.begin_report_id);
+      snapshot_freq_register(perf_ctx, query, MI_FREQ_START_OFFSET_BYTES);
 
       ++perf_ctx->n_active_oa_queries;
 
@@ -920,8 +880,13 @@ gen_perf_end_query(struct gen_perf_context *perf_ctx,
        * from perf. In this case we mustn't try and emit a closing
        * MI_RPC command in case the OA unit has already been disabled
        */
-      if (!query->oa.results_accumulated)
-         snapshot_query_layout(perf_ctx, query, true /* end_snapshot */);
+      if (!query->oa.results_accumulated) {
+         /* Take an ending OA counter snapshot. */
+         snapshot_freq_register(perf_ctx, query, MI_FREQ_END_OFFSET_BYTES);
+         perf_cfg->vtbl.emit_mi_report_perf_count(perf_ctx->ctx, query->oa.bo,
+                                             MI_RPC_BO_END_OFFSET_BYTES,
+                                             query->oa.begin_report_id + 1);
+      }
 
       --perf_ctx->n_active_oa_queries;
 
@@ -1040,8 +1005,8 @@ read_oa_samples_for_query(struct gen_perf_context *perf_ctx,
    if (query->oa.map == NULL)
       query->oa.map = perf_cfg->vtbl.bo_map(perf_ctx->ctx, query->oa.bo, MAP_READ);
 
-   start = last = query->oa.map + field_offset(false, 0);
-   end = query->oa.map + field_offset(true, 0);
+   start = last = query->oa.map;
+   end = query->oa.map + MI_RPC_BO_END_OFFSET_BYTES;
 
    if (start[0] != query->oa.begin_report_id) {
       DBG("Spurious start report id=%"PRIu32"\n", start[0]);
@@ -1232,8 +1197,8 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
 
    assert(query->oa.map != NULL);
 
-   start = last = query->oa.map + field_offset(false, 0);
-   end = query->oa.map + field_offset(true, 0);
+   start = last = query->oa.map;
+   end = query->oa.map + MI_RPC_BO_END_OFFSET_BYTES;
 
    if (start[0] != query->oa.begin_report_id) {
       DBG("Spurious start report id=%"PRIu32"\n", start[0]);
@@ -1339,7 +1304,6 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
             if (add) {
                gen_perf_query_result_accumulate(&query->oa.result,
                                                 query->queryinfo,
-                                                devinfo,
                                                 last, report);
             } else {
                /* We're not adding the delta because we've identified it's not
@@ -1368,7 +1332,7 @@ accumulate_oa_reports(struct gen_perf_context *perf_ctx,
 end:
 
    gen_perf_query_result_accumulate(&query->oa.result, query->queryinfo,
-                                    devinfo, last, end);
+                                    last, end);
 
    query->oa.results_accumulated = true;
    drop_from_unaccumulated_query_list(perf_ctx, query);
@@ -1431,6 +1395,37 @@ gen_perf_delete_query(struct gen_perf_context *perf_ctx,
    free(query);
 }
 
+#define GET_FIELD(word, field) (((word)  & field ## _MASK) >> field ## _SHIFT)
+
+static void
+read_gt_frequency(struct gen_perf_context *perf_ctx,
+                  struct gen_perf_query_object *obj)
+{
+   const struct gen_device_info *devinfo = perf_ctx->devinfo;
+   uint32_t start = *((uint32_t *)(obj->oa.map + MI_FREQ_START_OFFSET_BYTES)),
+      end = *((uint32_t *)(obj->oa.map + MI_FREQ_END_OFFSET_BYTES));
+
+   switch (devinfo->gen) {
+   case 7:
+   case 8:
+      obj->oa.gt_frequency[0] = GET_FIELD(start, GEN7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
+      obj->oa.gt_frequency[1] = GET_FIELD(end, GEN7_RPSTAT1_CURR_GT_FREQ) * 50ULL;
+      break;
+   case 9:
+   case 11:
+   case 12:
+      obj->oa.gt_frequency[0] = GET_FIELD(start, GEN9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
+      obj->oa.gt_frequency[1] = GET_FIELD(end, GEN9_RPSTAT0_CURR_GT_FREQ) * 50ULL / 3ULL;
+      break;
+   default:
+      unreachable("unexpected gen");
+   }
+
+   /* Put the numbers into Hz. */
+   obj->oa.gt_frequency[0] *= 1000000ULL;
+   obj->oa.gt_frequency[1] *= 1000000ULL;
+}
+
 static int
 get_oa_counter_data(struct gen_perf_context *perf_ctx,
                     struct gen_perf_query_object *query,
@@ -1454,13 +1449,13 @@ get_oa_counter_data(struct gen_perf_context *perf_ctx,
             out_uint64 = (uint64_t *)(data + counter->offset);
             *out_uint64 =
                counter->oa_counter_read_uint64(perf_cfg, queryinfo,
-                                               &query->oa.result);
+                                               query->oa.result.accumulator);
             break;
          case GEN_PERF_COUNTER_DATA_TYPE_FLOAT:
             out_float = (float *)(data + counter->offset);
             *out_float =
                counter->oa_counter_read_float(perf_cfg, queryinfo,
-                                              &query->oa.result);
+                                              query->oa.result.accumulator);
             break;
          default:
             /* So far we aren't using uint32, double or bool32... */
@@ -1535,14 +1530,13 @@ gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
          while (!read_oa_samples_for_query(perf_ctx, query, current_batch))
             ;
 
+         read_gt_frequency(perf_ctx, query);
          uint32_t *begin_report = query->oa.map;
-         uint32_t *end_report = query->oa.map + perf_cfg->query_layout.size;
-         gen_perf_query_result_accumulate_fields(&query->oa.result,
-                                                 query->queryinfo,
-                                                 perf_ctx->devinfo,
-                                                 begin_report,
-                                                 end_report,
-                                                 true /* no_oa_accumulate */);
+         uint32_t *end_report = query->oa.map + MI_RPC_BO_END_OFFSET_BYTES;
+         gen_perf_query_result_read_frequencies(&query->oa.result,
+                                                perf_ctx->devinfo,
+                                                begin_report,
+                                                end_report);
          accumulate_oa_reports(perf_ctx, query);
          assert(query->oa.results_accumulated);
 
@@ -1555,8 +1549,9 @@ gen_perf_get_query_data(struct gen_perf_context *perf_ctx,
          const struct gen_device_info *devinfo = perf_ctx->devinfo;
 
          written = gen_perf_query_result_write_mdapi((uint8_t *)data, data_size,
-                                                     devinfo, query->queryinfo,
-                                                     &query->oa.result);
+                                                     devinfo, &query->oa.result,
+                                                     query->oa.gt_frequency[0],
+                                                     query->oa.gt_frequency[1]);
       }
       break;
 

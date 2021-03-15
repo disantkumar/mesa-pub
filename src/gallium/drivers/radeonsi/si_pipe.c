@@ -106,8 +106,6 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    {"nohyperz", DBG(NO_HYPERZ), "Disable Hyper-Z"},
    {"no2d", DBG(NO_2D_TILING), "Disable 2D tiling"},
    {"notiling", DBG(NO_TILING), "Disable tiling"},
-   {"nodisplaytiling", DBG(NO_DISPLAY_TILING), "Disable display tiling"},
-   {"nodisplaydcc", DBG(NO_DISPLAY_DCC), "Disable display DCC"},
    {"nodcc", DBG(NO_DCC), "Disable DCC."},
    {"nodccclear", DBG(NO_DCC_CLEAR), "Disable DCC fast clear."},
    {"nodccfb", DBG(NO_DCC_FB), "Disable separate DCC on the main framebuffer"},
@@ -215,7 +213,7 @@ static void si_destroy_context(struct pipe_context *context)
    if (sctx->cs_preamble_gs_rings)
       si_pm4_free_state(sctx, sctx->cs_preamble_gs_rings, ~0);
    for (i = 0; i < ARRAY_SIZE(sctx->vgt_shader_config); i++)
-      si_pm4_free_state(sctx, sctx->vgt_shader_config[i], SI_STATE_IDX(vgt_shader_config));
+      si_pm4_delete_state(sctx, vgt_shader_config, sctx->vgt_shader_config[i]);
 
    if (sctx->fixed_func_tcs_shader.cso)
       sctx->b.delete_tcs_state(&sctx->b, sctx->fixed_func_tcs_shader.cso);
@@ -257,8 +255,6 @@ static void si_destroy_context(struct pipe_context *context)
       sctx->b.delete_compute_state(&sctx->b, sctx->cs_dcc_decompress);
    if (sctx->cs_dcc_retile)
       sctx->b.delete_compute_state(&sctx->b, sctx->cs_dcc_retile);
-   if (sctx->no_velems_state)
-      sctx->b.delete_vertex_elements_state(&sctx->b, sctx->no_velems_state);
 
    for (unsigned i = 0; i < ARRAY_SIZE(sctx->cs_fmask_expand); i++) {
       for (unsigned j = 0; j < ARRAY_SIZE(sctx->cs_fmask_expand[i]); j++) {
@@ -330,10 +326,6 @@ static void si_destroy_context(struct pipe_context *context)
    util_dynarray_fini(&sctx->resident_tex_needs_color_decompress);
    util_dynarray_fini(&sctx->resident_img_needs_color_decompress);
    util_dynarray_fini(&sctx->resident_tex_needs_depth_decompress);
-
-   if (!(sctx->context_flags & SI_CONTEXT_FLAG_AUX))
-      p_atomic_dec(&context->screen->num_contexts);
-
    FREE(sctx);
 }
 
@@ -391,9 +383,6 @@ static void si_emit_string_marker(struct pipe_context *ctx, const char *string, 
    struct si_context *sctx = (struct si_context *)ctx;
 
    dd_parse_apitrace_marker(string, len, &sctx->apitrace_call_number);
-
-   if (sctx->thread_trace_enabled)
-      si_write_user_event(sctx, &sctx->gfx_cs, UserEventTrigger, string, len);
 
    if (sctx->log)
       u_log_printf(sctx->log, "\nString marker: %*s\n", len, string);
@@ -470,7 +459,6 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
    sctx->b.destroy = si_destroy_context;
    sctx->screen = sscreen; /* Easy accessing of screen/winsys. */
    sctx->is_debug = (flags & PIPE_CONTEXT_DEBUG) != 0;
-   sctx->context_flags = flags;
 
    slab_create_child(&sctx->pool_transfers, &sscreen->pool_transfers);
    slab_create_child(&sctx->pool_transfers_unsync, &sscreen->pool_transfers);
@@ -509,21 +497,15 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       goto fail;
 
    /* Initialize public allocators. */
-   /* Unify uploaders as follows:
-    * - dGPUs with Smart Access Memory: there is only one uploader instance writing to VRAM.
-    * - APUs: There is only one uploader instance writing to RAM. VRAM has the same perf on APUs.
-    * - Other chips: The const uploader writes to VRAM and the stream uploader writes to RAM.
-    */
    bool smart_access_memory = sscreen->info.smart_access_memory;
-   bool is_apu = !sscreen->info.has_dedicated_vram;
    sctx->b.stream_uploader =
       u_upload_create(&sctx->b, 1024 * 1024, 0,
-                      smart_access_memory && !is_apu ? PIPE_USAGE_DEFAULT : PIPE_USAGE_STREAM,
+                      smart_access_memory ? PIPE_USAGE_DEFAULT : PIPE_USAGE_STREAM,
                       SI_RESOURCE_FLAG_32BIT); /* same flags as const_uploader */
    if (!sctx->b.stream_uploader)
       goto fail;
 
-   if (smart_access_memory || is_apu) {
+   if (smart_access_memory) {
       sctx->b.const_uploader = sctx->b.stream_uploader;
    } else {
       sctx->b.const_uploader =
@@ -534,21 +516,19 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
    }
 
    /* Border colors. */
-   if (sscreen->info.has_3d_cube_border_color_mipmap) {
-      sctx->border_color_table = malloc(SI_MAX_BORDER_COLORS * sizeof(*sctx->border_color_table));
-      if (!sctx->border_color_table)
-         goto fail;
+   sctx->border_color_table = malloc(SI_MAX_BORDER_COLORS * sizeof(*sctx->border_color_table));
+   if (!sctx->border_color_table)
+      goto fail;
 
-      sctx->border_color_buffer = si_resource(pipe_buffer_create(
-         screen, 0, PIPE_USAGE_DEFAULT, SI_MAX_BORDER_COLORS * sizeof(*sctx->border_color_table)));
-      if (!sctx->border_color_buffer)
-         goto fail;
+   sctx->border_color_buffer = si_resource(pipe_buffer_create(
+      screen, 0, PIPE_USAGE_DEFAULT, SI_MAX_BORDER_COLORS * sizeof(*sctx->border_color_table)));
+   if (!sctx->border_color_buffer)
+      goto fail;
 
-      sctx->border_color_map =
-         ws->buffer_map(sctx->border_color_buffer->buf, NULL, PIPE_MAP_WRITE);
-      if (!sctx->border_color_map)
-         goto fail;
-   }
+   sctx->border_color_map =
+      ws->buffer_map(sctx->border_color_buffer->buf, NULL, PIPE_MAP_WRITE);
+   if (!sctx->border_color_map)
+      goto fail;
 
    sctx->ngg = sscreen->use_ngg;
 
@@ -600,15 +580,14 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       sctx->noop_dsa = util_blitter_get_noop_dsa_state(sctx->blitter);
       sctx->queued.named.dsa = sctx->noop_dsa;
 
-      sctx->no_velems_state = sctx->b.create_vertex_elements_state(&sctx->b, 0, NULL);
-      sctx->vertex_elements = sctx->no_velems_state;
-
       sctx->discard_rasterizer_state = util_blitter_get_discard_rasterizer_state(sctx->blitter);
       sctx->queued.named.rasterizer = sctx->discard_rasterizer_state;
 
       si_init_draw_functions(sctx);
 
-      si_initialize_prim_discard_tunables(sscreen, flags & SI_CONTEXT_FLAG_AUX,
+      /* If aux_context == NULL, we are initializing aux_context right now. */
+      bool is_aux_context = !sscreen->aux_context;
+      si_initialize_prim_discard_tunables(sscreen, is_aux_context,
                                           &sctx->prim_discard_vertex_count_threshold,
                                           &sctx->index_ring_size_per_ib);
    } else {
@@ -662,15 +641,15 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       unsigned start_shader = sctx->has_graphics ? 0 : PIPE_SHADER_COMPUTE;
       for (shader = start_shader; shader < SI_NUM_SHADERS; shader++) {
          for (i = 0; i < SI_NUM_CONST_BUFFERS; i++) {
-            sctx->b.set_constant_buffer(&sctx->b, shader, i, false, &sctx->null_const_buf);
+            sctx->b.set_constant_buffer(&sctx->b, shader, i, &sctx->null_const_buf);
          }
       }
 
-      si_set_internal_const_buffer(sctx, SI_HS_CONST_DEFAULT_TESS_LEVELS, &sctx->null_const_buf);
-      si_set_internal_const_buffer(sctx, SI_VS_CONST_INSTANCE_DIVISORS, &sctx->null_const_buf);
-      si_set_internal_const_buffer(sctx, SI_VS_CONST_CLIP_PLANES, &sctx->null_const_buf);
-      si_set_internal_const_buffer(sctx, SI_PS_CONST_POLY_STIPPLE, &sctx->null_const_buf);
-      si_set_internal_const_buffer(sctx, SI_PS_CONST_SAMPLE_POSITIONS, &sctx->null_const_buf);
+      si_set_rw_buffer(sctx, SI_HS_CONST_DEFAULT_TESS_LEVELS, &sctx->null_const_buf);
+      si_set_rw_buffer(sctx, SI_VS_CONST_INSTANCE_DIVISORS, &sctx->null_const_buf);
+      si_set_rw_buffer(sctx, SI_VS_CONST_CLIP_PLANES, &sctx->null_const_buf);
+      si_set_rw_buffer(sctx, SI_PS_CONST_POLY_STIPPLE, &sctx->null_const_buf);
+      si_set_rw_buffer(sctx, SI_PS_CONST_SAMPLE_POSITIONS, &sctx->null_const_buf);
    }
 
    uint64_t max_threads_per_block;
@@ -736,11 +715,8 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
        */
       uint32_t clear_value = 0;
       si_clear_buffer(sctx, sctx->null_const_buf.buffer, 0, sctx->null_const_buf.buffer->width0,
-                      &clear_value, 4, SI_COHERENCY_SHADER, SI_CP_DMA_CLEAR_METHOD);
+                      &clear_value, 4, SI_COHERENCY_SHADER, true);
    }
-
-   if (!(flags & SI_CONTEXT_FLAG_AUX))
-      p_atomic_inc(&screen->num_contexts);
 
    sctx->initial_gfx_cs_size = sctx->gfx_cs.current.cdw;
    return &sctx->b;
@@ -1326,11 +1302,8 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
 
    /* Create the auxiliary context. This must be done last. */
    sscreen->aux_context = si_create_context(
-      &sscreen->b,
-      SI_CONTEXT_FLAG_AUX |
-      (sscreen->options.aux_debug ? PIPE_CONTEXT_DEBUG : 0) |
-      (sscreen->info.has_graphics ? 0 : PIPE_CONTEXT_COMPUTE_ONLY));
-
+      &sscreen->b, (sscreen->options.aux_debug ? PIPE_CONTEXT_DEBUG : 0) |
+                      (sscreen->info.has_graphics ? 0 : PIPE_CONTEXT_COMPUTE_ONLY));
    if (sscreen->options.aux_debug) {
       struct u_log_context *log = CALLOC_STRUCT(u_log_context);
       u_log_context_init(log);
@@ -1361,7 +1334,7 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
 
    ac_print_shadowed_regs(&sscreen->info);
 
-   STATIC_ASSERT(sizeof(union si_vgt_stages_key) == 1);
+   STATIC_ASSERT(sizeof(union si_vgt_stages_key) == 4);
    return &sscreen->b;
 }
 

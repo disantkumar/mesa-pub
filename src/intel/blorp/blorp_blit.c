@@ -137,7 +137,7 @@ blorp_create_nir_tex_instr(nir_builder *b, struct brw_blorp_blit_vars *v,
 
    tex->op = op;
 
-   tex->dest_type = dst_type | 32;
+   tex->dest_type = dst_type;
    tex->is_array = false;
    tex->is_shadow = false;
 
@@ -2330,7 +2330,6 @@ blorp_blit(struct blorp_batch *batch,
 {
    struct blorp_params params;
    blorp_params_init(&params);
-   params.snapshot_type = INTEL_SNAPSHOT_BLIT;
 
    /* We cannot handle combined depth and stencil. */
    if (src_surf->surf->usage & ISL_SURF_USAGE_STENCIL_BIT)
@@ -2639,7 +2638,6 @@ blorp_copy(struct blorp_batch *batch,
       return;
 
    blorp_params_init(&params);
-   params.snapshot_type = INTEL_SNAPSHOT_COPY;
    brw_blorp_surface_info_init(batch->blorp, &params.src, src_surf, src_level,
                                src_layer, ISL_FORMAT_UNSUPPORTED, false);
    brw_blorp_surface_info_init(batch->blorp, &params.dst, dst_surf, dst_level,

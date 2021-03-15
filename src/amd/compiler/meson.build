@@ -99,7 +99,7 @@ _libaco = static_library(
   ],
   dependencies : [
     dep_llvm, dep_thread, dep_elf, dep_libdrm_amdgpu, dep_valgrind,
-    idep_nir_headers, idep_amdgfxregs_h, idep_vulkan_util_headers,
+    idep_nir_headers, idep_amdgfxregs_h,
   ],
   gnu_symbol_visibility : 'hidden',
   build_by_default : true,

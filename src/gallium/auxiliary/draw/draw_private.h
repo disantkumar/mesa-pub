@@ -46,7 +46,7 @@
 
 #include "tgsi/tgsi_scan.h"
 
-#ifdef DRAW_LLVM_AVAILABLE
+#ifdef LLVM_AVAILABLE
 struct gallivm_state;
 #endif
 

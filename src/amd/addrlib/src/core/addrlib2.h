@@ -67,7 +67,6 @@ struct SwizzleModeFlags
 
     UINT_32 isT             : 1;    // T mode
 
-    // GFX10
     UINT_32 isRtOpt         : 1;    // mode opt for render target
 
     UINT_32 reserved        : 20;   // Reserved bits
@@ -541,18 +540,12 @@ protected:
         return ADDR_NOTSUPPORTED;
     }
 
-    virtual ADDR_E_RETURNCODE HwlSupportComputeDccAddrFromCoord(
-        const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn)
-    {
-        ADDR_NOT_IMPLEMENTED();
-        return ADDR_NOTSUPPORTED;
-    }
-
-    virtual VOID HwlComputeDccAddrFromCoord(
+    virtual ADDR_E_RETURNCODE HwlComputeDccAddrFromCoord(
         const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn,
         ADDR2_COMPUTE_DCC_ADDRFROMCOORD_OUTPUT*      pOut)
     {
         ADDR_NOT_IMPLEMENTED();
+        return ADDR_NOTSUPPORTED;
     }
 
     virtual ADDR_E_RETURNCODE HwlComputeCmaskAddrFromCoord(
@@ -911,12 +904,6 @@ protected:
         ADDR2_SWMODE_SET& allowedSwModeSet,
         AddrResourceType  resourceType,
         UINT_32           elemLog2) const;
-
-#if DEBUG
-    VOID ValidateStereoInfo(
-        const ADDR2_COMPUTE_SURFACE_INFO_INPUT* pIn,
-        const ADDR2_COMPUTE_SURFACE_INFO_OUTPUT* pOut) const;
-#endif
 
     UINT_32 m_se;                       ///< Number of shader engine
     UINT_32 m_rbPerSe;                  ///< Number of render backend per shader engine

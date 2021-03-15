@@ -77,7 +77,8 @@ bool collect_phi_info(cssa_ctx& ctx)
             } else if (op.isConstant()) {
                /* in theory, we could insert the definition there... */
                def_points[i] = 0;
-            } else if (op.isTemp()) {
+            } else {
+               assert(op.isTemp());
                unsigned pred = preds[i];
                do {
                   def_points[i] = pred;
@@ -86,10 +87,6 @@ bool collect_phi_info(cssa_ctx& ctx)
                          ctx.program->blocks[pred].linear_idom;
                } while (def_points[i] != pred &&
                         ctx.live_vars.live_out[pred].count(op.tempId()));
-            } else {
-               /* no need to insert a copy of the exec mask */
-               assert(op.isFixed() && op.physReg() == exec);
-               def_points[i] = preds[i];
             }
          }
 
@@ -99,8 +96,8 @@ bool collect_phi_info(cssa_ctx& ctx)
             if (op.isUndefined())
                continue;
             /* check if the operand comes from the exec mask of a predecessor */
-            if (op.isFixed() && op.physReg() == exec)
-               continue;
+            if (op.isTemp() && op.getTemp() == ctx.program->blocks[preds[i]].live_out_exec)
+               op.setFixed(exec);
 
             bool interferes = false;
             unsigned idom = is_logical ?
@@ -183,7 +180,7 @@ void insert_parallelcopies(cssa_ctx& ctx)
       Block& block = ctx.program->blocks[entry.first];
       std::vector<aco_ptr<Instruction>>::iterator it = block.instructions.end();
       --it;
-      assert((*it)->isBranch());
+      assert((*it)->format == Format::PSEUDO_BRANCH);
 
       Builder bld(ctx.program);
       bld.reset(&block.instructions, it);

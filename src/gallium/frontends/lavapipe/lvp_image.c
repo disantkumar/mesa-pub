@@ -92,7 +92,7 @@ lvp_image_create(VkDevice _device,
    return VK_SUCCESS;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
+VkResult
 lvp_CreateImage(VkDevice device,
                 const VkImageCreateInfo *pCreateInfo,
                 const VkAllocationCallbacks *pAllocator,
@@ -107,7 +107,7 @@ lvp_CreateImage(VkDevice device,
       pImage);
 }
 
-VKAPI_ATTR void VKAPI_CALL
+void
 lvp_DestroyImage(VkDevice _device, VkImage _image,
                  const VkAllocationCallbacks *pAllocator)
 {
@@ -121,7 +121,7 @@ lvp_DestroyImage(VkDevice _device, VkImage _image,
    vk_free2(&device->vk.alloc, pAllocator, image);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
+VkResult
 lvp_CreateImageView(VkDevice _device,
                     const VkImageViewCreateInfo *pCreateInfo,
                     const VkAllocationCallbacks *pAllocator,
@@ -150,7 +150,7 @@ lvp_CreateImageView(VkDevice _device,
    return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL
+void
 lvp_DestroyImageView(VkDevice _device, VkImageView _iview,
                      const VkAllocationCallbacks *pAllocator)
 {
@@ -165,7 +165,7 @@ lvp_DestroyImageView(VkDevice _device, VkImageView _iview,
    vk_free2(&device->vk.alloc, pAllocator, iview);
 }
 
-VKAPI_ATTR void VKAPI_CALL lvp_GetImageSubresourceLayout(
+void lvp_GetImageSubresourceLayout(
     VkDevice                                    _device,
     VkImage                                     _image,
     const VkImageSubresource*                   pSubresource,
@@ -227,7 +227,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetImageSubresourceLayout(
    }
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateBuffer(
+VkResult lvp_CreateBuffer(
     VkDevice                                    _device,
     const VkBufferCreateInfo*                   pCreateInfo,
     const VkAllocationCallbacks*                pAllocator,
@@ -280,7 +280,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateBuffer(
    return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL lvp_DestroyBuffer(
+void lvp_DestroyBuffer(
     VkDevice                                    _device,
     VkBuffer                                    _buffer,
     const VkAllocationCallbacks*                pAllocator)
@@ -296,7 +296,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyBuffer(
    vk_free2(&device->vk.alloc, pAllocator, buffer);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
+VkResult
 lvp_CreateBufferView(VkDevice _device,
                      const VkBufferViewCreateInfo *pCreateInfo,
                      const VkAllocationCallbacks *pAllocator,
@@ -322,7 +322,7 @@ lvp_CreateBufferView(VkDevice _device,
    return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL
+void
 lvp_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
                       const VkAllocationCallbacks *pAllocator)
 {

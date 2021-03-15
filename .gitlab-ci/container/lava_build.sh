@@ -18,19 +18,13 @@ check_minio "${CI_PROJECT_PATH}"
 . .gitlab-ci/container/container_pre_build.sh
 
 # Install rust, which we'll be using for deqp-runner.  It will be cleaned up at the end.
-. .gitlab-ci/container/build-rust.sh
+. .gitlab-ci/build-rust.sh
 
 if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
     GCC_ARCH="aarch64-linux-gnu"
     KERNEL_ARCH="arm64"
     DEFCONFIG="arch/arm64/configs/defconfig"
-    DEVICE_TREES="arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb"
-    DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb"
-    DEVICE_TREES+=" arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb"
-    DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb"
-    DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8016-sbc.dtb"
-    DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8096-db820c.dtb"
-    DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
+    DEVICE_TREES="arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb arch/arm64/boot/dts/qcom/apq8016-sbc.dtb arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
     KERNEL_IMAGE_NAME="Image"
 elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     GCC_ARCH="arm-linux-gnueabihf"
@@ -38,7 +32,7 @@ elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     DEFCONFIG="arch/arm/configs/multi_v7_defconfig"
     DEVICE_TREES="arch/arm/boot/dts/rk3288-veyron-jaq.dtb arch/arm/boot/dts/sun8i-h3-libretech-all-h3-cc.dtb"
     KERNEL_IMAGE_NAME="zImage"
-    . .gitlab-ci/container/create-cross-file.sh armhf
+    . .gitlab-ci/create-cross-file.sh armhf
 else
     GCC_ARCH="x86_64-linux-gnu"
     KERNEL_ARCH="x86_64"
@@ -117,26 +111,26 @@ mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}
 
 
 ############### Build dEQP runner
-. .gitlab-ci/container/build-deqp-runner.sh
+. .gitlab-ci/build-deqp-runner.sh
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin
 mv /usr/local/bin/deqp-runner /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/.
 
 
 ############### Build dEQP
-DEQP_TARGET=surfaceless . .gitlab-ci/container/build-deqp.sh
+DEQP_TARGET=surfaceless . .gitlab-ci/build-deqp.sh
 
 mv /deqp /lava-files/rootfs-${DEBIAN_ARCH}/.
 
 
 ############### Build piglit
 if [ -n "$INCLUDE_PIGLIT" ]; then
-    . .gitlab-ci/container/build-piglit.sh
+    . .gitlab-ci/build-piglit.sh
     mv /piglit /lava-files/rootfs-${DEBIAN_ARCH}/.
 fi
 
 
 ############### Build apitrace
-. .gitlab-ci/container/build-apitrace.sh
+. .gitlab-ci/build-apitrace.sh
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
 mv /apitrace/build /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
 rm -rf /apitrace
@@ -148,7 +142,7 @@ rm -rf /waffle
 
 ############### Build renderdoc
 EXTRA_CMAKE_ARGS+=" -DENABLE_XCB=false"
-. .gitlab-ci/container/build-renderdoc.sh
+. .gitlab-ci/build-renderdoc.sh
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/renderdoc
 mv /renderdoc/build /lava-files/rootfs-${DEBIAN_ARCH}/renderdoc
 rm -rf /renderdoc
@@ -156,7 +150,7 @@ rm -rf /renderdoc
 
 ############### Build libdrm
 EXTRA_MESON_ARGS+=" -D prefix=/libdrm"
-. .gitlab-ci/container/build-libdrm.sh
+. .gitlab-ci/build-libdrm.sh
 
 
 ############### Cross-build kernel
@@ -179,7 +173,11 @@ if [ -n "$INSTALL_KERNEL_MODULES" ]; then
     sed -i 's/=m/=n/g' ${DEFCONFIG}
 fi
 
-./scripts/kconfig/merge_config.sh ${DEFCONFIG} ../.gitlab-ci/container/${KERNEL_ARCH}.config
+# Force db410c to host mode instead of OTG (which is otherwise selected by
+# default due to our micro cable for fastboot)
+sed -i 's/dr_mode = "otg"/dr_mode = "host"/' arch/arm64/boot/dts/qcom/apq8016-sbc.dtsi
+
+./scripts/kconfig/merge_config.sh ${DEFCONFIG} ../.gitlab-ci/${KERNEL_ARCH}.config
 make ${KERNEL_IMAGE_NAME}
 for image in ${KERNEL_IMAGE_NAME}; do
     cp arch/${KERNEL_ARCH}/boot/${image} /lava-files/.
@@ -226,7 +224,7 @@ debootstrap \
 cat /lava-files/rootfs-${DEBIAN_ARCH}/debootstrap/debootstrap.log
 set -e
 
-cp .gitlab-ci/container/create-rootfs.sh /lava-files/rootfs-${DEBIAN_ARCH}/.
+cp .gitlab-ci/create-rootfs.sh /lava-files/rootfs-${DEBIAN_ARCH}/.
 cp .gitlab-ci/container/llvm-snapshot.gpg.key /lava-files/rootfs-${DEBIAN_ARCH}/.
 chroot /lava-files/rootfs-${DEBIAN_ARCH} \
     sh -c "INCLUDE_PIGLIT=$INCLUDE_PIGLIT sh /create-rootfs.sh"

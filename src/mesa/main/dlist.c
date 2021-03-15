@@ -63,7 +63,6 @@
 #include "varray.h"
 #include "arbprogram.h"
 #include "transformfeedback.h"
-#include "glthread_marshal.h"
 
 #include "math/m_matrix.h"
 
@@ -520,6 +519,7 @@ typedef enum
    OPCODE_MATERIAL,
    OPCODE_BEGIN,
    OPCODE_END,
+   OPCODE_RECTF,
    OPCODE_EVAL_C1,
    OPCODE_EVAL_C2,
    OPCODE_EVAL_P1,
@@ -1157,16 +1157,12 @@ void
 _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
 {
    Node *n, *block;
-
-   if (!dlist->Head) {
-      free(dlist->Label);
-      free(dlist);
-      return;
-   }
+   GLboolean done;
 
    n = block = dlist->Head;
 
-   while (1) {
+   done = block ? GL_FALSE : GL_TRUE;
+   while (!done) {
       const OpCode opcode = n[0].opcode;
 
       /* check for extension opcodes first */
@@ -1384,21 +1380,25 @@ _mesa_delete_list(struct gl_context *ctx, struct gl_display_list *dlist)
             n = (Node *) get_pointer(&n[1]);
             free(block);
             block = n;
-            continue;
+            break;
          case OPCODE_END_OF_LIST:
             free(block);
-            free(dlist->Label);
-            free(dlist);
-            return;
+            done = GL_TRUE;
+            break;
          default:
             /* just increment 'n' pointer, below */
             ;
          }
 
-         assert(InstSize[opcode] > 0);
-         n += InstSize[opcode];
+         if (opcode != OPCODE_CONTINUE) {
+            assert(InstSize[opcode] > 0);
+            n += InstSize[opcode];
+         }
       }
    }
+
+   free(dlist->Label);
+   free(dlist);
 }
 
 
@@ -1455,6 +1455,63 @@ destroy_list(struct gl_context *ctx, GLuint list)
 
    _mesa_delete_list(ctx, dlist);
    _mesa_HashRemove(ctx->Shared->DisplayList, list);
+}
+
+
+/*
+ * Translate the nth element of list from <type> to GLint.
+ */
+static GLint
+translate_id(GLsizei n, GLenum type, const GLvoid * list)
+{
+   GLbyte *bptr;
+   GLubyte *ubptr;
+   GLshort *sptr;
+   GLushort *usptr;
+   GLint *iptr;
+   GLuint *uiptr;
+   GLfloat *fptr;
+
+   switch (type) {
+   case GL_BYTE:
+      bptr = (GLbyte *) list;
+      return (GLint) bptr[n];
+   case GL_UNSIGNED_BYTE:
+      ubptr = (GLubyte *) list;
+      return (GLint) ubptr[n];
+   case GL_SHORT:
+      sptr = (GLshort *) list;
+      return (GLint) sptr[n];
+   case GL_UNSIGNED_SHORT:
+      usptr = (GLushort *) list;
+      return (GLint) usptr[n];
+   case GL_INT:
+      iptr = (GLint *) list;
+      return iptr[n];
+   case GL_UNSIGNED_INT:
+      uiptr = (GLuint *) list;
+      return (GLint) uiptr[n];
+   case GL_FLOAT:
+      fptr = (GLfloat *) list;
+      return (GLint) floorf(fptr[n]);
+   case GL_2_BYTES:
+      ubptr = ((GLubyte *) list) + 2 * n;
+      return (GLint) ubptr[0] * 256
+           + (GLint) ubptr[1];
+   case GL_3_BYTES:
+      ubptr = ((GLubyte *) list) + 3 * n;
+      return (GLint) ubptr[0] * 65536
+           + (GLint) ubptr[1] * 256
+           + (GLint) ubptr[2];
+   case GL_4_BYTES:
+      ubptr = ((GLubyte *) list) + 4 * n;
+      return (GLint) ubptr[0] * 16777216
+           + (GLint) ubptr[1] * 65536
+           + (GLint) ubptr[2] * 256
+           + (GLint) ubptr[3];
+   default:
+      return 0;
+   }
 }
 
 
@@ -6042,6 +6099,66 @@ save_End(void)
    if (ctx->ExecuteFlag) {
       CALL_End(ctx->Exec, ());
    }
+}
+
+static void GLAPIENTRY
+save_Rectf(GLfloat a, GLfloat b, GLfloat c, GLfloat d)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   Node *n;
+   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
+   n = alloc_instruction(ctx, OPCODE_RECTF, 4);
+   if (n) {
+      n[1].f = a;
+      n[2].f = b;
+      n[3].f = c;
+      n[4].f = d;
+   }
+   if (ctx->ExecuteFlag) {
+      CALL_Rectf(ctx->Exec, (a, b, c, d));
+   }
+}
+
+static void GLAPIENTRY
+save_Rectd(GLdouble x1, GLdouble y1, GLdouble x2, GLdouble y2)
+{
+   save_Rectf((GLfloat) x1, (GLfloat) y1, (GLfloat) x2, (GLfloat) y2);
+}
+
+static void GLAPIENTRY
+save_Rectdv(const GLdouble *v1, const GLdouble *v2)
+{
+   save_Rectf((GLfloat) v1[0], (GLfloat) v1[1], (GLfloat) v2[0], (GLfloat) v2[1]);
+}
+
+static void GLAPIENTRY
+save_Rectfv(const GLfloat *v1, const GLfloat *v2)
+{
+   save_Rectf(v1[0], v1[1], v2[0], v2[1]);
+}
+
+static void GLAPIENTRY
+save_Recti(GLint x1, GLint y1, GLint x2, GLint y2)
+{
+   save_Rectf((GLfloat) x1, (GLfloat) y1, (GLfloat) x2, (GLfloat) y2);
+}
+
+static void GLAPIENTRY
+save_Rectiv(const GLint *v1, const GLint *v2)
+{
+   save_Rectf((GLfloat) v1[0], (GLfloat) v1[1], (GLfloat) v2[0], (GLfloat) v2[1]);
+}
+
+static void GLAPIENTRY
+save_Rects(GLshort x1, GLshort y1, GLshort x2, GLshort y2)
+{
+   save_Rectf((GLfloat) x1, (GLfloat) y1, (GLfloat) x2, (GLfloat) y2);
+}
+
+static void GLAPIENTRY
+save_Rectsv(const GLshort *v1, const GLshort *v2)
+{
+   save_Rectf((GLfloat) v1[0], (GLfloat) v1[1], (GLfloat) v2[0], (GLfloat) v2[1]);
 }
 
 static void GLAPIENTRY
@@ -11234,9 +11351,9 @@ _mesa_compile_error(struct gl_context *ctx, GLenum error, const char *s)
 /**
  * Test if ID names a display list.
  */
-bool
-_mesa_get_list(struct gl_context *ctx, GLuint list,
-               struct gl_display_list **dlist)
+static GLboolean
+islist(struct gl_context *ctx, GLuint list,
+       struct gl_display_list ** dlist)
 {
    struct gl_display_list * dl =
       list > 0 ? _mesa_lookup_list(ctx, list) : NULL;
@@ -11265,8 +11382,9 @@ execute_list(struct gl_context *ctx, GLuint list)
 {
    struct gl_display_list *dlist;
    Node *n;
+   GLboolean done;
 
-   if (list == 0 || !_mesa_get_list(ctx, list, &dlist))
+   if (list == 0 || !islist(ctx, list, &dlist))
       return;
 
    if (ctx->ListState.CallDepth == MAX_LIST_NESTING) {
@@ -11280,7 +11398,8 @@ execute_list(struct gl_context *ctx, GLuint list)
 
    n = dlist->Head;
 
-   while (1) {
+   done = GL_FALSE;
+   while (!done) {
       const OpCode opcode = n[0].opcode;
 
       if (is_ext_opcode(opcode)) {
@@ -12842,6 +12961,9 @@ execute_list(struct gl_context *ctx, GLuint list)
          case OPCODE_END:
             CALL_End(ctx->Exec, ());
             break;
+         case OPCODE_RECTF:
+            CALL_Rectf(ctx->Exec, (n[1].f, n[2].f, n[3].f, n[4].f));
+            break;
          case OPCODE_EVAL_C1:
             CALL_EvalCoord1f(ctx->Exec, (n[1].f));
             break;
@@ -13457,9 +13579,12 @@ execute_list(struct gl_context *ctx, GLuint list)
 
          case OPCODE_CONTINUE:
             n = (Node *) get_pointer(&n[1]);
-            continue;
+            break;
          case OPCODE_NOP:
             /* no-op */
+            break;
+         case OPCODE_END_OF_LIST:
+            done = GL_TRUE;
             break;
          default:
             {
@@ -13468,18 +13593,20 @@ execute_list(struct gl_context *ctx, GLuint list)
                              (int) opcode);
                _mesa_problem(ctx, "%s", msg);
             }
-            FALLTHROUGH;
-         case OPCODE_END_OF_LIST:
-            vbo_save_EndCallList(ctx);
-            ctx->ListState.CallDepth--;
-            return;
+            done = GL_TRUE;
          }
 
          /* increment n to point to next compiled command */
-         assert(InstSize[opcode] > 0);
-         n += InstSize[opcode];
+         if (opcode != OPCODE_CONTINUE) {
+            assert(InstSize[opcode] > 0);
+            n += InstSize[opcode];
+         }
       }
    }
+
+   vbo_save_EndCallList(ctx);
+
+   ctx->ListState.CallDepth--;
 }
 
 
@@ -13495,9 +13622,9 @@ GLboolean GLAPIENTRY
 _mesa_IsList(GLuint list)
 {
    GET_CURRENT_CONTEXT(ctx);
-   FLUSH_VERTICES(ctx, 0, 0);      /* must be called before assert */
+   FLUSH_VERTICES(ctx, 0);      /* must be called before assert */
    ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, GL_FALSE);
-   return _mesa_get_list(ctx, list, NULL);
+   return islist(ctx, list, NULL);
 }
 
 
@@ -13509,7 +13636,7 @@ _mesa_DeleteLists(GLuint list, GLsizei range)
 {
    GET_CURRENT_CONTEXT(ctx);
    GLuint i;
-   FLUSH_VERTICES(ctx, 0, 0);      /* must be called before assert */
+   FLUSH_VERTICES(ctx, 0);      /* must be called before assert */
    ASSERT_OUTSIDE_BEGIN_END(ctx);
 
    if (range < 0) {
@@ -13543,7 +13670,7 @@ _mesa_GenLists(GLsizei range)
 {
    GET_CURRENT_CONTEXT(ctx);
    GLuint base;
-   FLUSH_VERTICES(ctx, 0, 0);      /* must be called before assert */
+   FLUSH_VERTICES(ctx, 0);      /* must be called before assert */
    ASSERT_OUTSIDE_BEGIN_END_WITH_RETVAL(ctx, 0);
 
    if (range < 0) {
@@ -13653,7 +13780,7 @@ _mesa_EndList(void)
 {
    GET_CURRENT_CONTEXT(ctx);
    SAVE_FLUSH_VERTICES(ctx);
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
 
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx, "glEndList\n");
@@ -13722,9 +13849,8 @@ _mesa_CallList(GLuint list)
    if (0)
       mesa_print_display_list( list );
 
-   /* Save the CompileFlag status, turn it off, execute the display list,
-    * and restore the CompileFlag. This is needed for GL_COMPILE_AND_EXECUTE
-    * because the call is already recorded and we just need to execute it.
+   /* VERY IMPORTANT:  Save the CompileFlag status, turn it off,
+    * execute the display list, and restore the CompileFlag.
     */
    save_compile_flag = ctx->CompileFlag;
    if (save_compile_flag) {
@@ -13811,12 +13937,26 @@ void GLAPIENTRY
 _mesa_CallLists(GLsizei n, GLenum type, const GLvoid * lists)
 {
    GET_CURRENT_CONTEXT(ctx);
+   GLint i;
    GLboolean save_compile_flag;
 
    if (MESA_VERBOSE & VERBOSE_API)
       _mesa_debug(ctx, "glCallLists %d\n", n);
 
-   if (type < GL_BYTE || type > GL_4_BYTES) {
+   switch (type) {
+   case GL_BYTE:
+   case GL_UNSIGNED_BYTE:
+   case GL_SHORT:
+   case GL_UNSIGNED_SHORT:
+   case GL_INT:
+   case GL_UNSIGNED_INT:
+   case GL_FLOAT:
+   case GL_2_BYTES:
+   case GL_3_BYTES:
+   case GL_4_BYTES:
+      /* OK */
+      break;
+   default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glCallLists(type)");
       return;
    }
@@ -13833,87 +13973,15 @@ _mesa_CallLists(GLsizei n, GLenum type, const GLvoid * lists)
       return;
    }
 
-   /* Save the CompileFlag status, turn it off, execute the display lists,
-    * and restore the CompileFlag. This is needed for GL_COMPILE_AND_EXECUTE
-    * because the call is already recorded and we just need to execute it.
+   /* Save the CompileFlag status, turn it off, execute display list,
+    * and restore the CompileFlag.
     */
    save_compile_flag = ctx->CompileFlag;
    ctx->CompileFlag = GL_FALSE;
 
-   GLbyte *bptr;
-   GLubyte *ubptr;
-   GLshort *sptr;
-   GLushort *usptr;
-   GLint *iptr;
-   GLuint *uiptr;
-   GLfloat *fptr;
-
-   GLuint base = ctx->List.ListBase;
-
-   /* A loop inside a switch is faster than a switch inside a loop. */
-   switch (type) {
-   case GL_BYTE:
-      bptr = (GLbyte *) lists;
-      for (unsigned i = 0; i < n; i++)
-         execute_list(ctx, base + (int)bptr[i]);
-      break;
-   case GL_UNSIGNED_BYTE:
-      ubptr = (GLubyte *) lists;
-      for (unsigned i = 0; i < n; i++)
-         execute_list(ctx, base + (int)ubptr[i]);
-      break;
-   case GL_SHORT:
-      sptr = (GLshort *) lists;
-      for (unsigned i = 0; i < n; i++)
-         execute_list(ctx, base + (int)sptr[i]);
-      break;
-   case GL_UNSIGNED_SHORT:
-      usptr = (GLushort *) lists;
-      for (unsigned i = 0; i < n; i++)
-         execute_list(ctx, base + (int)usptr[i]);
-      break;
-   case GL_INT:
-      iptr = (GLint *) lists;
-      for (unsigned i = 0; i < n; i++)
-         execute_list(ctx, base + (int)iptr[i]);
-      break;
-   case GL_UNSIGNED_INT:
-      uiptr = (GLuint *) lists;
-      for (unsigned i = 0; i < n; i++)
-         execute_list(ctx, base + (int)uiptr[i]);
-      break;
-   case GL_FLOAT:
-      fptr = (GLfloat *) lists;
-      for (unsigned i = 0; i < n; i++)
-         execute_list(ctx, base + (int)fptr[i]);
-      break;
-   case GL_2_BYTES:
-      ubptr = (GLubyte *) lists;
-      for (unsigned i = 0; i < n; i++) {
-         execute_list(ctx, base +
-                      (int)ubptr[2 * i] * 256 +
-                      (int)ubptr[2 * i + 1]);
-      }
-      break;
-   case GL_3_BYTES:
-      ubptr = (GLubyte *) lists;
-      for (unsigned i = 0; i < n; i++) {
-         execute_list(ctx, base +
-                      (int)ubptr[3 * i] * 65536 +
-                      (int)ubptr[3 * i + 1] * 256 +
-                      (int)ubptr[3 * i + 2]);
-      }
-      break;
-   case GL_4_BYTES:
-      ubptr = (GLubyte *) lists;
-      for (unsigned i = 0; i < n; i++) {
-         execute_list(ctx, base +
-                      (int)ubptr[4 * i] * 16777216 +
-                      (int)ubptr[4 * i + 1] * 65536 +
-                      (int)ubptr[4 * i + 2] * 256 +
-                      (int)ubptr[4 * i + 3]);
-      }
-      break;
+   for (i = 0; i < n; i++) {
+      GLuint list = (GLuint) (ctx->List.ListBase + translate_id(i, type, lists));
+      execute_list(ctx, list);
    }
 
    ctx->CompileFlag = save_compile_flag;
@@ -13936,7 +14004,7 @@ void GLAPIENTRY
 _mesa_ListBase(GLuint base)
 {
    GET_CURRENT_CONTEXT(ctx);
-   FLUSH_VERTICES(ctx, 0, GL_LIST_BIT);   /* must be called before assert */
+   FLUSH_VERTICES(ctx, 0);      /* must be called before assert */
    ASSERT_OUTSIDE_BEGIN_END(ctx);
    ctx->List.ListBase = base;
 }
@@ -14074,6 +14142,14 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_RasterPos4s(table, save_RasterPos4s);
    SET_RasterPos4sv(table, save_RasterPos4sv);
    SET_ReadBuffer(table, save_ReadBuffer);
+   SET_Rectf(table, save_Rectf);
+   SET_Rectd(table, save_Rectd);
+   SET_Rectdv(table, save_Rectdv);
+   SET_Rectfv(table, save_Rectfv);
+   SET_Recti(table, save_Recti);
+   SET_Rectiv(table, save_Rectiv);
+   SET_Rects(table, save_Rects);
+   SET_Rectsv(table, save_Rectsv);
    SET_Rotated(table, save_Rotated);
    SET_Rotatef(table, save_Rotatef);
    SET_Scaled(table, save_Scaled);
@@ -14609,6 +14685,7 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
 {
    struct gl_display_list *dlist;
    Node *n;
+   GLboolean done;
    FILE *f = stdout;
 
    if (fname) {
@@ -14617,19 +14694,17 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
          return;
    }
 
-   if (!_mesa_get_list(ctx, list, &dlist)) {
+   if (!islist(ctx, list, &dlist)) {
       fprintf(f, "%u is not a display list ID\n", list);
-      fflush(f);
-      if (fname)
-         fclose(f);
-      return;
+      goto out;
    }
 
    n = dlist->Head;
 
    fprintf(f, "START-LIST %u, address %p\n", list, (void *) n);
 
-   while (1) {
+   done = n ? GL_FALSE : GL_TRUE;
+   while (!done) {
       const OpCode opcode = n[0].opcode;
 
       if (is_ext_opcode(opcode)) {
@@ -14848,6 +14923,10 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
          case OPCODE_END:
             fprintf(f, "END\n");
             break;
+         case OPCODE_RECTF:
+            fprintf(f, "RECTF %f %f %f %f\n", n[1].f, n[2].f, n[3].f,
+                         n[4].f);
+            break;
          case OPCODE_EVAL_C1:
             fprintf(f, "EVAL_C1 %f\n", n[1].f);
             break;
@@ -14876,117 +14955,40 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
          case OPCODE_CONTINUE:
             fprintf(f, "DISPLAY-LIST-CONTINUE\n");
             n = (Node *) get_pointer(&n[1]);
-            continue;
+            break;
          case OPCODE_NOP:
             fprintf(f, "NOP\n");
+            break;
+         case OPCODE_END_OF_LIST:
+            fprintf(f, "END-LIST %u\n", list);
+            done = GL_TRUE;
             break;
          default:
             if (opcode < 0 || opcode > OPCODE_END_OF_LIST) {
                printf
                   ("ERROR IN DISPLAY LIST: opcode = %d, address = %p\n",
                    opcode, (void *) n);
-            } else {
+               goto out;
+            }
+            else {
                fprintf(f, "command %d, %u operands\n", opcode,
                             InstSize[opcode]);
-               break;
             }
-            FALLTHROUGH;
-         case OPCODE_END_OF_LIST:
-            fprintf(f, "END-LIST %u\n", list);
-            fflush(f);
-            if (fname)
-               fclose(f);
-            return;
          }
-
          /* increment n to point to next compiled command */
-         assert(InstSize[opcode] > 0);
-         n += InstSize[opcode];
+         if (opcode != OPCODE_CONTINUE) {
+            assert(InstSize[opcode] > 0);
+            n += InstSize[opcode];
+         }
       }
    }
+
+ out:
+   fflush(f);
+   if (fname)
+      fclose(f);
 }
 
-
-void
-_mesa_glthread_execute_list(struct gl_context *ctx, GLuint list)
-{
-   struct gl_display_list *dlist;
-
-   if (list == 0 ||
-       ctx->GLThread.ListCallDepth == MAX_LIST_NESTING ||
-       !_mesa_get_list(ctx, list, &dlist))
-      return;
-
-   ctx->GLThread.ListCallDepth++;
-
-   Node *n = dlist->Head;
-
-   while (1) {
-      const OpCode opcode = n[0].opcode;
-
-      if (is_ext_opcode(opcode)) {
-         n += ctx->ListExt->Opcode[n[0].opcode - OPCODE_EXT_0].Size;
-      } else {
-         switch (opcode) {
-         case OPCODE_CALL_LIST:
-            /* Generated by glCallList(), don't add ListBase */
-            if (ctx->GLThread.ListCallDepth < MAX_LIST_NESTING)
-               _mesa_glthread_execute_list(ctx, n[1].ui);
-            break;
-         case OPCODE_CALL_LISTS:
-            if (ctx->GLThread.ListCallDepth < MAX_LIST_NESTING)
-               _mesa_glthread_CallLists(ctx, n[1].i, n[2].e, get_pointer(&n[3]));
-            break;
-         case OPCODE_DISABLE:
-            _mesa_glthread_Disable(ctx, n[1].e);
-            break;
-         case OPCODE_ENABLE:
-            _mesa_glthread_Enable(ctx, n[1].e);
-            break;
-         case OPCODE_LIST_BASE:
-            _mesa_glthread_ListBase(ctx, n[1].ui);
-            break;
-         case OPCODE_MATRIX_MODE:
-            _mesa_glthread_MatrixMode(ctx, n[1].e);
-            break;
-         case OPCODE_POP_ATTRIB:
-            _mesa_glthread_PopAttrib(ctx);
-            break;
-         case OPCODE_POP_MATRIX:
-            _mesa_glthread_PopMatrix(ctx);
-            break;
-         case OPCODE_PUSH_ATTRIB:
-            _mesa_glthread_PushAttrib(ctx, n[1].bf);
-            break;
-         case OPCODE_PUSH_MATRIX:
-            _mesa_glthread_PushMatrix(ctx);
-            break;
-         case OPCODE_ACTIVE_TEXTURE:   /* GL_ARB_multitexture */
-            _mesa_glthread_ActiveTexture(ctx, n[1].e);
-            break;
-         case OPCODE_MATRIX_PUSH:
-            _mesa_glthread_MatrixPushEXT(ctx, n[1].e);
-            break;
-         case OPCODE_MATRIX_POP:
-            _mesa_glthread_MatrixPopEXT(ctx, n[1].e);
-            break;
-         case OPCODE_CONTINUE:
-            n = (Node *)get_pointer(&n[1]);
-            continue;
-         case OPCODE_END_OF_LIST:
-            ctx->GLThread.ListCallDepth--;
-            return;
-         default:
-            /* ignore */
-            break;
-         }
-
-         /* increment n to point to next compiled command */
-         assert(InstSize[opcode] > 0);
-         n += InstSize[opcode];
-      }
-   }
-}
 
 
 /**

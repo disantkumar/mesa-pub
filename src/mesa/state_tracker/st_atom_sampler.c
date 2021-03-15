@@ -98,17 +98,6 @@ gl_filter_to_img_filter(GLenum filter)
    return PIPE_TEX_FILTER_NEAREST;
 }
 
-static inline unsigned
-get_border_clamp(unsigned wrap, bool clamp_to_border)
-{
-   if (wrap == PIPE_TEX_WRAP_CLAMP)
-      wrap = clamp_to_border ? PIPE_TEX_WRAP_CLAMP_TO_BORDER :
-                               PIPE_TEX_WRAP_CLAMP_TO_EDGE;
-   else if (wrap == PIPE_TEX_WRAP_MIRROR_CLAMP)
-      wrap = clamp_to_border ? PIPE_TEX_WRAP_MIRROR_CLAMP_TO_BORDER :
-                               PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE;
-   return wrap;
-}
 
 /**
  * Convert a gl_sampler_object to a pipe_sampler_state object.
@@ -133,14 +122,6 @@ st_convert_sampler(const struct st_context *st,
       sampler->mag_img_filter = gl_filter_to_img_filter(msamp->Attrib.MagFilter);
    }
    sampler->min_mip_filter = gl_filter_to_mip_filter(msamp->Attrib.MinFilter);
-
-   if (st->emulate_gl_clamp) {
-      bool clamp_to_border = sampler->min_img_filter != PIPE_TEX_FILTER_NEAREST &&
-                             sampler->mag_img_filter != PIPE_TEX_FILTER_NEAREST;
-      sampler->wrap_s = get_border_clamp(sampler->wrap_s, clamp_to_border);
-      sampler->wrap_t = get_border_clamp(sampler->wrap_t, clamp_to_border);
-      sampler->wrap_r = get_border_clamp(sampler->wrap_r, clamp_to_border);
-   }
 
    if (texobj->Target != GL_TEXTURE_RECTANGLE_ARB)
       sampler->normalized_coords = 1;
@@ -187,7 +168,7 @@ st_convert_sampler(const struct st_context *st,
       const GLboolean is_integer = texobj->_IsIntegerFormat;
       GLenum texBaseFormat = _mesa_base_tex_image(texobj)->_BaseFormat;
 
-      if (texobj->StencilSampling)
+      if (texobj->Attrib.StencilSampling)
          texBaseFormat = GL_STENCIL_INDEX;
 
       if (st->apply_texture_swizzle_to_border_color) {
@@ -221,7 +202,6 @@ st_convert_sampler(const struct st_context *st,
                             &sampler->border_color,
                             texBaseFormat, is_integer);
       }
-      sampler->border_color_is_integer = is_integer;
    }
 
    sampler->max_anisotropy = (msamp->Attrib.MaxAnisotropy == 1.0 ?
@@ -232,7 +212,7 @@ st_convert_sampler(const struct st_context *st,
       GLenum texBaseFormat = _mesa_base_tex_image(texobj)->_BaseFormat;
 
       if (texBaseFormat == GL_DEPTH_COMPONENT ||
-          (texBaseFormat == GL_DEPTH_STENCIL && !texobj->StencilSampling)) {
+          (texBaseFormat == GL_DEPTH_STENCIL && !texobj->Attrib.StencilSampling)) {
          sampler->compare_mode = PIPE_TEX_COMPARE_R_TO_TEXTURE;
          sampler->compare_func = st_compare_func_to_pipe(msamp->Attrib.CompareFunc);
       }

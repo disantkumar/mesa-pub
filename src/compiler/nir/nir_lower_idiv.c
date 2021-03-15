@@ -129,7 +129,7 @@ convert_instr(nir_builder *bld, nir_alu_instr *alu)
    }
 
    assert(alu->dest.dest.is_ssa);
-   nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, q);
+   nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(q));
 
    return true;
 }
@@ -231,7 +231,7 @@ convert_instr_precise(nir_builder *bld, nir_alu_instr *alu)
       res = emit_idiv(bld, numer, denom, op);
 
    assert(alu->dest.dest.is_ssa);
-   nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, res);
+   nir_ssa_def_rewrite_uses(&alu->dest.dest.ssa, nir_src_for_ssa(res));
 
    return true;
 }

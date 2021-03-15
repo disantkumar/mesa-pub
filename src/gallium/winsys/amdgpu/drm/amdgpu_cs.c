@@ -408,18 +408,30 @@ static unsigned amdgpu_cs_epilog_dws(struct amdgpu_cs *cs)
    return 0;
 }
 
-static int amdgpu_lookup_buffer(struct amdgpu_cs_context *cs, struct amdgpu_winsys_bo *bo,
-                                struct amdgpu_cs_buffer *buffers, unsigned num_buffers)
+int amdgpu_lookup_buffer(struct amdgpu_cs_context *cs, struct amdgpu_winsys_bo *bo)
 {
    unsigned hash = bo->unique_id & (ARRAY_SIZE(cs->buffer_indices_hashlist)-1);
    int i = cs->buffer_indices_hashlist[hash];
+   struct amdgpu_cs_buffer *buffers;
+   int num_buffers;
+
+   if (bo->bo) {
+      buffers = cs->real_buffers;
+      num_buffers = cs->num_real_buffers;
+   } else if (!(bo->base.usage & RADEON_FLAG_SPARSE)) {
+      buffers = cs->slab_buffers;
+      num_buffers = cs->num_slab_buffers;
+   } else {
+      buffers = cs->sparse_buffers;
+      num_buffers = cs->num_sparse_buffers;
+   }
 
    /* not found or found */
    if (i < 0 || (i < num_buffers && buffers[i].bo == bo))
       return i;
 
    /* Hash collision, look for the BO in the list of buffers linearly. */
-   for (int i = num_buffers - 1; i >= 0; i--) {
+   for (i = num_buffers - 1; i >= 0; i--) {
       if (buffers[i].bo == bo) {
          /* Put this buffer in the hash list.
           * This will prevent additional hash collisions if there are
@@ -435,25 +447,6 @@ static int amdgpu_lookup_buffer(struct amdgpu_cs_context *cs, struct amdgpu_wins
       }
    }
    return -1;
-}
-
-int amdgpu_lookup_buffer_any_type(struct amdgpu_cs_context *cs, struct amdgpu_winsys_bo *bo)
-{
-   struct amdgpu_cs_buffer *buffers;
-   int num_buffers;
-
-   if (bo->bo) {
-      buffers = cs->real_buffers;
-      num_buffers = cs->num_real_buffers;
-   } else if (!(bo->base.usage & RADEON_FLAG_SPARSE)) {
-      buffers = cs->slab_buffers;
-      num_buffers = cs->num_slab_buffers;
-   } else {
-      buffers = cs->sparse_buffers;
-      num_buffers = cs->num_sparse_buffers;
-   }
-
-   return amdgpu_lookup_buffer(cs, bo, buffers, num_buffers);
 }
 
 static int
@@ -489,6 +482,7 @@ amdgpu_do_add_real_buffer(struct amdgpu_cs_context *cs, struct amdgpu_winsys_bo 
 
    memset(buffer, 0, sizeof(*buffer));
    amdgpu_winsys_bo_reference(&buffer->bo, bo);
+   p_atomic_inc(&bo->num_cs_references);
    cs->num_real_buffers++;
 
    return idx;
@@ -500,7 +494,7 @@ amdgpu_lookup_or_add_real_buffer(struct radeon_cmdbuf *rcs, struct amdgpu_cs *ac
 {
    struct amdgpu_cs_context *cs = acs->csc;
    unsigned hash;
-   int idx = amdgpu_lookup_buffer(cs, bo, cs->real_buffers, cs->num_real_buffers);
+   int idx = amdgpu_lookup_buffer(cs, bo);
 
    if (idx >= 0)
       return idx;
@@ -511,9 +505,9 @@ amdgpu_lookup_or_add_real_buffer(struct radeon_cmdbuf *rcs, struct amdgpu_cs *ac
    cs->buffer_indices_hashlist[hash] = idx;
 
    if (bo->base.placement & RADEON_DOMAIN_VRAM)
-      rcs->used_vram_kb += bo->base.size / 1024;
+      rcs->used_vram += bo->base.size;
    else if (bo->base.placement & RADEON_DOMAIN_GTT)
-      rcs->used_gart_kb += bo->base.size / 1024;
+      rcs->used_gart += bo->base.size;
 
    return idx;
 }
@@ -525,7 +519,7 @@ static int amdgpu_lookup_or_add_slab_buffer(struct radeon_cmdbuf *rcs,
    struct amdgpu_cs_context *cs = acs->csc;
    struct amdgpu_cs_buffer *buffer;
    unsigned hash;
-   int idx = amdgpu_lookup_buffer(cs, bo, cs->slab_buffers, cs->num_slab_buffers);
+   int idx = amdgpu_lookup_buffer(cs, bo);
    int real_idx;
 
    if (idx >= 0)
@@ -559,6 +553,7 @@ static int amdgpu_lookup_or_add_slab_buffer(struct radeon_cmdbuf *rcs,
    memset(buffer, 0, sizeof(*buffer));
    amdgpu_winsys_bo_reference(&buffer->bo, bo);
    buffer->u.slab.real_idx = real_idx;
+   p_atomic_inc(&bo->num_cs_references);
    cs->num_slab_buffers++;
 
    hash = bo->unique_id & (ARRAY_SIZE(cs->buffer_indices_hashlist)-1);
@@ -574,7 +569,7 @@ static int amdgpu_lookup_or_add_sparse_buffer(struct radeon_cmdbuf *rcs,
    struct amdgpu_cs_context *cs = acs->csc;
    struct amdgpu_cs_buffer *buffer;
    unsigned hash;
-   int idx = amdgpu_lookup_buffer(cs, bo, cs->sparse_buffers, cs->num_sparse_buffers);
+   int idx = amdgpu_lookup_buffer(cs, bo);
 
    if (idx >= 0)
       return idx;
@@ -602,6 +597,7 @@ static int amdgpu_lookup_or_add_sparse_buffer(struct radeon_cmdbuf *rcs,
 
    memset(buffer, 0, sizeof(*buffer));
    amdgpu_winsys_bo_reference(&buffer->bo, bo);
+   p_atomic_inc(&bo->num_cs_references);
    cs->num_sparse_buffers++;
 
    hash = bo->unique_id & (ARRAY_SIZE(cs->buffer_indices_hashlist)-1);
@@ -614,9 +610,9 @@ static int amdgpu_lookup_or_add_sparse_buffer(struct radeon_cmdbuf *rcs,
 
    list_for_each_entry(struct amdgpu_sparse_backing, backing, &bo->u.sparse.backing, list) {
       if (bo->base.placement & RADEON_DOMAIN_VRAM)
-         rcs->used_vram_kb += backing->bo->base.size / 1024;
+         rcs->used_vram += backing->bo->base.size;
       else if (bo->base.placement & RADEON_DOMAIN_GTT)
-         rcs->used_gart_kb += backing->bo->base.size / 1024;
+         rcs->used_gart += backing->bo->base.size;
    }
 
    simple_mtx_unlock(&bo->lock);
@@ -911,12 +907,15 @@ static void amdgpu_cs_context_cleanup(struct amdgpu_cs_context *cs)
    unsigned i;
 
    for (i = 0; i < cs->num_real_buffers; i++) {
+      p_atomic_dec(&cs->real_buffers[i].bo->num_cs_references);
       amdgpu_winsys_bo_reference(&cs->real_buffers[i].bo, NULL);
    }
    for (i = 0; i < cs->num_slab_buffers; i++) {
+      p_atomic_dec(&cs->slab_buffers[i].bo->num_cs_references);
       amdgpu_winsys_bo_reference(&cs->slab_buffers[i].bo, NULL);
    }
    for (i = 0; i < cs->num_sparse_buffers; i++) {
+      p_atomic_dec(&cs->sparse_buffers[i].bo->num_cs_references);
       amdgpu_winsys_bo_reference(&cs->sparse_buffers[i].bo, NULL);
    }
    cleanup_fence_list(&cs->fence_dependencies);
@@ -1418,7 +1417,9 @@ static bool amdgpu_add_sparse_backing_buffers(struct amdgpu_cs_context *cs)
             return false;
          }
 
+         cs->real_buffers[idx].usage = buffer->usage & ~RADEON_USAGE_SYNCHRONIZED;
          cs->real_buffers[idx].u.real.priority_usage = buffer->u.real.priority_usage;
+         p_atomic_inc(&backing->bo->num_active_ioctls);
       }
 
       simple_mtx_unlock(&bo->lock);
@@ -1438,7 +1439,6 @@ static void amdgpu_cs_submit_ib(void *job, int thread_index)
    bool has_user_fence = amdgpu_cs_has_user_fence(cs);
    bool use_bo_list_create = ws->info.drm_minor < 27;
    struct drm_amdgpu_bo_list_in bo_list_in;
-   unsigned initial_num_real_buffers = cs->num_real_buffers;
 
 #if DEBUG
    /* Prepare the buffer list. */
@@ -1614,8 +1614,8 @@ static void amdgpu_cs_submit_ib(void *job, int thread_index)
          chunks[num_chunks].chunk_data = (uintptr_t)&cs->ib[IB_PARALLEL_COMPUTE];
          num_chunks++;
 
-         r = acs->noop ? 0 : amdgpu_cs_submit_raw2(ws->dev, acs->ctx->ctx, bo_list,
-                                                   num_chunks, chunks, NULL);
+         r = amdgpu_cs_submit_raw2(ws->dev, acs->ctx->ctx, bo_list,
+                                   num_chunks, chunks, NULL);
          if (r)
             goto finalize;
 
@@ -1677,10 +1677,11 @@ static void amdgpu_cs_submit_ib(void *job, int thread_index)
 
       assert(num_chunks <= ARRAY_SIZE(chunks));
 
-      r = acs->noop ? 0 : amdgpu_cs_submit_raw2(ws->dev, acs->ctx->ctx, bo_list,
-                                                num_chunks, chunks, &seq_no);
+      r = amdgpu_cs_submit_raw2(ws->dev, acs->ctx->ctx, bo_list,
+                                num_chunks, chunks, &seq_no);
    }
 finalize:
+
    if (r) {
       if (r == -ENOMEM)
          fprintf(stderr, "amdgpu: Not enough memory for command submission.\n");
@@ -1692,7 +1693,7 @@ finalize:
 
       acs->ctx->num_rejected_cs++;
       ws->num_total_rejected_cs++;
-   } else if (!acs->noop) {
+   } else {
       /* Success. */
       uint64_t *user_fence = NULL;
 
@@ -1714,13 +1715,12 @@ finalize:
 cleanup:
    /* If there was an error, signal the fence, because it won't be signalled
     * by the hardware. */
-   if (r || acs->noop)
+   if (r)
       amdgpu_fence_signalled(cs->fence);
 
    cs->error_code = r;
 
-   /* Only decrement num_active_ioctls for those buffers where we incremented it. */
-   for (i = 0; i < initial_num_real_buffers; i++)
+   for (i = 0; i < cs->num_real_buffers; i++)
       p_atomic_dec(&cs->real_buffers[i].bo->num_active_ioctls);
    for (i = 0; i < cs->num_slab_buffers; i++)
       p_atomic_dec(&cs->slab_buffers[i].bo->num_active_ioctls);
@@ -1807,6 +1807,7 @@ static int amdgpu_cs_flush(struct radeon_cmdbuf *rcs,
    /* If the CS is not empty or overflowed.... */
    if (likely(radeon_emitted(rcs, 0) &&
        rcs->current.cdw <= rcs->current.max_dw &&
+       !cs->noop &&
        !(flags & RADEON_FLUSH_NOOP))) {
       struct amdgpu_cs_context *cur = cs->csc;
 
@@ -1877,8 +1878,8 @@ static int amdgpu_cs_flush(struct radeon_cmdbuf *rcs,
                            RADEON_PRIO_IB1);
    }
 
-   rcs->used_gart_kb = 0;
-   rcs->used_vram_kb = 0;
+   rcs->used_gart = 0;
+   rcs->used_vram = 0;
 
    if (cs->ring_type == RING_GFX)
       ws->num_gfx_IBs++;

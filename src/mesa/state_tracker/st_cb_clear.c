@@ -266,6 +266,7 @@ clear_with_quad(struct gl_context *ctx, unsigned clear_buffers)
                         CSO_BIT_VIEWPORT |
                         CSO_BIT_STREAM_OUTPUTS |
                         CSO_BIT_VERTEX_ELEMENTS |
+                        CSO_BIT_AUX_VERTEX_BUFFER_SLOT |
                         (st->active_queries ? CSO_BIT_PAUSE_QUERIES : 0) |
                         CSO_BITS_ALL_SHADERS));
 
@@ -361,7 +362,6 @@ clear_with_quad(struct gl_context *ctx, unsigned clear_buffers)
 
    /* Restore pipe state */
    cso_restore_state(cso);
-   st->dirty |= ST_NEW_VERTEX_ARRAYS;
 }
 
 
@@ -479,27 +479,23 @@ st_Clear(struct gl_context *ctx, GLbitfield mask)
       struct st_renderbuffer *strb = st_renderbuffer(depthRb);
 
       if (strb->surface && ctx->Depth.Mask) {
-         bool scissor = is_scissor_enabled(ctx, depthRb);
-         if ((scissor && !st->can_scissor_clear) ||
+         if (is_scissor_enabled(ctx, depthRb) ||
              is_window_rectangle_enabled(ctx))
             quad_buffers |= PIPE_CLEAR_DEPTH;
          else
             clear_buffers |= PIPE_CLEAR_DEPTH;
-         have_scissor_buffers |= scissor && st->can_scissor_clear;
       }
    }
    if (mask & BUFFER_BIT_STENCIL) {
       struct st_renderbuffer *strb = st_renderbuffer(stencilRb);
 
       if (strb->surface && !is_stencil_disabled(ctx, stencilRb)) {
-         bool scissor = is_scissor_enabled(ctx, stencilRb);
-         if ((scissor && !st->can_scissor_clear) ||
+         if (is_scissor_enabled(ctx, stencilRb) ||
              is_window_rectangle_enabled(ctx) ||
              is_stencil_masked(ctx, stencilRb))
             quad_buffers |= PIPE_CLEAR_STENCIL;
          else
             clear_buffers |= PIPE_CLEAR_STENCIL;
-         have_scissor_buffers |= scissor && st->can_scissor_clear;
       }
    }
 
@@ -537,14 +533,6 @@ st_Clear(struct gl_context *ctx, GLbitfield mask)
          maxy = fb->Height - scissor_state.miny;
          scissor_state.miny = MAX2(miny, 0);
          scissor_state.maxy = MAX2(maxy, 0);
-      }
-      if (have_scissor_buffers) {
-         const struct gl_framebuffer *fb = ctx->DrawBuffer;
-         scissor_state.maxx = MIN2(scissor_state.maxx, fb->Width);
-         scissor_state.maxy = MIN2(scissor_state.maxy, fb->Height);
-         if (scissor_state.minx >= scissor_state.maxx ||
-             scissor_state.miny >= scissor_state.maxy)
-            return;
       }
       /* We can't translate the clear color to the colorbuffer format,
        * because different colorbuffers may have different formats.

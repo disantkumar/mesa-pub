@@ -56,7 +56,7 @@ def update_calendar(version: str) -> None:
     p = pathlib.Path('docs') / 'release-calendar.csv'
 
     with p.open('r') as f:
-        calendar = list(csv.reader(f))
+        calendar = csv.reader(f)
 
     branch = None
     for i, line in enumerate(calendar):

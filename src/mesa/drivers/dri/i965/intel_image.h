@@ -33,7 +33,7 @@
  *
  * The __DRIimage is passed around the loader code (src/glx and src/egl), but
  * it's opaque to that code and may only be accessed by loader extensions
- * (mostly located in brw_screen.c).
+ * (mostly located in intel_screen.c).
  */
 
 #include <stdbool.h>
@@ -51,7 +51,7 @@ extern "C" {
  * Used with images created with image_from_names
  * to help support planar images.
  */
-struct brw_image_format {
+struct intel_image_format {
    int fourcc;
    int components;
    int nplanes;
@@ -66,7 +66,7 @@ struct brw_image_format {
 };
 
 struct __DRIimageRec {
-   struct brw_screen *screen;
+   struct intel_screen *screen;
    struct brw_bo *bo;
    uint32_t pitch; /**< in bytes */
    GLenum internal_format;
@@ -81,7 +81,7 @@ struct __DRIimageRec {
     */
    uint32_t strides[3];
    uint32_t offsets[3];
-   const struct brw_image_format *planar_format;
+   const struct intel_image_format *planar_format;
 
    /* particular miptree level */
    GLuint width;

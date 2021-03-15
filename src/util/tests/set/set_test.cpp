@@ -51,13 +51,6 @@ TEST(set, basic)
    entry = _mesa_set_search(s, a);
    EXPECT_FALSE(entry);
 
-   _mesa_set_clear(s, NULL);
-   EXPECT_EQ(s->entries, 0);
-   EXPECT_EQ(s->deleted_entries, 0);
-   set_foreach(s, he) {
-      GTEST_FAIL();
-   }
-
    _mesa_set_destroy(s, NULL);
 }
 
@@ -143,16 +136,12 @@ TEST(set, search_or_add)
    _mesa_set_add(s, &b);
    EXPECT_EQ(s->entries, 2);
 
-   bool found = false;
-   struct set_entry *entry = _mesa_set_search_or_add(s, &c, &found);
+   struct set_entry *entry = _mesa_set_search_or_add(s, &c);
    EXPECT_EQ(entry->key, (void *)&b);
-   EXPECT_EQ(found, true);
    EXPECT_EQ(s->entries, 2);
 
-   found = false;
-   struct set_entry *entry3 = _mesa_set_search_or_add(s, &d, &found);
+   struct set_entry *entry3 = _mesa_set_search_or_add(s, &d);
    EXPECT_EQ(entry3->key, &d);
-   EXPECT_EQ(found, false);
    EXPECT_EQ(s->entries, 3);
 
    _mesa_set_destroy(s, NULL);

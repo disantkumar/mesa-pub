@@ -101,7 +101,6 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_UMA:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
-   case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
 
    /* Unimplemented, but for exporting OpenGL 2.0 */
@@ -143,7 +142,6 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 0;
 
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
-   case PIPE_CAP_SHAREABLE_SHADERS:
       return 0;
 
    case PIPE_CAP_ALPHA_TEST:
@@ -248,7 +246,6 @@ get_fragment_shader_param(struct lima_screen *screen,
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return 1;
 
-   case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       return 16; /* need investigate */
 
@@ -504,11 +501,6 @@ static const uint64_t lima_available_modifiers[] = {
    DRM_FORMAT_MOD_LINEAR,
 };
 
-static bool lima_is_modifier_external_only(enum pipe_format format)
-{
-   return util_format_is_yuv(format);
-}
-
 static void
 lima_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
                                    enum pipe_format format, int max,
@@ -527,7 +519,7 @@ lima_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
    for (int i = 0; i < *count; i++) {
       modifiers[i] = lima_available_modifiers[i];
       if (external_only)
-         external_only[i] = lima_is_modifier_external_only(format);
+         external_only[i] = false;
    }
 }
 
@@ -540,7 +532,7 @@ lima_screen_is_dmabuf_modifier_supported(struct pipe_screen *pscreen,
    for (int i = 0; i < ARRAY_SIZE(lima_available_modifiers); i++) {
       if (lima_available_modifiers[i] == modifier) {
          if (external_only)
-            *external_only = lima_is_modifier_external_only(format);
+            *external_only = false;
 
          return true;
       }

@@ -52,8 +52,24 @@
 #include "decode.h"
 #include "panfrost-quirks.h"
 
-static bool
-panfrost_should_checksum(const struct panfrost_device *dev, const struct panfrost_resource *pres);
+bool
+pan_render_condition_check(struct pipe_context *pctx)
+{
+	struct panfrost_context *ctx = pan_context(pctx);
+
+	if (!ctx->cond_query)
+		return true;
+
+	union pipe_query_result res = { 0 };
+	bool wait =
+		ctx->cond_mode != PIPE_RENDER_COND_NO_WAIT &&
+		ctx->cond_mode != PIPE_RENDER_COND_BY_REGION_NO_WAIT;
+
+	if (pctx->get_query_result(pctx, (struct pipe_query *) ctx->cond_query, wait, &res))
+			return (bool)res.u64 != ctx->cond_cond;
+
+	return true;
+}
 
 static struct pipe_resource *
 panfrost_resource_from_handle(struct pipe_screen *pscreen,
@@ -101,7 +117,8 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
         rsc->layout.slices[0].initialized = true;
         panfrost_resource_set_damage_region(NULL, &rsc->base, 0, NULL);
 
-        if (panfrost_should_checksum(dev, rsc)) {
+        if (dev->quirks & IS_BIFROST &&
+            templat->bind & PIPE_BIND_RENDER_TARGET) {
                 unsigned size =
                         panfrost_compute_checksum_size(&rsc->layout.slices[0],
                                                        templat->width0,
@@ -474,13 +491,6 @@ panfrost_setup_layout(struct panfrost_device *dev,
                 *bo_size = ALIGN_POT(pres->layout.array_stride * res->array_size, 4096);
 }
 
-static inline bool
-panfrost_is_2d(const struct panfrost_resource *pres)
-{
-        return (pres->base.target == PIPE_TEXTURE_2D)
-                || (pres->base.target == PIPE_TEXTURE_RECT);
-}
-
 /* Based on the usage, determine if it makes sense to use u-inteleaved tiling.
  * We only have routines to tile 2D textures of sane bpps. On the hardware
  * level, not all usages are valid for tiling. Finally, if the app is hinting
@@ -514,7 +524,7 @@ panfrost_should_afbc(struct panfrost_device *dev, const struct panfrost_resource
                 return false;
 
         /* Only a small selection of formats are AFBC'able */
-        if (!panfrost_format_supports_afbc(dev, pres->internal_format))
+        if (!panfrost_format_supports_afbc(pres->internal_format))
                 return false;
 
         /* AFBC does not support layered (GLES3 style) multisampling. Use
@@ -575,9 +585,10 @@ panfrost_should_tile(struct panfrost_device *dev, const struct panfrost_resource
                 bpp == 8 || bpp == 16 || bpp == 24 || bpp == 32 ||
                 bpp == 64 || bpp == 128;
 
-        bool can_tile = panfrost_is_2d(pres)
-                && is_sane_bpp
-                && ((pres->base.bind & ~valid_binding) == 0);
+        bool is_2d = (pres->base.target == PIPE_TEXTURE_2D)
+                || (pres->base.target == PIPE_TEXTURE_RECT);
+
+        bool can_tile = is_2d && is_sane_bpp && ((pres->base.bind & ~valid_binding) == 0);
 
         return can_tile && (pres->base.usage != PIPE_USAGE_STREAM);
 }
@@ -601,31 +612,13 @@ panfrost_best_modifier(struct panfrost_device *dev,
                 return DRM_FORMAT_MOD_LINEAR;
 }
 
-static bool
-panfrost_should_checksum(const struct panfrost_device *dev, const struct panfrost_resource *pres)
-{
-        /* When checksumming is enabled, the tile data must fit in the
-         * size of the writeback buffer, so don't checksum formats
-         * that use too much space. */
-
-        unsigned bytes_per_pixel_max = (dev->arch == 6) ? 6 : 4;
-
-        unsigned bytes_per_pixel = MAX2(pres->base.nr_samples, 1) *
-                util_format_get_blocksize(pres->base.format);
-
-        return pres->base.bind & PIPE_BIND_RENDER_TARGET &&
-                panfrost_is_2d(pres) &&
-                bytes_per_pixel <= bytes_per_pixel_max &&
-                !(dev->debug & PAN_DBG_NO_CRC);
-}
-
 static void
 panfrost_resource_setup(struct panfrost_device *dev, struct panfrost_resource *pres,
                         size_t *bo_size, uint64_t modifier)
 {
         pres->layout.modifier = (modifier != DRM_FORMAT_MOD_INVALID) ? modifier :
                 panfrost_best_modifier(dev, pres);
-        pres->checksummed = panfrost_should_checksum(dev, pres);
+        pres->checksummed = (pres->base.bind & PIPE_BIND_RENDER_TARGET);
 
         /* We can only switch tiled->linear if the resource isn't already
          * linear and if we control the modifier */
@@ -715,6 +708,21 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                          uint64_t modifier)
 {
         struct panfrost_device *dev = pan_device(screen);
+
+        /* Make sure we're familiar */
+        switch (template->target) {
+        case PIPE_BUFFER:
+        case PIPE_TEXTURE_1D:
+        case PIPE_TEXTURE_2D:
+        case PIPE_TEXTURE_3D:
+        case PIPE_TEXTURE_CUBE:
+        case PIPE_TEXTURE_RECT:
+        case PIPE_TEXTURE_1D_ARRAY:
+        case PIPE_TEXTURE_2D_ARRAY:
+                break;
+        default:
+                unreachable("Unknown texture target\n");
+        }
 
         if (dev->ro && (template->bind &
             (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)))
@@ -1080,55 +1088,6 @@ panfrost_ptr_map(struct pipe_context *pctx,
         }
 }
 
-void
-pan_resource_modifier_convert(struct panfrost_context *ctx,
-                              struct panfrost_resource *rsrc,
-                              uint64_t modifier)
-{
-        assert(!rsrc->modifier_constant);
-
-        struct pipe_resource *tmp_prsrc =
-                panfrost_resource_create_with_modifier(
-                        ctx->base.screen, &rsrc->base, modifier);
-        struct panfrost_resource *tmp_rsrc = pan_resource(tmp_prsrc);
-
-        struct pipe_blit_info blit = {0};
-
-        unsigned depth = rsrc->base.target == PIPE_TEXTURE_3D ?
-                rsrc->base.depth0 : rsrc->base.array_size;
-
-        struct pipe_box box =
-                { 0, 0, 0, rsrc->base.width0, rsrc->base.height0, depth };
-
-        for (int i = 0; i <= rsrc->base.last_level; i++) {
-                if (!rsrc->layout.slices[i].initialized)
-                        continue;
-
-                blit.dst.resource = &tmp_rsrc->base;
-                blit.dst.format   = pan_blit_format(tmp_rsrc->base.format);
-                blit.dst.level    = i;
-                blit.dst.box      = box;
-                blit.src.resource = &rsrc->base;
-                blit.src.format   = pan_blit_format(rsrc->base.format);
-                blit.src.level    = i;
-                blit.src.box      = box;
-                blit.mask = util_format_get_mask(blit.dst.format);
-                blit.filter = PIPE_TEX_FILTER_NEAREST;
-
-                panfrost_blit(&ctx->base, &blit);
-        }
-
-        panfrost_bo_unreference(rsrc->bo);
-        if (rsrc->checksum_bo)
-                panfrost_bo_unreference(rsrc->checksum_bo);
-
-        rsrc->bo = tmp_rsrc->bo;
-        panfrost_bo_reference(rsrc->bo);
-
-        panfrost_resource_setup(pan_device(ctx->base.screen), rsrc, NULL, modifier);
-        pipe_resource_reference(&tmp_prsrc, NULL);
-}
-
 static bool
 panfrost_should_linear_convert(struct panfrost_resource *prsrc,
                                struct pipe_transfer *transfer)
@@ -1170,9 +1129,6 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
         struct panfrost_transfer *trans = pan_transfer(transfer);
         struct panfrost_resource *prsrc = (struct panfrost_resource *) transfer->resource;
         struct panfrost_device *dev = pan_device(pctx->screen);
-
-        if (transfer->usage & PIPE_MAP_WRITE)
-                prsrc->layout.slices[transfer->level].checksum_valid = false;
 
         /* AFBC will use a staging resource. `initialized` will be set when the
          * fragment job is created; this is deferred to prevent useless surface

@@ -1869,19 +1869,11 @@ vec4_visitor::lower_minmax()
 
       if (inst->opcode == BRW_OPCODE_SEL &&
           inst->predicate == BRW_PREDICATE_NONE) {
-         /* If src1 is an immediate value that is not NaN, then it can't be
-          * NaN.  In that case, emit CMP because it is much better for cmod
-          * propagation.  Likewise if src1 is not float.  Gen4 and Gen5 don't
-          * support HF or DF, so it is not necessary to check for those.
+         /* FIXME: Using CMP doesn't preserve the NaN propagation semantics of
+          *        the original SEL.L/GE instruction
           */
-         if (inst->src[1].type != BRW_REGISTER_TYPE_F ||
-             (inst->src[1].file == IMM && !isnan(inst->src[1].f))) {
-            ibld.CMP(ibld.null_reg_d(), inst->src[0], inst->src[1],
-                     inst->conditional_mod);
-         } else {
-            ibld.CMPN(ibld.null_reg_d(), inst->src[0], inst->src[1],
-                      inst->conditional_mod);
-         }
+         ibld.CMP(ibld.null_reg_d(), inst->src[0], inst->src[1],
+                  inst->conditional_mod);
          inst->predicate = BRW_PREDICATE_NORMAL;
          inst->conditional_mod = BRW_CONDITIONAL_NONE;
 
@@ -2884,35 +2876,43 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
    /* gl_VertexID and gl_InstanceID are system values, but arrive via an
     * incoming vertex attribute.  So, add an extra slot.
     */
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FIRST_VERTEX) ||
-       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_INSTANCE) ||
-       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) ||
-       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID)) {
+   if (nir->info.system_values_read &
+       (BITFIELD64_BIT(SYSTEM_VALUE_FIRST_VERTEX) |
+        BITFIELD64_BIT(SYSTEM_VALUE_BASE_INSTANCE) |
+        BITFIELD64_BIT(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) |
+        BITFIELD64_BIT(SYSTEM_VALUE_INSTANCE_ID))) {
       nr_attribute_slots++;
    }
 
    /* gl_DrawID and IsIndexedDraw share its very own vec4 */
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID) ||
-       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_IS_INDEXED_DRAW)) {
+   if (nir->info.system_values_read &
+       (BITFIELD64_BIT(SYSTEM_VALUE_DRAW_ID) |
+        BITFIELD64_BIT(SYSTEM_VALUE_IS_INDEXED_DRAW))) {
       nr_attribute_slots++;
    }
 
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_IS_INDEXED_DRAW))
+   if (nir->info.system_values_read &
+       BITFIELD64_BIT(SYSTEM_VALUE_IS_INDEXED_DRAW))
       prog_data->uses_is_indexed_draw = true;
 
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FIRST_VERTEX))
+   if (nir->info.system_values_read &
+       BITFIELD64_BIT(SYSTEM_VALUE_FIRST_VERTEX))
       prog_data->uses_firstvertex = true;
 
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_INSTANCE))
+   if (nir->info.system_values_read &
+       BITFIELD64_BIT(SYSTEM_VALUE_BASE_INSTANCE))
       prog_data->uses_baseinstance = true;
 
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE))
+   if (nir->info.system_values_read &
+       BITFIELD64_BIT(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE))
       prog_data->uses_vertexid = true;
 
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID))
+   if (nir->info.system_values_read &
+       BITFIELD64_BIT(SYSTEM_VALUE_INSTANCE_ID))
       prog_data->uses_instanceid = true;
 
-   if (BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID))
+   if (nir->info.system_values_read &
+       BITFIELD64_BIT(SYSTEM_VALUE_DRAW_ID))
           prog_data->uses_drawid = true;
 
    /* The 3DSTATE_VS documentation lists the lower bound on "Vertex URB Entry
@@ -2943,7 +2943,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
 
    if (INTEL_DEBUG & DEBUG_VS) {
       fprintf(stderr, "VS Output ");
-      brw_print_vue_map(stderr, &prog_data->base.vue_map, MESA_SHADER_VERTEX);
+      brw_print_vue_map(stderr, &prog_data->base.vue_map);
    }
 
    if (is_scalar) {

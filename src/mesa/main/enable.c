@@ -34,7 +34,6 @@
 #include "clip.h"
 #include "context.h"
 #include "debug_output.h"
-#include "draw_validate.h"
 #include "enable.h"
 #include "errors.h"
 #include "light.h"
@@ -125,7 +124,7 @@ client_state(struct gl_context *ctx, struct gl_vertex_array_object* vao,
 
       case GL_POINT_SIZE_ARRAY_OES:
          if (ctx->VertexProgram.PointSizeEnabled != state) {
-            FLUSH_VERTICES(ctx, _NEW_PROGRAM, 0);
+            FLUSH_VERTICES(ctx, _NEW_PROGRAM);
             ctx->VertexProgram.PointSizeEnabled = state;
          }
          vao_state(ctx, vao, VERT_ATTRIB_POINT_SIZE, state);
@@ -334,7 +333,7 @@ enable_texture(struct gl_context *ctx, GLboolean state, GLbitfield texBit)
    if (texUnit->Enabled == newenabled)
        return GL_FALSE;
 
-   FLUSH_VERTICES(ctx, _NEW_TEXTURE_STATE, GL_TEXTURE_BIT | GL_ENABLE_BIT);
+   FLUSH_VERTICES(ctx, _NEW_TEXTURE_STATE);
    texUnit->Enabled = newenabled;
    return GL_TRUE;
 }
@@ -355,9 +354,9 @@ _mesa_set_multisample(struct gl_context *ctx, GLboolean state)
     */
    if (ctx->API == API_OPENGL_COMPAT || ctx->API == API_OPENGLES ||
        !ctx->DriverFlags.NewMultisampleEnable) {
-      FLUSH_VERTICES(ctx, _NEW_MULTISAMPLE, GL_MULTISAMPLE_BIT | GL_ENABLE_BIT);
+      FLUSH_VERTICES(ctx, _NEW_MULTISAMPLE);
    } else {
-      FLUSH_VERTICES(ctx, 0, GL_MULTISAMPLE_BIT | GL_ENABLE_BIT);
+      FLUSH_VERTICES(ctx, 0);
    }
 
    ctx->NewDriverState |= ctx->DriverFlags.NewMultisampleEnable;
@@ -379,8 +378,7 @@ _mesa_set_framebuffer_srgb(struct gl_context *ctx, GLboolean state)
       return;
 
    /* TODO: Switch i965 to the new flag and remove the conditional */
-   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewFramebufferSRGB ? 0 : _NEW_BUFFERS,
-                  GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
+   FLUSH_VERTICES(ctx, ctx->DriverFlags.NewFramebufferSRGB ? 0 : _NEW_BUFFERS);
    ctx->NewDriverState |= ctx->DriverFlags.NewFramebufferSRGB;
    ctx->Color.sRGBEnabled = state;
 
@@ -417,8 +415,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Color.AlphaEnabled == state)
             return;
          /* AlphaEnabled is used by the fixed-func fragment program */
-         FLUSH_VERTICES(ctx, _NEW_COLOR | _NEW_FF_FRAG_PROGRAM,
-                        GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_COLOR);
          ctx->NewDriverState |= ctx->DriverFlags.NewAlphaTest;
          ctx->Color.AlphaEnabled = state;
          break;
@@ -427,7 +424,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.AutoNormal == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.AutoNormal = state;
          break;
@@ -438,10 +435,8 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             if (newEnabled != ctx->Color.BlendEnabled) {
                _mesa_flush_vertices_for_blend_adv(ctx, newEnabled,
                                                ctx->Color._AdvancedBlendMode);
-               ctx->PopAttribState |= GL_ENABLE_BIT;
                ctx->Color.BlendEnabled = newEnabled;
                _mesa_update_allow_draw_out_of_order(ctx);
-               _mesa_update_valid_to_render_state(ctx);
             }
          }
          break;
@@ -468,10 +463,9 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
              */
             if (ctx->API == API_OPENGL_COMPAT || ctx->API == API_OPENGLES ||
                 !ctx->DriverFlags.NewClipPlaneEnable) {
-               FLUSH_VERTICES(ctx, _NEW_TRANSFORM,
-                              GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+               FLUSH_VERTICES(ctx, _NEW_TRANSFORM);
             } else {
-               FLUSH_VERTICES(ctx, 0, GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+               FLUSH_VERTICES(ctx, 0);
             }
             ctx->NewDriverState |= ctx->DriverFlags.NewClipPlaneEnable;
 
@@ -495,8 +489,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Light.ColorMaterialEnabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_LIGHT_CONSTANTS | _NEW_FF_VERT_PROGRAM,
-                        GL_LIGHTING_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_LIGHT);
          FLUSH_CURRENT(ctx, 0);
          ctx->Light.ColorMaterialEnabled = state;
          if (state) {
@@ -508,16 +501,14 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Polygon.CullFlag == state)
             return;
          FLUSH_VERTICES(ctx,
-                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON,
-                        GL_POLYGON_BIT | GL_ENABLE_BIT);
+                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON);
          ctx->NewDriverState |= ctx->DriverFlags.NewPolygonState;
          ctx->Polygon.CullFlag = state;
          break;
       case GL_DEPTH_TEST:
          if (ctx->Depth.Test == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepth ? 0 : _NEW_DEPTH,
-                        GL_DEPTH_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepth ? 0 : _NEW_DEPTH);
          ctx->NewDriverState |= ctx->DriverFlags.NewDepth;
          ctx->Depth.Test = state;
          _mesa_update_allow_draw_out_of_order(ctx);
@@ -529,8 +520,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
       case GL_DITHER:
          if (ctx->Color.DitherFlag == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewBlend ? 0 : _NEW_COLOR,
-                        GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewBlend ? 0 : _NEW_COLOR);
          ctx->NewDriverState |= ctx->DriverFlags.NewBlend;
          ctx->Color.DitherFlag = state;
          break;
@@ -539,8 +529,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Fog.Enabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_FOG | _NEW_FF_FRAG_PROGRAM,
-                        GL_FOG_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_FOG);
          ctx->Fog.Enabled = state;
          ctx->Fog._PackedEnabledMode = state ? ctx->Fog._PackedMode : FOG_NONE;
          break;
@@ -556,8 +545,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Light.Light[cap-GL_LIGHT0].Enabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_LIGHT_CONSTANTS | _NEW_FF_VERT_PROGRAM,
-                        GL_LIGHTING_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_LIGHT);
          ctx->Light.Light[cap-GL_LIGHT0].Enabled = state;
          if (state) {
             ctx->Light._EnabledLights |= 1u << (cap - GL_LIGHT0);
@@ -571,9 +559,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Light.Enabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_LIGHT_CONSTANTS | _NEW_FF_VERT_PROGRAM |
-                        _NEW_FF_FRAG_PROGRAM | _NEW_LIGHT_STATE,
-                        GL_LIGHTING_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_LIGHT);
          ctx->Light.Enabled = state;
          break;
       case GL_LINE_SMOOTH:
@@ -581,8 +567,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Line.SmoothFlag == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLineState ? 0 : _NEW_LINE,
-                        GL_LINE_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLineState ? 0 : _NEW_LINE);
          ctx->NewDriverState |= ctx->DriverFlags.NewLineState;
          ctx->Line.SmoothFlag = state;
          break;
@@ -591,8 +576,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Line.StippleFlag == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLineState ? 0 : _NEW_LINE,
-                        GL_LINE_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLineState ? 0 : _NEW_LINE);
          ctx->NewDriverState |= ctx->DriverFlags.NewLineState;
          ctx->Line.StippleFlag = state;
          break;
@@ -601,8 +585,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Color.IndexLogicOpEnabled == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLogicOp ? 0 : _NEW_COLOR,
-                        GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLogicOp ? 0 : _NEW_COLOR);
          ctx->NewDriverState |= ctx->DriverFlags.NewLogicOp;
          ctx->Color.IndexLogicOpEnabled = state;
          break;
@@ -611,18 +594,17 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->IntelConservativeRasterization == state)
             return;
-         FLUSH_VERTICES(ctx, 0, 0);
+         FLUSH_VERTICES(ctx, 0);
          ctx->NewDriverState |=
             ctx->DriverFlags.NewIntelConservativeRasterization;
          ctx->IntelConservativeRasterization = state;
-         _mesa_update_valid_to_render_state(ctx);
          break;
       case GL_CONSERVATIVE_RASTERIZATION_NV:
          if (!_mesa_has_NV_conservative_raster(ctx))
             goto invalid_enum_error;
          if (ctx->ConservativeRasterization == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          ctx->NewDriverState |=
             ctx->DriverFlags.NewNvConservativeRasterization;
          ctx->ConservativeRasterization = state;
@@ -632,8 +614,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Color.ColorLogicOpEnabled == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLogicOp ? 0 : _NEW_COLOR,
-                        GL_COLOR_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewLogicOp ? 0 : _NEW_COLOR);
          ctx->NewDriverState |= ctx->DriverFlags.NewLogicOp;
          ctx->Color.ColorLogicOpEnabled = state;
          _mesa_update_allow_draw_out_of_order(ctx);
@@ -643,7 +624,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1Color4 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1Color4 = state;
          break;
@@ -652,7 +633,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1Index == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1Index = state;
          break;
@@ -661,7 +642,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1Normal == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1Normal = state;
          break;
@@ -670,7 +651,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1TextureCoord1 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1TextureCoord1 = state;
          break;
@@ -679,7 +660,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1TextureCoord2 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1TextureCoord2 = state;
          break;
@@ -688,7 +669,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1TextureCoord3 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1TextureCoord3 = state;
          break;
@@ -697,7 +678,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1TextureCoord4 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1TextureCoord4 = state;
          break;
@@ -706,7 +687,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1Vertex3 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1Vertex3 = state;
          break;
@@ -715,7 +696,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map1Vertex4 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map1Vertex4 = state;
          break;
@@ -724,7 +705,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2Color4 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2Color4 = state;
          break;
@@ -733,7 +714,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2Index == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2Index = state;
          break;
@@ -742,7 +723,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2Normal == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2Normal = state;
          break;
@@ -751,7 +732,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2TextureCoord1 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2TextureCoord1 = state;
          break;
@@ -760,7 +741,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2TextureCoord2 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2TextureCoord2 = state;
          break;
@@ -769,7 +750,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2TextureCoord3 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2TextureCoord3 = state;
          break;
@@ -778,7 +759,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2TextureCoord4 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2TextureCoord4 = state;
          break;
@@ -787,7 +768,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2Vertex3 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2Vertex3 = state;
          break;
@@ -796,7 +777,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Eval.Map2Vertex4 == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_EVAL_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          vbo_exec_update_eval_maps(ctx);
          ctx->Eval.Map2Vertex4 = state;
          break;
@@ -805,8 +786,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Transform.Normalize == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_TRANSFORM | _NEW_FF_VERT_PROGRAM,
-                        GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_TRANSFORM);
          ctx->Transform.Normalize = state;
          break;
       case GL_POINT_SMOOTH:
@@ -814,7 +794,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Point.SmoothFlag == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_POINT, GL_POINT_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_POINT);
          ctx->Point.SmoothFlag = state;
          break;
       case GL_POLYGON_SMOOTH:
@@ -823,8 +803,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Polygon.SmoothFlag == state)
             return;
          FLUSH_VERTICES(ctx,
-                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON,
-                        GL_POLYGON_BIT | GL_ENABLE_BIT);
+                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON);
          ctx->NewDriverState |= ctx->DriverFlags.NewPolygonState;
          ctx->Polygon.SmoothFlag = state;
          break;
@@ -834,8 +813,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Polygon.StippleFlag == state)
             return;
          FLUSH_VERTICES(ctx,
-                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON,
-                        GL_POLYGON_BIT | GL_ENABLE_BIT);
+                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON);
          ctx->NewDriverState |= ctx->DriverFlags.NewPolygonState;
          ctx->Polygon.StippleFlag = state;
          break;
@@ -845,8 +823,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Polygon.OffsetPoint == state)
             return;
          FLUSH_VERTICES(ctx,
-                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON,
-                        GL_POLYGON_BIT | GL_ENABLE_BIT);
+                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON);
          ctx->NewDriverState |= ctx->DriverFlags.NewPolygonState;
          ctx->Polygon.OffsetPoint = state;
          break;
@@ -856,8 +833,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Polygon.OffsetLine == state)
             return;
          FLUSH_VERTICES(ctx,
-                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON,
-                        GL_POLYGON_BIT | GL_ENABLE_BIT);
+                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON);
          ctx->NewDriverState |= ctx->DriverFlags.NewPolygonState;
          ctx->Polygon.OffsetLine = state;
          break;
@@ -865,8 +841,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Polygon.OffsetFill == state)
             return;
          FLUSH_VERTICES(ctx,
-                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON,
-                        GL_POLYGON_BIT | GL_ENABLE_BIT);
+                        ctx->DriverFlags.NewPolygonState ? 0 : _NEW_POLYGON);
          ctx->NewDriverState |= ctx->DriverFlags.NewPolygonState;
          ctx->Polygon.OffsetFill = state;
          break;
@@ -875,8 +850,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Transform.RescaleNormals == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_TRANSFORM | _NEW_FF_VERT_PROGRAM,
-                        GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_TRANSFORM);
          ctx->Transform.RescaleNormals = state;
          break;
       case GL_SCISSOR_TEST:
@@ -886,8 +860,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
                state * ((1 << ctx->Const.MaxViewports) - 1);
             if (newEnabled != ctx->Scissor.EnableFlags) {
                FLUSH_VERTICES(ctx, ctx->DriverFlags.NewScissorTest ? 0 :
-                                                                _NEW_SCISSOR,
-                              GL_SCISSOR_BIT | GL_ENABLE_BIT);
+                                                                _NEW_SCISSOR);
                ctx->NewDriverState |= ctx->DriverFlags.NewScissorTest;
                ctx->Scissor.EnableFlags = newEnabled;
             }
@@ -896,8 +869,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
       case GL_STENCIL_TEST:
          if (ctx->Stencil.Enabled == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewStencil ? 0 : _NEW_STENCIL,
-                        GL_STENCIL_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewStencil ? 0 : _NEW_STENCIL);
          ctx->NewDriverState |= ctx->DriverFlags.NewStencil;
          ctx->Stencil.Enabled = state;
          _mesa_update_allow_draw_out_of_order(ctx);
@@ -940,9 +912,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
                   newenabled |= coordBit;
                if (texUnit->TexGenEnabled == newenabled)
                   return;
-               FLUSH_VERTICES(ctx, _NEW_TEXTURE_STATE | _NEW_FF_VERT_PROGRAM |
-                              _NEW_FF_FRAG_PROGRAM,
-                              GL_TEXTURE_BIT | GL_ENABLE_BIT);
+               FLUSH_VERTICES(ctx, _NEW_TEXTURE_STATE);
                texUnit->TexGenEnabled = newenabled;
             }
          }
@@ -963,8 +933,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
                   newenabled |= STR_BITS;
                if (texUnit->TexGenEnabled == newenabled)
                   return;
-               FLUSH_VERTICES(ctx, _NEW_TEXTURE_STATE | _NEW_FF_VERT_PROGRAM |
-                              _NEW_FF_FRAG_PROGRAM, 0);
+               FLUSH_VERTICES(ctx, _NEW_TEXTURE_STATE);
                texUnit->TexGenEnabled = newenabled;
             }
          }
@@ -1009,8 +978,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Fog.ColorSumEnabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_FOG | _NEW_FF_FRAG_PROGRAM,
-                        GL_FOG_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_FOG);
          ctx->Fog.ColorSumEnabled = state;
          break;
 
@@ -1024,8 +992,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Multisample.SampleAlphaToCoverage == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleAlphaToXEnable ? 0 :
-                                                         _NEW_MULTISAMPLE,
-                        GL_MULTISAMPLE_BIT | GL_ENABLE_BIT);
+                                                         _NEW_MULTISAMPLE);
          ctx->NewDriverState |= ctx->DriverFlags.NewSampleAlphaToXEnable;
          ctx->Multisample.SampleAlphaToCoverage = state;
          break;
@@ -1035,8 +1002,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Multisample.SampleAlphaToOne == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleAlphaToXEnable ? 0 :
-                                                         _NEW_MULTISAMPLE,
-                        GL_MULTISAMPLE_BIT | GL_ENABLE_BIT);
+                                                         _NEW_MULTISAMPLE);
          ctx->NewDriverState |= ctx->DriverFlags.NewSampleAlphaToXEnable;
          ctx->Multisample.SampleAlphaToOne = state;
          break;
@@ -1044,8 +1010,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Multisample.SampleCoverage == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleMask ? 0 :
-                                                         _NEW_MULTISAMPLE,
-                        GL_MULTISAMPLE_BIT | GL_ENABLE_BIT);
+                                                         _NEW_MULTISAMPLE);
          ctx->NewDriverState |= ctx->DriverFlags.NewSampleMask;
          ctx->Multisample.SampleCoverage = state;
          break;
@@ -1055,8 +1020,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Multisample.SampleCoverageInvert == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleMask ? 0 :
-                                                         _NEW_MULTISAMPLE,
-                        GL_MULTISAMPLE_BIT);
+                                                         _NEW_MULTISAMPLE);
          ctx->NewDriverState |= ctx->DriverFlags.NewSampleMask;
          ctx->Multisample.SampleCoverageInvert = state;
          break;
@@ -1068,8 +1032,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Multisample.SampleShading == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleShading ? 0 :
-                                                         _NEW_MULTISAMPLE,
-                        GL_MULTISAMPLE_BIT | GL_ENABLE_BIT);
+                                                         _NEW_MULTISAMPLE);
          ctx->NewDriverState |= ctx->DriverFlags.NewSampleShading;
          ctx->Multisample.SampleShading = state;
          break;
@@ -1080,7 +1043,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Transform.RasterPositionUnclipped == state)
             return;
-         FLUSH_VERTICES(ctx, 0, GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, 0);
          ctx->Transform.RasterPositionUnclipped = state;
          break;
 
@@ -1092,8 +1055,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Point.PointSprite == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_POINT | _NEW_FF_VERT_PROGRAM |
-                        _NEW_FF_FRAG_PROGRAM, GL_POINT_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_POINT);
          ctx->Point.PointSprite = state;
          break;
 
@@ -1102,10 +1064,9 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->VertexProgram.Enabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_PROGRAM, GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_PROGRAM);
          ctx->VertexProgram.Enabled = state;
          _mesa_update_vertex_processing_mode(ctx);
-         _mesa_update_valid_to_render_state(ctx);
          break;
       case GL_VERTEX_PROGRAM_POINT_SIZE_ARB:
          /* This was added with ARB_vertex_program, but it is also used with
@@ -1116,7 +1077,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->VertexProgram.PointSizeEnabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_PROGRAM, GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_PROGRAM);
          ctx->VertexProgram.PointSizeEnabled = state;
          break;
       case GL_VERTEX_PROGRAM_TWO_SIDE_ARB:
@@ -1124,7 +1085,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->VertexProgram.TwoSideEnabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_PROGRAM, GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_PROGRAM);
          ctx->VertexProgram.TwoSideEnabled = state;
          break;
 
@@ -1143,8 +1104,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Stencil.TestTwoSide == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewStencil ? 0 : _NEW_STENCIL,
-                        GL_STENCIL_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewStencil ? 0 : _NEW_STENCIL);
          ctx->NewDriverState |= ctx->DriverFlags.NewStencil;
          ctx->Stencil.TestTwoSide = state;
          if (state) {
@@ -1159,9 +1119,8 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->FragmentProgram.Enabled == state)
             return;
-         FLUSH_VERTICES(ctx, _NEW_PROGRAM, GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, _NEW_PROGRAM);
          ctx->FragmentProgram.Enabled = state;
-         _mesa_update_valid_to_render_state(ctx);
          break;
 
       /* GL_EXT_depth_bounds_test */
@@ -1170,8 +1129,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Depth.BoundsTest == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepth ? 0 : _NEW_DEPTH,
-                        GL_DEPTH_BUFFER_BIT | GL_ENABLE_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepth ? 0 : _NEW_DEPTH);
          ctx->NewDriverState |= ctx->DriverFlags.NewDepth;
          ctx->Depth.BoundsTest = state;
          break;
@@ -1184,8 +1142,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
              ctx->Transform.DepthClampFar == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepthClamp ? 0 :
-                                                           _NEW_TRANSFORM,
-                        GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+                                                           _NEW_TRANSFORM);
          ctx->NewDriverState |= ctx->DriverFlags.NewDepthClamp;
          ctx->Transform.DepthClampNear = state;
          ctx->Transform.DepthClampFar = state;
@@ -1197,8 +1154,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Transform.DepthClampNear == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepthClamp ? 0 :
-                                                           _NEW_TRANSFORM,
-                        GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+                                                           _NEW_TRANSFORM);
          ctx->NewDriverState |= ctx->DriverFlags.NewDepthClamp;
          ctx->Transform.DepthClampNear = state;
          break;
@@ -1209,8 +1165,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Transform.DepthClampFar == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewDepthClamp ? 0 :
-                                                           _NEW_TRANSFORM,
-                        GL_TRANSFORM_BIT | GL_ENABLE_BIT);
+                                                           _NEW_TRANSFORM);
          ctx->NewDriverState |= ctx->DriverFlags.NewDepthClamp;
          ctx->Transform.DepthClampFar = state;
          break;
@@ -1220,7 +1175,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
            goto invalid_enum_error;
         if (ctx->ATIFragmentShader.Enabled == state)
            return;
-        FLUSH_VERTICES(ctx, _NEW_PROGRAM, GL_ENABLE_BIT);
+        FLUSH_VERTICES(ctx, _NEW_PROGRAM);
         ctx->ATIFragmentShader.Enabled = state;
         break;
 
@@ -1228,7 +1183,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (!_mesa_has_ARB_seamless_cube_map(ctx))
             goto invalid_enum_error;
          if (ctx->Texture.CubeMapSeamless != state) {
-            FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT, 0);
+            FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT);
             ctx->Texture.CubeMapSeamless = state;
          }
          break;
@@ -1237,7 +1192,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (!(_mesa_has_EXT_transform_feedback(ctx) || _mesa_is_gles3(ctx)))
             goto invalid_enum_error;
          if (ctx->RasterDiscard != state) {
-            FLUSH_VERTICES(ctx, 0, 0);
+            FLUSH_VERTICES(ctx, 0);
             ctx->NewDriverState |= ctx->DriverFlags.NewRasterizerDiscard;
             ctx->RasterDiscard = state;
          }
@@ -1247,7 +1202,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (!_mesa_has_MESA_tile_raster_order(ctx))
             goto invalid_enum_error;
          if (ctx->TileRasterOrderFixed != state) {
-            FLUSH_VERTICES(ctx, 0, GL_ENABLE_BIT);
+            FLUSH_VERTICES(ctx, 0);
             ctx->NewDriverState |= ctx->DriverFlags.NewTileRasterOrder;
             ctx->TileRasterOrderFixed = state;
          }
@@ -1257,7 +1212,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (!_mesa_has_MESA_tile_raster_order(ctx))
             goto invalid_enum_error;
          if (ctx->TileRasterOrderIncreasingX != state) {
-            FLUSH_VERTICES(ctx, 0, GL_ENABLE_BIT);
+            FLUSH_VERTICES(ctx, 0);
             ctx->NewDriverState |= ctx->DriverFlags.NewTileRasterOrder;
             ctx->TileRasterOrderIncreasingX = state;
          }
@@ -1267,7 +1222,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (!_mesa_has_MESA_tile_raster_order(ctx))
             goto invalid_enum_error;
          if (ctx->TileRasterOrderIncreasingY != state) {
-            FLUSH_VERTICES(ctx, 0, GL_ENABLE_BIT);
+            FLUSH_VERTICES(ctx, 0);
             ctx->NewDriverState |= ctx->DriverFlags.NewTileRasterOrder;
             ctx->TileRasterOrderIncreasingY = state;
          }
@@ -1319,7 +1274,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          if (ctx->Multisample.SampleMask == state)
             return;
          FLUSH_VERTICES(ctx, ctx->DriverFlags.NewSampleMask ? 0 :
-                                                         _NEW_MULTISAMPLE, 0);
+                                                         _NEW_MULTISAMPLE);
          ctx->NewDriverState |= ctx->DriverFlags.NewSampleMask;
          ctx->Multisample.SampleMask = state;
          break;
@@ -1329,8 +1284,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->Color.BlendCoherent == state)
             return;
-         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewBlend ? 0 : _NEW_COLOR,
-                        GL_COLOR_BUFFER_BIT);
+         FLUSH_VERTICES(ctx, ctx->DriverFlags.NewBlend ? 0 : _NEW_COLOR);
          ctx->NewDriverState |= ctx->DriverFlags.NewBlend;
          ctx->Color.BlendCoherent = state;
          break;
@@ -1340,7 +1294,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
             goto invalid_enum_error;
          if (ctx->IntelBlackholeRender == state)
             return;
-         FLUSH_VERTICES(ctx, 0, 0);
+         FLUSH_VERTICES(ctx, 0);
          ctx->IntelBlackholeRender = state;
          break;
 
@@ -1415,10 +1369,8 @@ _mesa_set_enablei(struct gl_context *ctx, GLenum cap,
 
          _mesa_flush_vertices_for_blend_adv(ctx, enabled,
                                             ctx->Color._AdvancedBlendMode);
-         ctx->PopAttribState |= GL_ENABLE_BIT;
          ctx->Color.BlendEnabled = enabled;
          _mesa_update_allow_draw_out_of_order(ctx);
-         _mesa_update_valid_to_render_state(ctx);
       }
       break;
    case GL_SCISSOR_TEST:
@@ -1429,8 +1381,7 @@ _mesa_set_enablei(struct gl_context *ctx, GLenum cap,
       }
       if (((ctx->Scissor.EnableFlags >> index) & 1) != state) {
          FLUSH_VERTICES(ctx,
-                        ctx->DriverFlags.NewScissorTest ? 0 : _NEW_SCISSOR,
-                        GL_SCISSOR_BIT | GL_ENABLE_BIT);
+                        ctx->DriverFlags.NewScissorTest ? 0 : _NEW_SCISSOR);
          ctx->NewDriverState |= ctx->DriverFlags.NewScissorTest;
          if (state)
             ctx->Scissor.EnableFlags |= (1 << index);

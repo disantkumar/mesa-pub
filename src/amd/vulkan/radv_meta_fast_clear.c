@@ -75,7 +75,7 @@ build_dcc_decompress_compute_shader(struct radv_device *dev)
 	tex->src[1].src = nir_src_for_ssa(nir_imm_int(&b, 0));
 	tex->src[2].src_type = nir_tex_src_texture_deref;
 	tex->src[2].src = nir_src_for_ssa(input_img_deref);
-	tex->dest_type = nir_type_float32;
+	tex->dest_type = nir_type_float;
 	tex->is_array = false;
 	tex->coord_components = 2;
 
@@ -135,8 +135,8 @@ create_dcc_compress_compute(struct radv_device *device)
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = 1,
 		.pSetLayouts = &device->meta_state.fast_clear_flush.dcc_decompress_compute_ds_layout,
-		.pushConstantRangeCount = 0,
-		.pPushConstantRanges = NULL,
+		.pushConstantRangeCount = 1,
+		.pPushConstantRanges = &(VkPushConstantRange){VK_SHADER_STAGE_COMPUTE_BIT, 0, 8},
 	};
 
 	result = radv_CreatePipelineLayout(radv_device_to_handle(device),
@@ -181,9 +181,8 @@ create_pass(struct radv_device *device)
 	VkResult result;
 	VkDevice device_h = radv_device_to_handle(device);
 	const VkAllocationCallbacks *alloc = &device->meta_state.alloc;
-	VkAttachmentDescription2 attachment;
+	VkAttachmentDescription attachment;
 
-	attachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
 	attachment.format = VK_FORMAT_UNDEFINED;
 	attachment.samples = 1;
 	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -191,36 +190,32 @@ create_pass(struct radv_device *device)
 	attachment.initialLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	attachment.finalLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
-	result = radv_CreateRenderPass2(device_h,
-				       &(VkRenderPassCreateInfo2) {
-					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
+	result = radv_CreateRenderPass(device_h,
+				       &(VkRenderPassCreateInfo) {
+					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 						       .attachmentCount = 1,
 						       .pAttachments = &attachment,
 						       .subpassCount = 1,
-						       .pSubpasses = &(VkSubpassDescription2) {
-						       .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
+						       .pSubpasses = &(VkSubpassDescription) {
 						       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 						       .inputAttachmentCount = 0,
 						       .colorAttachmentCount = 1,
-						       .pColorAttachments = (VkAttachmentReference2[]) {
+						       .pColorAttachments = (VkAttachmentReference[]) {
 							       {
-								       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
 								       .attachment = 0,
 								       .layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 							       },
 						       },
 						       .pResolveAttachments = NULL,
-						       .pDepthStencilAttachment = &(VkAttachmentReference2) {
-							       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+						       .pDepthStencilAttachment = &(VkAttachmentReference) {
 							       .attachment = VK_ATTACHMENT_UNUSED,
 						       },
 						       .preserveAttachmentCount = 0,
 						       .pPreserveAttachments = NULL,
 					       },
 							.dependencyCount = 2,
-							.pDependencies = (VkSubpassDependency2[]) {
+							.pDependencies = (VkSubpassDependency[]) {
 								{
-									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = VK_SUBPASS_EXTERNAL,
 									.dstSubpass = 0,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -230,7 +225,6 @@ create_pass(struct radv_device *device)
 									.dependencyFlags = 0
 								},
 								{
-									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = 0,
 									.dstSubpass = VK_SUBPASS_EXTERNAL,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -819,7 +813,7 @@ radv_fast_clear_flush_image_inplace(struct radv_cmd_buffer *cmd_buffer,
 {
 	struct radv_barrier_data barrier = {0};
 
-	if (radv_image_has_fmask(image) && !image->tc_compatible_cmask) {
+	if (radv_image_has_fmask(image)) {
 		barrier.layout_transitions.fmask_decompress = 1;
 	} else {
 		barrier.layout_transitions.fast_clear_eliminate = 1;

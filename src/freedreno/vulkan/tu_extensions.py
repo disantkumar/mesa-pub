@@ -102,7 +102,6 @@ EXTENSIONS = [
     Extension('VK_KHR_image_format_list',                 1, True),
     Extension('VK_KHR_depth_stencil_resolve',             1, True),
     Extension('VK_KHR_performance_query',                 1, 'device->instance->debug_flags & TU_DEBUG_PERFC'),
-    Extension('VK_EXT_memory_budget',                     1, True),
 ]
 
 MAX_API_VERSION = VkVersion(MAX_API_VERSION)
@@ -119,5 +118,4 @@ if __name__ == '__main__':
                         dest='xml_files')
     args = parser.parse_args()
 
-    gen_extensions('tu', args.xml_files, API_VERSIONS, MAX_API_VERSION,
-                   EXTENSIONS, args.out_c, args.out_h)
+    gen_extensions('tu', args.xml_files, API_VERSIONS, MAX_API_VERSION, EXTENSIONS, args.out_c, args.out_h)

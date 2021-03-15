@@ -32,10 +32,6 @@
 
 #include <vulkan/vulkan.h>
 
-#define ZINK_WORKGROUP_SIZE_X 1
-#define ZINK_WORKGROUP_SIZE_Y 2
-#define ZINK_WORKGROUP_SIZE_Z 3
-
 struct pipe_screen;
 struct zink_context;
 struct zink_screen;
@@ -50,8 +46,7 @@ struct set;
 struct tgsi_token;
 struct zink_so_info {
    struct pipe_stream_output_info so_info;
-   unsigned so_info_slots[PIPE_MAX_SO_OUTPUTS];
-   bool have_xfb;
+   unsigned *so_info_slots;
 };
 
 
@@ -74,10 +69,12 @@ struct zink_shader {
       int binding;
       VkDescriptorType type;
       unsigned char size;
-   } bindings[PIPE_MAX_CONSTANT_BUFFERS + PIPE_MAX_SAMPLERS + PIPE_MAX_SHADER_BUFFERS + PIPE_MAX_SHADER_IMAGES];
+   } bindings[PIPE_MAX_CONSTANT_BUFFERS + PIPE_MAX_SHADER_SAMPLER_VIEWS];
    size_t num_bindings;
    struct set *programs;
 
+   bool has_tess_shader; // vertex shaders need to know if a tesseval shader exists
+   bool has_geometry_shader; // vertex shaders need to know if a geometry shader exists
    union {
       struct zink_shader *generated; // a generated shader that this shader "owns"
       bool is_generated; // if this is a driver-created shader (e.g., tcs)

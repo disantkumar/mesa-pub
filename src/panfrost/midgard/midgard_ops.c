@@ -136,7 +136,7 @@ struct mir_op_props alu_opcode_props[256] = {
         [midgard_alu_op_ixor]		 = {"ixor", UNITS_MOST | OP_COMMUTES},
         [midgard_alu_op_inxor]		 = {"inxor", UNITS_MOST | OP_COMMUTES},
         [midgard_alu_op_iclz]		 = {"iclz", UNITS_ADD},
-        [midgard_alu_op_ipopcnt]	 = {"ipopcnt", UNIT_VADD},
+        [midgard_alu_op_ibitcount8]	 = {"ibitcount8", UNITS_ADD},
         [midgard_alu_op_inand]		 = {"inand", UNITS_MOST},
         [midgard_alu_op_ishl]		 = {"ishl", UNITS_ADD},
         [midgard_alu_op_iasr]		 = {"iasr", UNITS_ADD},
@@ -184,7 +184,6 @@ struct mir_ldst_op_props load_store_opcode_props[256] = {
         [midgard_op_unpack_colour] = {"unpack_colour", M32},
         [midgard_op_pack_colour] = {"pack_colour", M32},
         [midgard_op_pack_colour_32] = {"pack_colour_32", M32},
-        [midgard_op_lea_tex] = {"lea_tex", M32},
         [midgard_op_ld_cubemap_coords] = {"ld_cubemap_coords", M32},
         [midgard_op_ld_compute_id] = {"ld_compute_id", M32},
         [midgard_op_ldst_perspective_division_z] = {"ldst_perspective_division_z", M32},
@@ -243,11 +242,6 @@ struct mir_ldst_op_props load_store_opcode_props[256] = {
         [midgard_op_ld_ubo_short4] = {"ld_ubo_short4", M32},
         [midgard_op_ld_ubo_int4]   = {"ld_ubo_int4",   M32},
 
-        [midgard_op_ld_image_32f] = {"ld_image_32f", M32},
-        [midgard_op_ld_image_16f] = {"ld_image_16f", M16},
-        [midgard_op_ld_image_32i] = {"ld_image_32i", M32},
-        [midgard_op_ld_image_32u] = {"ld_image_32u", M32},
-
         [midgard_op_st_char]   = {"st_char",   M32 | LDST_STORE | LDST_ADDRESS},
         [midgard_op_st_char2]  = {"st_char2",  M16 | LDST_STORE | LDST_ADDRESS},
         [midgard_op_st_char4]  = {"st_char4",  M32 | LDST_STORE | LDST_ADDRESS},
@@ -259,10 +253,9 @@ struct mir_ldst_op_props load_store_opcode_props[256] = {
         [midgard_op_st_vary_32u] = {"st_vary_32u", M32 | LDST_STORE},
         [midgard_op_st_vary_16]  = {"st_vary_16",  M16 | LDST_STORE},
 
-        [midgard_op_st_image_32f] = {"st_image_32f",  M32 | LDST_STORE},
-        [midgard_op_st_image_16f] = {"st_image_16f",  M16 | LDST_STORE},
-        [midgard_op_st_image_32i] = {"st_image_32i", M32 | LDST_STORE},
-        [midgard_op_st_image_32u] = {"st_image_32u", M32 | LDST_STORE},
+        [midgard_op_st_image_f]  = {"st_image_f",  M32 | LDST_STORE},
+        [midgard_op_st_image_ui] = {"st_image_ui", M32 | LDST_STORE},
+        [midgard_op_st_image_i]  = {"st_image_i",  M32 | LDST_STORE},
 };
 
 #undef M8

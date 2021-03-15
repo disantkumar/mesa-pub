@@ -31,6 +31,7 @@
 #include "radv_radeon_winsys.h"
 #include "ac_gpu_info.h"
 #include "util/list.h"
+#include <pthread.h>
 
 struct radv_null_winsys {
 	struct radeon_winsys base;

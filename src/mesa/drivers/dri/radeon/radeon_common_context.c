@@ -45,7 +45,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "swrast/swrast.h"
 #include "swrast_setup/swrast_setup.h"
 #include "tnl/tnl.h"
-#include "util/u_memory.h"
 
 #ifndef RADEON_DEBUG
 int RADEON_DEBUG = (0);
@@ -287,7 +286,7 @@ void radeonDestroyContext(__DRIcontext *driContextPriv )
 		fclose(track);
 	}
 #endif
-	align_free(radeon);
+	free(radeon);
 }
 
 /* Force the context `c' to be unbound from its buffer.

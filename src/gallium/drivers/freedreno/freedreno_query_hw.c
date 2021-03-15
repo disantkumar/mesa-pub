@@ -41,7 +41,6 @@ struct fd_hw_sample_period {
 static struct fd_hw_sample *
 get_sample(struct fd_batch *batch, struct fd_ringbuffer *ring,
 		unsigned query_type)
-	assert_dt
 {
 	struct fd_context *ctx = batch->ctx;
 	struct fd_hw_sample *samp = NULL;
@@ -72,23 +71,21 @@ clear_sample_cache(struct fd_batch *batch)
 }
 
 static bool
-query_active_in_batch(struct fd_batch *batch, struct fd_hw_query *hq)
+is_active(struct fd_hw_query *hq, enum fd_render_stage stage)
 {
-	int idx = pidx(hq->provider->query_type);
-	return batch->query_providers_active & (1 << idx);
+	return !!(hq->provider->active & stage);
 }
+
 
 static void
 resume_query(struct fd_batch *batch, struct fd_hw_query *hq,
 		struct fd_ringbuffer *ring)
-	assert_dt
 {
 	int idx = pidx(hq->provider->query_type);
 	DBG("%p", hq);
 	assert(idx >= 0);   /* query never would have been created otherwise */
 	assert(!hq->period);
-	batch->query_providers_used |= (1 << idx);
-	batch->query_providers_active |= (1 << idx);
+	batch->active_providers |= (1 << idx);
 	hq->period = slab_alloc_st(&batch->ctx->sample_period_pool);
 	list_inithead(&hq->period->list);
 	hq->period->start = get_sample(batch, ring, hq->base.type);
@@ -99,14 +96,12 @@ resume_query(struct fd_batch *batch, struct fd_hw_query *hq,
 static void
 pause_query(struct fd_batch *batch, struct fd_hw_query *hq,
 		struct fd_ringbuffer *ring)
-	assert_dt
 {
 	ASSERTED int idx = pidx(hq->provider->query_type);
 	DBG("%p", hq);
 	assert(idx >= 0);   /* query never would have been created otherwise */
 	assert(hq->period && !hq->period->end);
-	assert(query_active_in_batch(batch, hq));
-	batch->query_providers_active &= ~(1 << idx);
+	assert(batch->active_providers & (1 << idx));
 	hq->period->end = get_sample(batch, ring, hq->base.type);
 	list_addtail(&hq->period->list, &hq->periods);
 	hq->period = NULL;
@@ -139,7 +134,6 @@ fd_hw_destroy_query(struct fd_context *ctx, struct fd_query *q)
 
 static void
 fd_hw_begin_query(struct fd_context *ctx, struct fd_query *q)
-	assert_dt
 {
 	struct fd_batch *batch = fd_context_batch_locked(ctx);
 	struct fd_hw_query *hq = fd_hw_query(q);
@@ -149,7 +143,7 @@ fd_hw_begin_query(struct fd_context *ctx, struct fd_query *q)
 	/* begin_query() should clear previous results: */
 	destroy_periods(ctx, hq);
 
-	if (batch && (ctx->active_queries || hq->provider->always))
+	if (batch && is_active(hq, batch->stage))
 		resume_query(batch, hq, batch->draw);
 
 	/* add to active list: */
@@ -162,14 +156,13 @@ fd_hw_begin_query(struct fd_context *ctx, struct fd_query *q)
 
 static void
 fd_hw_end_query(struct fd_context *ctx, struct fd_query *q)
-	assert_dt
 {
 	struct fd_batch *batch = fd_context_batch_locked(ctx);
 	struct fd_hw_query *hq = fd_hw_query(q);
 
 	DBG("%p", q);
 
-	if (batch && (ctx->active_queries || hq->provider->always))
+	if (batch && is_active(hq, batch->stage))
 		pause_query(batch, hq, batch->draw);
 
 	/* remove from active list: */
@@ -213,27 +206,21 @@ fd_hw_get_query_result(struct fd_context *ctx, struct fd_query *q,
 		struct fd_resource *rsc = fd_resource(period->end->prsc);
 
 		if (pending(rsc, false)) {
-			assert(!q->base.flushed);
-			tc_assert_driver_thread(ctx->tc);
-
 			/* piglit spec@arb_occlusion_query@occlusion_query_conform
 			 * test, and silly apps perhaps, get stuck in a loop trying
 			 * to get  query result forever with wait==false..  we don't
 			 * wait to flush unnecessarily but we also don't want to
 			 * spin forever:
 			 */
-			if (hq->no_wait_cnt++ > 5) {
-				fd_context_access_begin(ctx);
-				fd_batch_flush(rsc->track->write_batch);
-				fd_context_access_end(ctx);
-			}
+			if (hq->no_wait_cnt++ > 5)
+				fd_batch_flush(rsc->write_batch);
 			return false;
 		}
 
 		if (!rsc->bo)
 			return false;
 
-		ret = fd_resource_wait(ctx, rsc,
+		ret = fd_bo_cpu_prep(rsc->bo, ctx->pipe,
 				DRM_FREEDRENO_PREP_READ | DRM_FREEDRENO_PREP_NOSYNC);
 		if (ret)
 			return false;
@@ -253,18 +240,14 @@ fd_hw_get_query_result(struct fd_context *ctx, struct fd_query *q,
 
 		struct fd_resource *rsc = fd_resource(start->prsc);
 
-		if (rsc->track->write_batch) {
-			tc_assert_driver_thread(ctx->tc);
-			fd_context_access_begin(ctx);
-			fd_batch_flush(rsc->track->write_batch);
-			fd_context_access_end(ctx);
-		}
+		if (rsc->write_batch)
+			fd_batch_flush(rsc->write_batch);
 
 		/* some piglit tests at least do query with no draws, I guess: */
 		if (!rsc->bo)
 			continue;
 
-		fd_resource_wait(ctx, rsc, DRM_FREEDRENO_PREP_READ);
+		fd_bo_cpu_prep(rsc->bo, ctx->pipe, DRM_FREEDRENO_PREP_READ);
 
 		void *ptr = fd_bo_map(rsc->bo);
 
@@ -400,16 +383,22 @@ fd_hw_query_prepare_tile(struct fd_batch *batch, uint32_t n,
 }
 
 void
-fd_hw_query_update_batch(struct fd_batch *batch, bool disable_all)
+fd_hw_query_set_stage(struct fd_batch *batch, enum fd_render_stage stage)
 {
-	struct fd_context *ctx = batch->ctx;
+	/* special case: internal blits (like mipmap level generation)
+	 * go through normal draw path (via util_blitter_blit()).. but
+	 * we need to ignore the FD_STAGE_DRAW which will be set, so we
+	 * don't enable queries which should be paused during internal
+	 * blits:
+	 */
+	if (batch->stage == FD_STAGE_BLIT && stage != FD_STAGE_NULL)
+		stage = FD_STAGE_BLIT;
 
-	if (disable_all || ctx->update_active_queries) {
+	if (stage != batch->stage) {
 		struct fd_hw_query *hq;
 		LIST_FOR_EACH_ENTRY(hq, &batch->ctx->hw_active_queries, list) {
-			bool was_active = query_active_in_batch(batch, hq);
-			bool now_active = !disable_all &&
-				(ctx->active_queries || hq->provider->always);
+			bool was_active = is_active(hq, batch->stage);
+			bool now_active = is_active(hq, stage);
 
 			if (now_active && !was_active)
 				resume_query(batch, hq, batch->draw);
@@ -429,12 +418,13 @@ fd_hw_query_enable(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
 	struct fd_context *ctx = batch->ctx;
 	for (int idx = 0; idx < MAX_HW_SAMPLE_PROVIDERS; idx++) {
-		if (batch->query_providers_used & (1 << idx)) {
+		if (batch->active_providers & (1 << idx)) {
 			assert(ctx->hw_sample_providers[idx]);
 			if (ctx->hw_sample_providers[idx]->enable)
 				ctx->hw_sample_providers[idx]->enable(ctx, ring);
 		}
 	}
+	batch->active_providers = 0;  /* clear it for next frame */
 }
 
 void

@@ -81,6 +81,8 @@ bool EmitAluInstruction::do_emit(nir_instr* ir)
    case nir_op_fceil: return emit_alu_op1(instr, op1_ceil);
    case nir_op_ffract: return emit_alu_op1(instr, op1_fract);
    case nir_op_ffloor: return emit_alu_op1(instr, op1_floor);
+
+   case nir_op_fsign: return emit_fsign(instr);
    case nir_op_fdph:  return emit_fdph(instr);
 
    case nir_op_ibitfield_extract: return emit_bitfield_extract(instr, op3_bfe_int);
@@ -116,10 +118,12 @@ bool EmitAluInstruction::do_emit(nir_instr* ir)
    case nir_op_umin: return emit_alu_op2_int(instr, op2_min_uint);
    case nir_op_ior: return emit_alu_op2_int(instr, op2_or_int);
    case nir_op_inot: return emit_alu_op1(instr, op1_not_int);
+   case nir_op_iabs: return emit_alu_iabs(instr);
    case nir_op_ineg: return emit_alu_ineg(instr);
    case nir_op_idiv: return emit_alu_div_int(instr, true, false);
    case nir_op_udiv: return emit_alu_div_int(instr, false, false);
    case nir_op_umod: return emit_alu_div_int(instr, false, true);
+   case nir_op_isign: return emit_alu_isign(instr);
 
    case nir_op_ushr: return emit_alu_op2_int(instr, op2_lshr_int);
 
@@ -178,8 +182,8 @@ bool EmitAluInstruction::do_emit(nir_instr* ir)
    case nir_op_b32all_fequal4: return emit_any_all_fcomp(instr, op2_sete, 4, true);
 
    case nir_op_ffma: return emit_alu_op3(instr, op3_muladd_ieee);
-   case nir_op_b32csel: return emit_alu_op3(instr, op3_cnde_int,  {0, 2, 1});
-   case nir_op_bcsel: return emit_alu_op3(instr, op3_cnde_int,  {0, 2, 1});
+   case nir_op_b32csel: return emit_alu_op3(instr, op3_cnde,  {0, 2, 1});
+   case nir_op_bcsel: return emit_alu_op3(instr, op3_cnde,  {0, 2, 1});
    case nir_op_vec2: return emit_create_vec(instr, 2);
    case nir_op_vec3: return emit_create_vec(instr, 3);
    case nir_op_vec4: return emit_create_vec(instr, 4);
@@ -207,8 +211,6 @@ bool EmitAluInstruction::do_emit(nir_instr* ir)
 
    case nir_op_umad24: return emit_alu_op3(instr, op3_muladd_uint24,  {0, 1, 2});
    case nir_op_umul24: return emit_alu_op2(instr, op2_mul_uint24);
-
-   case nir_op_cube_r600: return emit_cube(instr);
    default:
       return false;
    }
@@ -261,7 +263,6 @@ unsigned EmitAluInstruction::num_src_comp(const nir_alu_instr& instr)
    case nir_op_b32all_iequal3:
    case nir_op_b32any_fnequal3:
    case nir_op_b32all_fequal3:
-   case nir_op_cube_r600:
       return 3;
 
    case nir_op_fdot4:
@@ -287,21 +288,7 @@ unsigned EmitAluInstruction::num_src_comp(const nir_alu_instr& instr)
    }
 }
 
-bool EmitAluInstruction::emit_cube(const nir_alu_instr& instr)
-{
-   AluInstruction *ir = nullptr;
-   const uint16_t src0_chan[4] = {2, 2, 0, 1};
-   const uint16_t src1_chan[4] = {1, 0, 2, 2};
 
-   for (int i = 0; i < 4; ++i)  {
-      ir = new AluInstruction(op2_cube, from_nir(instr.dest, i),
-                              from_nir(instr.src[0], src0_chan[i]),
-                              from_nir(instr.src[0], src1_chan[i]), {alu_write});
-      emit_instruction(ir);
-   }
-   ir->set_flag(alu_last_instr);
-   return true;
-}
 
 void EmitAluInstruction::split_constants(const nir_alu_instr& instr, unsigned nsrc_comp)
 {
@@ -951,6 +938,177 @@ bool EmitAluInstruction::emit_alu_op2(const nir_alu_instr& instr, EAluOp opcode,
    return true;
 }
 
+bool EmitAluInstruction::emit_alu_op2_split_src_mods(const nir_alu_instr& instr, EAluOp opcode, AluOp2Opts ops)
+{
+   const nir_alu_src *src0 = &instr.src[0];
+   const nir_alu_src *src1 = &instr.src[1];
+
+   if (ops & op2_opt_reverse)
+      std::swap(src0, src1);
+
+   GPRVector::Values v0;
+   for (int i = 0; i < 4 ; ++i)
+      v0[i] = m_src[0][i];
+
+   GPRVector::Values v1;
+   for (int i = 0; i < 4 ; ++i)
+      v1[i] = m_src[1][i];
+
+   if (src0->abs ||   src0->negate) {
+      int src0_tmp = allocate_temp_register();
+      GPRVector::Values v0_temp;
+      AluInstruction *ir = nullptr;
+      for (int i = 0; i < 4 ; ++i) {
+         if (instr.dest.write_mask & (1 << i)) {
+            v0_temp[i] = PValue(new GPRValue(src0_tmp, i));
+            ir = new AluInstruction(op1_mov, v0_temp[i], v0[i], write);
+            if (src0->abs) ir->set_flag(alu_src0_abs);
+            if (src0->negate) ir->set_flag(alu_src0_neg);
+            emit_instruction(ir);
+            v0[i] = v0_temp[i];
+         }
+      }
+      if (ir)
+         ir->set_flag(alu_last_instr);
+   }
+
+   if (src1->abs || src1->negate) {
+      int src1_tmp = allocate_temp_register();
+      GPRVector::Values v1_temp;
+      AluInstruction *ir = nullptr;
+      for (int i = 0; i < 4 ; ++i) {
+         if (instr.dest.write_mask & (1 << i)) {
+            v1_temp[i] = PValue(new GPRValue(src1_tmp, i));
+            ir = new AluInstruction(op1_mov, v1_temp[i], v1[i], {alu_write});
+            if (src1->abs) ir->set_flag(alu_src0_abs);
+            if (src1->negate) ir->set_flag(alu_src0_neg);
+            emit_instruction(ir);
+            v1[i] = v1_temp[i];
+         }
+      }
+      if (ir)
+         ir->set_flag(alu_last_instr);
+   }
+
+   AluInstruction *ir = nullptr;
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+         ir = new AluInstruction(opcode, from_nir(instr.dest, i), {v0[i], v1[i]}, {alu_write});
+         emit_instruction(ir);
+      }
+   }
+   if (ir)
+      ir->set_flag(alu_last_instr);
+   return true;
+}
+
+
+bool EmitAluInstruction::emit_alu_isign(const nir_alu_instr& instr)
+{
+   int sel_tmp = allocate_temp_register();
+   GPRVector tmp(sel_tmp, {0,1,2,3});
+
+   AluInstruction *ir = nullptr;
+   PValue help[4];
+
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+         help[i] = from_nir(instr.dest, i);
+         auto s = m_src[0][i];
+         ir = new AluInstruction(op3_cndgt_int, help[i], s, Value::one_i, s, write);
+         emit_instruction(ir);
+      }
+   }
+   if (ir)
+      ir->set_flag(alu_last_instr);
+
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+         ir = new AluInstruction(op2_sub_int, tmp.reg_i(i), Value::zero, help[i], write);
+         emit_instruction(ir);
+      }
+   }
+   if (ir)
+      ir->set_flag(alu_last_instr);
+
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+
+         ir = new AluInstruction(op3_cndgt_int, help[i], tmp.reg_i(i),
+                                 PValue(new LiteralValue(-1,0)), help[i], write);
+         emit_instruction(ir);
+      }
+   }
+   if (ir)
+      ir->set_flag(alu_last_instr);
+   return true;
+}
+
+bool EmitAluInstruction::emit_fsign(const nir_alu_instr& instr)
+{
+   PValue help[4];
+   PValue src[4];
+   AluInstruction *ir = nullptr;
+
+   for (int i = 0; i < 4 ; ++i) {
+      help[i] = from_nir(instr.dest, i);
+      src[i] = m_src[0][i];
+   }
+
+   if (instr.src[0].abs) {
+
+      for (int i = 0; i < 4 ; ++i) {
+         if (instr.dest.write_mask & (1 << i)){
+            ir = new AluInstruction(op2_setgt, help[i], src[i], Value::zero, write);
+            ir->set_flag(alu_src0_abs);
+            emit_instruction(ir);
+         }
+      }
+      if (ir)
+         ir->set_flag(alu_last_instr);
+
+      if (instr.src[0].negate) {
+         for (int i = 0; i < 4 ; ++i) {
+            if (instr.dest.write_mask & (1 << i)){
+               ir = new AluInstruction(op1_mov, help[i], help[i], write);
+               ir->set_flag(alu_src0_neg);
+               emit_instruction(ir);
+            }
+         }
+         if (ir)
+            ir->set_flag(alu_last_instr);
+      }
+
+      return true;
+   }
+
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+         ir = new AluInstruction(op3_cndgt, help[i], src[i], Value::one_f, src[i], write);
+         if (instr.src[0].negate) {
+            ir->set_flag(alu_src0_neg);
+            ir->set_flag(alu_src2_neg);
+         }
+         emit_instruction(ir);
+      }
+   }
+
+   if (ir)
+      ir->set_flag(alu_last_instr);
+
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+         ir = new AluInstruction(op3_cndgt, help[i], help[i], Value::one_f, help[i], write);
+         ir->set_flag(alu_src0_neg);
+         ir->set_flag(alu_src1_neg);
+         emit_instruction(ir);
+      }
+   }
+   if (ir)
+      ir->set_flag(alu_last_instr);
+   return true;
+}
+
 bool EmitAluInstruction::emit_alu_op3(const nir_alu_instr& instr, EAluOp opcode,
                                       std::array<uint8_t, 3> reorder)
 {
@@ -998,6 +1156,34 @@ bool EmitAluInstruction::emit_alu_ineg(const nir_alu_instr& instr)
 }
 
 static const char swz[] = "xyzw01?_";
+
+
+
+bool EmitAluInstruction::emit_alu_iabs(const nir_alu_instr& instr)
+{
+   int sel_tmp = allocate_temp_register();
+   GPRVector tmp(sel_tmp, {0,1,2,3});
+
+   std::array<PValue,4> src;
+   AluInstruction *ir = nullptr;
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+         ir = new AluInstruction(op2_sub_int, tmp.reg_i(i), Value::zero, m_src[0][i], write);
+         emit_instruction(ir);
+      }
+   }
+   make_last(ir);
+
+   for (int i = 0; i < 4 ; ++i) {
+      if (instr.dest.write_mask & (1 << i)){
+         ir = new AluInstruction(op3_cndge_int, from_nir(instr.dest, i), m_src[0][i],
+                                 m_src[0][i], tmp.reg_i(i), write);
+         emit_instruction(ir);
+      }
+   }
+   make_last(ir);
+   return true;
+}
 
 bool EmitAluInstruction::emit_alu_div_int(const nir_alu_instr& instr, bool use_signed, bool mod)
 {
@@ -1149,8 +1335,10 @@ bool EmitAluInstruction::emit_tex_fdd(const nir_alu_instr& instr, TexInstruction
    auto tex = new TexInstruction(op, dst, src, 0, R600_MAX_CONST_BUFFERS, PValue());
    tex->set_dest_swizzle(writemask);
 
-   if (fine)
+   if (fine) {
+      std::cerr << "Sewt fine flag\n";
       tex->set_flag(TexInstruction::grad_fine);
+   }
 
    emit_instruction(tex);
 

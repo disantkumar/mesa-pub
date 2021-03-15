@@ -160,8 +160,9 @@ st_setup_arrays(struct st_context *st,
 
          /* Set the vertex buffer. */
          if (binding->BufferObj) {
-            vbuffer[bufidx].buffer.resource =
-               st_get_buffer_reference(ctx, binding->BufferObj);
+            struct st_buffer_object *stobj = st_buffer_object(binding->BufferObj);
+
+            vbuffer[bufidx].buffer.resource = stobj ? stobj->buffer : NULL;
             vbuffer[bufidx].is_user_buffer = false;
             vbuffer[bufidx].buffer_offset = binding->Offset +
                                             attrib->RelativeOffset;
@@ -189,8 +190,9 @@ st_setup_arrays(struct st_context *st,
 
       if (binding->BufferObj) {
          /* Set the binding */
-         vbuffer[bufidx].buffer.resource =
-            st_get_buffer_reference(ctx, binding->BufferObj);
+         struct st_buffer_object *stobj = st_buffer_object(binding->BufferObj);
+
+         vbuffer[bufidx].buffer.resource = stobj ? stobj->buffer : NULL;
          vbuffer[bufidx].is_user_buffer = false;
          vbuffer[bufidx].buffer_offset = _mesa_draw_binding_offset(binding);
       } else {
@@ -227,7 +229,7 @@ st_setup_arrays(struct st_context *st,
  * Return the index of the vertex buffer where current attribs have been
  * uploaded.
  */
-static void ALWAYS_INLINE
+static int ALWAYS_INLINE
 st_setup_current(struct st_context *st,
                  const struct st_vertex_program *vp,
                  const struct st_common_variant *vp_variant,
@@ -284,7 +286,9 @@ st_setup_current(struct st_context *st,
                     &vbuffer[bufidx].buffer.resource);
       /* Always unmap. The uploader might use explicit flushes. */
       u_upload_unmap(uploader);
+      return bufidx;
    }
+   return -1;
 }
 
 void
@@ -337,7 +341,8 @@ st_update_array(struct st_context *st)
 
    /* _NEW_CURRENT_ATTRIB */
    /* Setup zero-stride attribs. */
-   st_setup_current(st, vp, vp_variant, &velements, vbuffer, &num_vbuffers);
+   int current_attrib_buffer =
+      st_setup_current(st, vp, vp_variant, &velements, vbuffer, &num_vbuffers);
 
    velements.count = vp->num_inputs + vp_variant->key.passthrough_edgeflags;
 
@@ -349,8 +354,10 @@ st_update_array(struct st_context *st)
    cso_set_vertex_buffers_and_elements(cso, &velements,
                                        num_vbuffers,
                                        unbind_trailing_vbuffers,
-                                       true,
-                                       uses_user_vertex_buffers,
-                                       vbuffer);
+                                       vbuffer, uses_user_vertex_buffers);
    st->last_num_vbuffers = num_vbuffers;
+
+   /* Unreference uploaded current attrib buffer. */
+   if (current_attrib_buffer >= 0)
+      pipe_resource_reference(&vbuffer[current_attrib_buffer].buffer.resource, NULL);
 }

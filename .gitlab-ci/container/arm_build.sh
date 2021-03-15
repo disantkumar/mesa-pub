@@ -23,7 +23,6 @@ apt-get -y install \
 	git \
 	kmod \
 	lavacli \
-	libasan5 \
 	libdrm-dev \
 	libelf-dev \
 	libexpat1-dev \
@@ -66,6 +65,6 @@ arch=armhf
 
 # dependencies where we want a specific version
 EXTRA_MESON_ARGS=
-. .gitlab-ci/container/build-libdrm.sh
+. .gitlab-ci/build-libdrm.sh
 
 . .gitlab-ci/container/container_post_build.sh

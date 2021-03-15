@@ -161,12 +161,8 @@ isl_device_setup_mocs(struct isl_device *dev)
  * Return an appropriate MOCS entry for the given usage flags.
  */
 uint32_t
-isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
-         bool external)
+isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage)
 {
-   if (external)
-      return dev->mocs.external;
-
    if (dev->info->gen >= 12 && !dev->info->is_dg1) {
       if (usage & ISL_SURF_USAGE_STAGING_BIT)
          return dev->mocs.internal;
@@ -2191,38 +2187,43 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
 }
 
 #define isl_genX_call(dev, func, ...)              \
-   switch (ISL_DEV_GENX10(dev)) {                  \
-   case 40:                                        \
-      isl_gen4_##func(__VA_ARGS__);                \
-      break;                                       \
-   case 45:                                        \
+   switch (ISL_DEV_GEN(dev)) {                     \
+   case 4:                                         \
       /* G45 surface state is the same as gen5 */  \
-   case 50:                                        \
+      if (ISL_DEV_IS_G4X(dev)) {                   \
+         isl_gen5_##func(__VA_ARGS__);             \
+      } else {                                     \
+         isl_gen4_##func(__VA_ARGS__);             \
+      }                                            \
+      break;                                       \
+   case 5:                                         \
       isl_gen5_##func(__VA_ARGS__);                \
       break;                                       \
-   case 60:                                        \
+   case 6:                                         \
       isl_gen6_##func(__VA_ARGS__);                \
       break;                                       \
-   case 70:                                        \
-      isl_gen7_##func(__VA_ARGS__);                \
+   case 7:                                         \
+      if (ISL_DEV_IS_HASWELL(dev)) {               \
+         isl_gen75_##func(__VA_ARGS__);            \
+      } else {                                     \
+         isl_gen7_##func(__VA_ARGS__);             \
+      }                                            \
       break;                                       \
-   case 75:                                        \
-      isl_gen75_##func(__VA_ARGS__);               \
-      break;                                       \
-   case 80:                                        \
+   case 8:                                         \
       isl_gen8_##func(__VA_ARGS__);                \
       break;                                       \
-   case 90:                                        \
+   case 9:                                         \
       isl_gen9_##func(__VA_ARGS__);                \
       break;                                       \
-   case 110:                                       \
+   case 11:                                        \
       isl_gen11_##func(__VA_ARGS__);               \
       break;                                       \
-   case 120:                                       \
-      isl_gen12_##func(__VA_ARGS__);               \
-      break;                                       \
-   case 125:                                       \
-      isl_gen125_##func(__VA_ARGS__);              \
+   case 12:                                        \
+      if (ISL_DEV_IS_GEN12HP(dev)) {               \
+         isl_gen125_##func(__VA_ARGS__);           \
+      } else {                                     \
+         isl_gen12_##func(__VA_ARGS__);            \
+      }                                            \
       break;                                       \
    default:                                        \
       assert(!"Unknown hardware generation");      \

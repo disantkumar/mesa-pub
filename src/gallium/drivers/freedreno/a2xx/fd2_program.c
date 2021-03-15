@@ -166,8 +166,7 @@ fd2_vp_state_delete(struct pipe_context *pctx, void *hwcso)
 
 static void
 patch_vtx_fetch(struct fd_context *ctx, struct pipe_vertex_element *elem,
-		instr_fetch_vtx_t *instr, uint16_t dst_swiz)
-	assert_dt
+	instr_fetch_vtx_t *instr, uint16_t dst_swiz)
 {
 	struct surface_format fmt = fd2_pipe2surface(elem->src_format);
 
@@ -182,8 +181,7 @@ patch_vtx_fetch(struct fd_context *ctx, struct pipe_vertex_element *elem,
 
 static void
 patch_fetches(struct fd_context *ctx, struct ir2_shader_info *info,
-		struct fd_vertex_stateobj *vtx, struct fd_texture_stateobj *tex)
-	assert_dt
+	struct fd_vertex_stateobj *vtx, struct fd_texture_stateobj *tex)
 {
 	for (int i = 0; i < info->num_fetch_instrs; i++) {
 		struct ir2_fetch_info *fi = &info->fetch_info[i];

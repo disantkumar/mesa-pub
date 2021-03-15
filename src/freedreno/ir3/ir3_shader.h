@@ -288,14 +288,21 @@ struct ir3_shader_key {
 			unsigned has_per_samp : 1;
 
 			/*
+			 * Vertex shader variant parameters:
+			 */
+			unsigned vclamp_color : 1;
+
+			/*
 			 * Fragment shader variant parameters:
 			 */
 			unsigned sample_shading : 1;
 			unsigned msaa           : 1;
+			unsigned color_two_side : 1;
 			/* used when shader needs to handle flat varyings (a4xx)
 			 * for front/back color inputs to frag shader:
 			 */
 			unsigned rasterflat : 1;
+			unsigned fclamp_color : 1;
 
 			/* Indicates that this is a tessellation pipeline which requires a
 			 * whole different kind of vertex shader.  In case of
@@ -325,10 +332,20 @@ struct ir3_shader_key {
 		uint32_t global;
 	};
 
-	/* bitmask of ms shifts (a3xx) */
+	/* bitmask of sampler which needs coords clamped for vertex
+	 * shader:
+	 */
+	uint16_t vsaturate_s, vsaturate_t, vsaturate_r;
+
+	/* bitmask of sampler which needs coords clamped for frag
+	 * shader:
+	 */
+	uint16_t fsaturate_s, fsaturate_t, fsaturate_r;
+
+	/* bitmask of ms shifts */
 	uint32_t vsamples, fsamples;
 
-	/* bitmask of samplers which need astc srgb workaround (a4xx+a5xx): */
+	/* bitmask of samplers which need astc srgb workaround: */
 	uint16_t vastc_srgb, fastc_srgb;
 };
 
@@ -361,10 +378,19 @@ static inline bool
 ir3_shader_key_changes_fs(struct ir3_shader_key *key, struct ir3_shader_key *last_key)
 {
 	if (last_key->has_per_samp || key->has_per_samp) {
-		if ((last_key->fsamples != key->fsamples) ||
+		if ((last_key->fsaturate_s != key->fsaturate_s) ||
+				(last_key->fsaturate_t != key->fsaturate_t) ||
+				(last_key->fsaturate_r != key->fsaturate_r) ||
+				(last_key->fsamples != key->fsamples) ||
 				(last_key->fastc_srgb != key->fastc_srgb))
 			return true;
 	}
+
+	if (last_key->fclamp_color != key->fclamp_color)
+		return true;
+
+	if (last_key->color_two_side != key->color_two_side)
+		return true;
 
 	if (last_key->rasterflat != key->rasterflat)
 		return true;
@@ -386,10 +412,16 @@ static inline bool
 ir3_shader_key_changes_vs(struct ir3_shader_key *key, struct ir3_shader_key *last_key)
 {
 	if (last_key->has_per_samp || key->has_per_samp) {
-		if ((last_key->vsamples != key->vsamples) ||
+		if ((last_key->vsaturate_s != key->vsaturate_s) ||
+				(last_key->vsaturate_t != key->vsaturate_t) ||
+				(last_key->vsaturate_r != key->vsaturate_r) ||
+				(last_key->vsamples != key->vsamples) ||
 				(last_key->vastc_srgb != key->vastc_srgb))
 			return true;
 	}
+
+	if (last_key->vclamp_color != key->vclamp_color)
+		return true;
 
 	if (last_key->ucp_enables != key->ucp_enables)
 		return true;
@@ -526,9 +558,6 @@ struct ir3_shader_variant {
 	unsigned pvtmem_size;
 	/* Whether we should use the new per-wave layout rather than per-fiber. */
 	bool pvtmem_per_wave;
-
-	/* Size in bytes of required shared memory */
-	unsigned shared_size;
 
 	/* About Linkage:
 	 *   + Let the frag shader determine the position/compmask for the

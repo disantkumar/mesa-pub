@@ -160,8 +160,6 @@ struct st_context
    boolean lower_ucp;
    boolean prefer_real_buffer_in_constbuf0;
    boolean has_conditional_render;
-   boolean lower_texcoord_replace;
-   boolean lower_rect_tex;
 
    /* There are consequences for drivers wanting to call st_finalize_nir
     * twice, once before shader caching and once after lowering for shader
@@ -183,7 +181,6 @@ struct st_context
 
    boolean needs_texcoord_semantic;
    boolean apply_texture_swizzle_to_border_color;
-   boolean emulate_gl_clamp;
    boolean texture_buffer_sampler;
 
    /* On old libGL's for linux we need to invalidate the drawables
@@ -211,7 +208,6 @@ struct st_context
       struct pipe_sampler_view *vert_sampler_views[PIPE_MAX_SAMPLERS];
       struct pipe_sampler_view *frag_sampler_views[PIPE_MAX_SAMPLERS];
       GLuint num_sampler_views[PIPE_SHADER_TYPES];
-      unsigned num_images[PIPE_SHADER_TYPES];
       struct pipe_clip_state clip;
       unsigned constbuf0_enabled_shader_mask;
       unsigned fb_width;

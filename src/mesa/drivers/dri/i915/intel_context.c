@@ -57,7 +57,6 @@
 #include "utils.h"
 #include "util/debug.h"
 #include "util/ralloc.h"
-#include "util/u_memory.h"
 
 int INTEL_DEBUG = (0);
 
@@ -601,7 +600,7 @@ intelDestroyContext(__DRIcontext * driContextPriv)
       /* free the Mesa context */
       _mesa_free_context_data(&intel->ctx, true);
 
-      align_free(intel);
+      ralloc_free(intel);
       driContextPriv->driverPrivate = NULL;
    }
 }

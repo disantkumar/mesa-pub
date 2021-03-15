@@ -21,27 +21,24 @@
 # TODO: android?
 
 files_libintel_common = files(
-  'intel_aux_map.c',
-  'intel_aux_map.h',
-  'intel_buffer_alloc.h',
-  'intel_clflush.h',
-  'intel_batch_decoder.c',
-  'intel_decoder.c',
-  'intel_decoder.h',
-  'intel_disasm.c',
-  'intel_disasm.h',
-  'intel_gem.c',
-  'intel_gem.h',
-  'intel_guardband.h',
-  'intel_l3_config.c',
-  'intel_l3_config.h',
-  'intel_urb_config.c',
-  'intel_sample_positions.c',
-  'intel_sample_positions.h',
-  'intel_uuid.c',
-  'intel_uuid.h',
-  'intel_measure.c',
-  'intel_measure.h',
+  'gen_aux_map.c',
+  'gen_aux_map.h',
+  'gen_buffer_alloc.h',
+  'gen_clflush.h',
+  'gen_batch_decoder.c',
+  'gen_decoder.c',
+  'gen_decoder.h',
+  'gen_disasm.c',
+  'gen_disasm.h',
+  'gen_gem.c',
+  'gen_gem.h',
+  'gen_guardband.h',
+  'gen_l3_config.c',
+  'gen_l3_config.h',
+  'gen_urb_config.c',
+  'gen_sample_positions.h',
+  'gen_uuid.c',
+  'gen_uuid.h',
 )
 
 libintel_common = static_library(
@@ -72,7 +69,7 @@ if install_intel_gpu_tests
                ['125', 'gen125']]
     executable(
       'intel_@0@_mi_builder_test'.format(g[1]),
-      files('tests/mi_builder_test.cpp'),
+      files('tests/gen_mi_builder_test.cpp'),
       cpp_args : [
         cpp_msvc_compat_args,
         '-DGEN_VERSIONx10=@0@'.format(g[0])

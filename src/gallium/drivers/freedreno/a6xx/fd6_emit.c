@@ -216,7 +216,6 @@ setup_border_colors(struct fd_texture_stateobj *tex, struct bcolor_entry *entrie
 
 static void
 emit_border_color(struct fd_context *ctx, struct fd_ringbuffer *ring)
-	assert_dt
 {
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
 	struct bcolor_entry *entries;
@@ -237,7 +236,7 @@ emit_border_color(struct fd_context *ctx, struct fd_ringbuffer *ring)
 	setup_border_colors(&ctx->tex[PIPE_SHADER_FRAGMENT],
 			&entries[ctx->tex[PIPE_SHADER_VERTEX].num_samplers]);
 
-	OUT_PKT4(ring, REG_A6XX_SP_TP_BORDER_COLOR_BASE_ADDR, 2);
+	OUT_PKT4(ring, REG_A6XX_SP_TP_BORDER_COLOR_BASE_ADDR_LO, 2);
 	OUT_RELOC(ring, fd_resource(fd6_ctx->border_color_buf)->bo, off, 0, 0);
 
 	u_upload_unmap(fd6_ctx->border_color_uploader);
@@ -245,7 +244,6 @@ emit_border_color(struct fd_context *ctx, struct fd_ringbuffer *ring)
 
 static void
 fd6_emit_fb_tex(struct fd_ringbuffer *state, struct fd_context *ctx)
-	assert_dt
 {
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
 	struct pipe_surface *psurf = pfb->cbufs[0];
@@ -282,11 +280,11 @@ fd6_emit_fb_tex(struct fd_ringbuffer *state, struct fd_context *ctx)
 }
 
 bool
-fd6_emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
+fd6_emit_textures(struct fd_pipe *pipe, struct fd_ringbuffer *ring,
 		enum pipe_shader_type type, struct fd_texture_stateobj *tex,
 		unsigned bcolor_offset,
 		/* can be NULL if no image/SSBO/fb state to merge in: */
-		const struct ir3_shader_variant *v)
+		const struct ir3_shader_variant *v, struct fd_context *ctx)
 {
 	bool needs_border = false;
 	unsigned opcode, tex_samp_reg, tex_const_reg, tex_count_reg;
@@ -296,43 +294,43 @@ fd6_emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	case PIPE_SHADER_VERTEX:
 		sb = SB6_VS_TEX;
 		opcode = CP_LOAD_STATE6_GEOM;
-		tex_samp_reg = REG_A6XX_SP_VS_TEX_SAMP;
-		tex_const_reg = REG_A6XX_SP_VS_TEX_CONST;
+		tex_samp_reg = REG_A6XX_SP_VS_TEX_SAMP_LO;
+		tex_const_reg = REG_A6XX_SP_VS_TEX_CONST_LO;
 		tex_count_reg = REG_A6XX_SP_VS_TEX_COUNT;
 		break;
 	case PIPE_SHADER_TESS_CTRL:
 		sb = SB6_HS_TEX;
 		opcode = CP_LOAD_STATE6_GEOM;
-		tex_samp_reg = REG_A6XX_SP_HS_TEX_SAMP;
-		tex_const_reg = REG_A6XX_SP_HS_TEX_CONST;
+		tex_samp_reg = REG_A6XX_SP_HS_TEX_SAMP_LO;
+		tex_const_reg = REG_A6XX_SP_HS_TEX_CONST_LO;
 		tex_count_reg = REG_A6XX_SP_HS_TEX_COUNT;
 		break;
 	case PIPE_SHADER_TESS_EVAL:
 		sb = SB6_DS_TEX;
 		opcode = CP_LOAD_STATE6_GEOM;
-		tex_samp_reg = REG_A6XX_SP_DS_TEX_SAMP;
-		tex_const_reg = REG_A6XX_SP_DS_TEX_CONST;
+		tex_samp_reg = REG_A6XX_SP_DS_TEX_SAMP_LO;
+		tex_const_reg = REG_A6XX_SP_DS_TEX_CONST_LO;
 		tex_count_reg = REG_A6XX_SP_DS_TEX_COUNT;
 		break;
 	case PIPE_SHADER_GEOMETRY:
 		sb = SB6_GS_TEX;
 		opcode = CP_LOAD_STATE6_GEOM;
-		tex_samp_reg = REG_A6XX_SP_GS_TEX_SAMP;
-		tex_const_reg = REG_A6XX_SP_GS_TEX_CONST;
+		tex_samp_reg = REG_A6XX_SP_GS_TEX_SAMP_LO;
+		tex_const_reg = REG_A6XX_SP_GS_TEX_CONST_LO;
 		tex_count_reg = REG_A6XX_SP_GS_TEX_COUNT;
 		break;
 	case PIPE_SHADER_FRAGMENT:
 		sb = SB6_FS_TEX;
 		opcode = CP_LOAD_STATE6_FRAG;
-		tex_samp_reg = REG_A6XX_SP_FS_TEX_SAMP;
-		tex_const_reg = REG_A6XX_SP_FS_TEX_CONST;
+		tex_samp_reg = REG_A6XX_SP_FS_TEX_SAMP_LO;
+		tex_const_reg = REG_A6XX_SP_FS_TEX_CONST_LO;
 		tex_count_reg = REG_A6XX_SP_FS_TEX_COUNT;
 		break;
 	case PIPE_SHADER_COMPUTE:
 		sb = SB6_CS_TEX;
 		opcode = CP_LOAD_STATE6_FRAG;
-		tex_samp_reg = REG_A6XX_SP_CS_TEX_SAMP;
-		tex_const_reg = REG_A6XX_SP_CS_TEX_CONST;
+		tex_samp_reg = REG_A6XX_SP_CS_TEX_SAMP_LO;
+		tex_const_reg = REG_A6XX_SP_CS_TEX_CONST_LO;
 		tex_count_reg = REG_A6XX_SP_CS_TEX_COUNT;
 		break;
 	default:
@@ -341,7 +339,7 @@ fd6_emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 	if (tex->num_samplers > 0) {
 		struct fd_ringbuffer *state =
-			fd_ringbuffer_new_object(ctx->pipe, tex->num_samplers * 4 * 4);
+			fd_ringbuffer_new_object(pipe, tex->num_samplers * 4 * 4);
 		for (unsigned i = 0; i < tex->num_samplers; i++) {
 			static const struct fd6_sampler_stateobj dummy_sampler = {};
 			const struct fd6_sampler_stateobj *sampler = tex->samplers[i] ?
@@ -388,20 +386,11 @@ fd6_emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 	if (num_merged_textures > 0) {
 		struct fd_ringbuffer *state =
-			fd_ringbuffer_new_object(ctx->pipe, num_merged_textures * 16 * 4);
+			fd_ringbuffer_new_object(pipe, num_merged_textures * 16 * 4);
 		for (unsigned i = 0; i < num_textures; i++) {
-			const struct fd6_pipe_sampler_view *view;
-
-			if (tex->textures[i]) {
-				view = fd6_pipe_sampler_view(tex->textures[i]);
-				if (unlikely(view->rsc_seqno != fd_resource(view->base.texture)->seqno)) {
-					fd6_sampler_view_update(ctx,
-							fd6_pipe_sampler_view(tex->textures[i]));
-				}
-			} else {
-				static const struct fd6_pipe_sampler_view dummy_view = {};
-				view = &dummy_view;
-			}
+			static const struct fd6_pipe_sampler_view dummy_view = {};
+			const struct fd6_pipe_sampler_view *view = tex->textures[i] ?
+				fd6_pipe_sampler_view(tex->textures[i]) : &dummy_view;
 
 			OUT_RING(state, view->texconst0);
 			OUT_RING(state, view->texconst1);
@@ -489,7 +478,6 @@ fd6_emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 static bool
 fd6_emit_combined_textures(struct fd_ringbuffer *ring, struct fd6_emit *emit,
 		enum pipe_shader_type type, const struct ir3_shader_variant *v)
-	assert_dt
 {
 	struct fd_context *ctx = emit->ctx;
 	bool needs_border = false;
@@ -549,8 +537,8 @@ fd6_emit_combined_textures(struct fd_ringbuffer *ring, struct fd6_emit *emit,
 			unsigned bcolor_offset =
 				fd6_border_color_offset(ctx, type, tex);
 
-			needs_border |= fd6_emit_textures(ctx, stateobj, type, tex,
-					bcolor_offset, v);
+			needs_border |= fd6_emit_textures(ctx->pipe, stateobj, type, tex,
+					bcolor_offset, v, ctx);
 
 			fd6_emit_take_group(emit, stateobj, s[type].state_id,
 					s[type].enable_mask);
@@ -562,7 +550,6 @@ fd6_emit_combined_textures(struct fd_ringbuffer *ring, struct fd6_emit *emit,
 
 static struct fd_ringbuffer *
 build_vbo_state(struct fd6_emit *emit)
-	assert_dt
 {
 	const struct fd_vertex_state *vtx = emit->vtx;
 
@@ -593,7 +580,6 @@ build_vbo_state(struct fd6_emit *emit)
 
 static enum a6xx_ztest_mode
 compute_ztest_mode(struct fd6_emit *emit, bool lrz_valid)
-	assert_dt
 {
 	struct fd_context *ctx =  emit->ctx;
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
@@ -607,7 +593,7 @@ compute_ztest_mode(struct fd6_emit *emit, bool lrz_valid)
 			fs->writes_stencilref) {
 		return A6XX_LATE_Z;
 	} else if ((fs->has_kill || zsa->alpha_test) &&
-			(zsa->writes_zs || !pfb->zsbuf)) {
+			(zsa->base.depth_writemask || !pfb->zsbuf)) {
 		/* Slightly odd, but seems like the hw wants us to select
 		 * LATE_Z mode if there is no depth buffer + discard.  Either
 		 * that, or when occlusion query is enabled.  See:
@@ -627,7 +613,6 @@ compute_ztest_mode(struct fd6_emit *emit, bool lrz_valid)
  */
 static struct fd6_lrz_state
 compute_lrz_state(struct fd6_emit *emit, bool binning_pass)
-	assert_dt
 {
 	struct fd_context *ctx = emit->ctx;
 	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
@@ -700,7 +685,6 @@ compute_lrz_state(struct fd6_emit *emit, bool binning_pass)
 
 static struct fd_ringbuffer *
 build_lrz(struct fd6_emit *emit, bool binning_pass)
-	assert_dt
 {
 	struct fd_context *ctx = emit->ctx;
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
@@ -739,9 +723,7 @@ build_lrz(struct fd6_emit *emit, bool binning_pass)
 }
 
 static void
-fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit,
-		struct ir3_stream_output_info *info)
-	assert_dt
+fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit, struct ir3_stream_output_info *info)
 {
 	struct fd_context *ctx = emit->ctx;
 	const struct fd6_program_state *prog = fd6_emit_get_prog(emit);
@@ -755,9 +737,7 @@ fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit,
 		if (!target)
 			continue;
 
-		target->stride = info->stride[i];
-
-		OUT_PKT4(ring, REG_A6XX_VPC_SO_BUFFER_BASE(i), 3);
+		OUT_PKT4(ring, REG_A6XX_VPC_SO_BUFFER_BASE_LO(i), 3);
 		/* VPC_SO[i].BUFFER_BASE_LO: */
 		OUT_RELOC(ring, fd_resource(target->base.buffer)->bo, 0, 0, 0);
 		OUT_RING(ring, target->base.buffer_size + target->base.buffer_offset);
@@ -782,7 +762,7 @@ fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit,
 		}
 
 		// After a draw HW would write the new offset to offset_bo
-		OUT_PKT4(ring, REG_A6XX_VPC_SO_FLUSH_BASE(i), 2);
+		OUT_PKT4(ring, REG_A6XX_VPC_SO_FLUSH_BASE_LO(i), 2);
 		OUT_RELOC(ring, offset_bo, 0, 0, 0);
 
 		so->reset &= ~(1 << i);
@@ -1023,8 +1003,6 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 		if (blend->use_dual_src_blend)
 			mrt_components |= 0xf << 4;
 
-		mrt_components &= prog->mrt_components;
-
 		OUT_REG(ring, A6XX_SP_FS_RENDER_COMPONENTS(.dword = mrt_components));
 		OUT_REG(ring, A6XX_RB_RENDER_COMPONENTS(.dword = mrt_components));
 
@@ -1095,7 +1073,7 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
 			CP_LOAD_STATE6_0_NUM_UNIT(ir3_shader_nibo(fs)));
 		OUT_RB(obj, state);
 
-		OUT_PKT4(obj, REG_A6XX_SP_IBO, 2);
+		OUT_PKT4(obj, REG_A6XX_SP_IBO_LO, 2);
 		OUT_RB(obj, state);
 
 		/* TODO if we used CP_SET_DRAW_STATE for compute shaders, we could
@@ -1151,8 +1129,8 @@ fd6_emit_cs_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		struct fd_texture_stateobj *tex = &ctx->tex[PIPE_SHADER_COMPUTE];
 		unsigned bcolor_offset = fd6_border_color_offset(ctx, PIPE_SHADER_COMPUTE, tex);
 
-		bool needs_border = fd6_emit_textures(ctx, ring, PIPE_SHADER_COMPUTE, tex,
-				bcolor_offset, cp);
+		bool needs_border = fd6_emit_textures(ctx->pipe, ring, PIPE_SHADER_COMPUTE, tex,
+				bcolor_offset, cp, ctx);
 
 		if (needs_border)
 			emit_border_color(ctx, ring);
@@ -1185,7 +1163,7 @@ fd6_emit_cs_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			CP_LOAD_STATE6_0_NUM_UNIT(ir3_shader_nibo(cp)));
 		OUT_RB(ring, state);
 
-		OUT_PKT4(ring, REG_A6XX_SP_CS_IBO, 2);
+		OUT_PKT4(ring, REG_A6XX_SP_CS_IBO_LO, 2);
 		OUT_RB(ring, state);
 
 		OUT_PKT4(ring, REG_A6XX_SP_CS_IBO_COUNT, 1);
@@ -1230,9 +1208,9 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 	WRITE(REG_A6XX_RB_UNKNOWN_8E04, 0x0);
 	WRITE(REG_A6XX_SP_UNKNOWN_AE04, 0x8);
 	WRITE(REG_A6XX_SP_UNKNOWN_AE00, 0);
-	WRITE(REG_A6XX_SP_PERFCTR_ENABLE, 0x3f);
-	WRITE(REG_A6XX_TPL1_UNKNOWN_B605, 0x44);
-	WRITE(REG_A6XX_TPL1_UNKNOWN_B600, 0x100000);
+	WRITE(REG_A6XX_SP_UNKNOWN_AE0F, 0x3f);
+	WRITE(REG_A6XX_SP_UNKNOWN_B605, 0x44);
+	WRITE(REG_A6XX_SP_UNKNOWN_B600, 0x100000);
 	WRITE(REG_A6XX_HLSQ_UNKNOWN_BE00, 0x80);
 	WRITE(REG_A6XX_HLSQ_UNKNOWN_BE01, 0);
 
@@ -1354,7 +1332,6 @@ fd6_mem_to_mem(struct fd_ringbuffer *ring, struct pipe_resource *dst,
  */
 static void
 fd6_framebuffer_barrier(struct fd_context *ctx)
-	assert_dt
 {
 	struct fd6_context *fd6_ctx = fd6_context(ctx);
 	struct fd_batch *batch = ctx->batch;
@@ -1394,7 +1371,6 @@ fd6_emit_init_screen(struct pipe_screen *pscreen)
 
 void
 fd6_emit_init(struct pipe_context *pctx)
-	disable_thread_safety_analysis
 {
 	struct fd_context *ctx = fd_context(pctx);
 	ctx->framebuffer_barrier = fd6_framebuffer_barrier;

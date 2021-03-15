@@ -489,6 +489,15 @@ v3d_setup_shared_key(struct v3d_context *v3d, struct v3d_key *key,
                         key->tex[i].swizzle[2] = PIPE_SWIZZLE_Z;
                         key->tex[i].swizzle[3] = PIPE_SWIZZLE_W;
                 }
+
+                if (sampler) {
+                        key->tex[i].clamp_s =
+                                sampler_state->wrap_s == PIPE_TEX_WRAP_CLAMP;
+                        key->tex[i].clamp_t =
+                                sampler_state->wrap_t == PIPE_TEX_WRAP_CLAMP;
+                        key->tex[i].clamp_r =
+                                sampler_state->wrap_r == PIPE_TEX_WRAP_CLAMP;
+                }
         }
 }
 
@@ -543,6 +552,7 @@ v3d_update_compiled_fs(struct v3d_context *v3d, uint8_t prim_mode)
                          prim_mode <= PIPE_PRIM_LINE_STRIP);
         key->line_smoothing = (key->is_lines &&
                                v3d_line_smoothing_enabled(v3d));
+        key->clamp_color = v3d->rasterizer->base.clamp_fragment_color;
         if (v3d->blend->base.logicop_enable) {
                 key->logicop_func = v3d->blend->base.logicop_func;
         } else {
@@ -554,6 +564,11 @@ v3d_update_compiled_fs(struct v3d_context *v3d, uint8_t prim_mode)
                                         v3d->sample_mask != (1 << V3D_MAX_SAMPLES) - 1);
                 key->sample_alpha_to_coverage = v3d->blend->base.alpha_to_coverage;
                 key->sample_alpha_to_one = v3d->blend->base.alpha_to_one;
+        }
+
+        if (v3d->zsa->base.alpha_enabled) {
+                key->alpha_test = true;
+                key->alpha_test_func = v3d->zsa->base.alpha_func;
         }
 
         key->swap_color_rb = v3d->swap_color_rb;
@@ -603,6 +618,9 @@ v3d_update_compiled_fs(struct v3d_context *v3d, uint8_t prim_mode)
                         (v3d->rasterizer->base.sprite_coord_mode ==
                          PIPE_SPRITE_COORD_UPPER_LEFT);
         }
+
+        key->light_twoside = v3d->rasterizer->base.light_twoside;
+        key->shade_model_flat = v3d->rasterizer->base.flatshade;
 
         struct v3d_compiled_shader *old_fs = v3d->prog.fs;
         v3d->prog.fs = v3d_get_compiled_shader(v3d, &key->base, sizeof(*key));
@@ -744,6 +762,8 @@ v3d_update_compiled_vs(struct v3d_context *v3d, uint8_t prim_mode)
             memcpy(key->used_outputs, v3d->prog.gs->prog_data.gs->input_slots,
                    sizeof(key->used_outputs));
         }
+
+        key->clamp_color = v3d->rasterizer->base.clamp_vertex_color;
 
         key->per_vertex_point_size =
                 (prim_mode == PIPE_PRIM_POINTS &&

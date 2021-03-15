@@ -64,7 +64,7 @@ st_generate_mipmap(struct gl_context *ctx, GLenum target,
       return;
 
    if (texObj->Immutable)
-      baseLevel += texObj->Attrib.MinLevel;
+      baseLevel += texObj->MinLevel;
 
    /* not sure if this ultimately actually should work,
       but we're not supporting multisampled textures yet. */
@@ -74,7 +74,7 @@ st_generate_mipmap(struct gl_context *ctx, GLenum target,
    lastLevel = _mesa_compute_num_levels(ctx, texObj, target) - 1;
 
    if (texObj->Immutable)
-      lastLevel += texObj->Attrib.MinLevel;
+      lastLevel += texObj->MinLevel;
 
    if (lastLevel == 0)
       return;

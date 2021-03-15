@@ -45,8 +45,6 @@
 #include "util/u_transfer.h"
 #include "util/u_threaded_context.h"
 
-#include "compiler/nir/nir.h"
-
 struct u_log_context;
 #define ATI_VENDOR_ID 0x1002
 
@@ -406,8 +404,6 @@ struct r600_common_screen {
 		 */
 		unsigned compute_to_L2;
 	} barrier_flags;
-
-        struct nir_shader_compiler_options nir_options;
 };
 
 /* This encapsulates a state or an operation which can emitted into the GPU

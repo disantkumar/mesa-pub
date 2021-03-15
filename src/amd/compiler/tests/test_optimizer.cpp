@@ -27,7 +27,7 @@ using namespace aco;
 
 BEGIN_TEST(optimize.neg)
    for (unsigned i = GFX9; i <= GFX10; i++) {
-      //>> v1: %a, v1: %b, s1: %c, s1: %d = p_startpgm
+      //>> v1: %a, v1: %b, s1: %c, s1: %d, s2: %_:exec = p_startpgm
       if (!setup_cs("v1 v1 s1 s1", (chip_class)i))
          continue;
 
@@ -82,7 +82,7 @@ BEGIN_TEST(optimize.neg)
 END_TEST
 
 BEGIN_TEST(optimize.output_modifiers)
-   //>> v1: %a, v1: %b = p_startpgm
+   //>> v1: %a, v1: %b, s2: %_:exec = p_startpgm
    if (!setup_cs("v1 v1", GFX9))
       return;
 
@@ -258,7 +258,7 @@ Temp create_subbrev_co(Operand op0, Operand op1, Operand op2)
 
 BEGIN_TEST(optimize.cndmask)
    for (unsigned i = GFX9; i <= GFX10; i++) {
-      //>> v1: %a, s1: %b, s2: %c = p_startpgm
+      //>> v1: %a, s1: %b, s2: %c, s2: %_:exec = p_startpgm
       if (!setup_cs("v1 s1 s2", (chip_class)i))
          continue;
 
@@ -301,7 +301,7 @@ END_TEST
 
 BEGIN_TEST(optimize.add_lshl)
    for (unsigned i = GFX8; i <= GFX10; i++) {
-      //>> s1: %a, v1: %b = p_startpgm
+      //>> s1: %a, v1: %b, s2: %_:exec = p_startpgm
       if (!setup_cs("s1 v1", (chip_class)i))
          continue;
 
@@ -388,7 +388,7 @@ Temp create_mad_u32_u16(Operand a, Operand b, Operand c, bool is16bit = true)
 
 BEGIN_TEST(optimize.mad_u32_u16)
    for (unsigned i = GFX9; i <= GFX10; i++) {
-      //>> v1: %a, v1: %b, s1: %c = p_startpgm
+      //>> v1: %a, v1: %b, s1: %c, s2: %_:exec = p_startpgm
       if (!setup_cs("v1 v1 s1", (chip_class)i))
          continue;
 
@@ -446,7 +446,7 @@ END_TEST
 
 BEGIN_TEST(optimize.bcnt)
    for (unsigned i = GFX8; i <= GFX10; i++) {
-      //>> v1: %a, s1: %b = p_startpgm
+      //>> v1: %a, s1: %b, s2: %_:exec = p_startpgm
       if (!setup_cs("v1 s1", (chip_class)i))
          continue;
 
@@ -533,7 +533,7 @@ BEGIN_TEST(optimize.clamp)
       aco_print_operand(&cfg.ub, output);
       fprintf(output, "\n");
 
-      //>> v1: %a, v1: %b, v1: %c = p_startpgm
+      //>> v1: %a, v1: %b, v1: %c, s2: %_:exec = p_startpgm
 
       //! v1: %res0 = @med3 @ub, @lb, %a
       //! p_unit_test 0, %res0
@@ -600,7 +600,7 @@ BEGIN_TEST(optimize.clamp)
 END_TEST
 
 BEGIN_TEST(optimize.const_comparison_ordering)
-   //>> v1: %a, v1: %b, v2: %c, v1: %d = p_startpgm
+   //>> v1: %a, v1: %b, v2: %c, v1: %d, s2: %_:exec = p_startpgm
    if (!setup_cs("v1 v1 v2 v1", GFX9))
       return;
 
@@ -676,7 +676,8 @@ BEGIN_TEST(optimize.const_comparison_ordering)
    writeout(9, bld.sop2(aco_opcode::s_or_b64, bld.def(bld.lm), bld.def(s1, scc), src0, src1));
 
    /* bit sizes */
-   //! s2: %res10 = v_cmp_nge_f16 4.0, %b
+   //! v2b: %b16 = p_extract_vector %b, 0
+   //! s2: %res10 = v_cmp_nge_f16 4.0, %b16
    //! p_unit_test 10, %res10
    Temp input1_16 = bld.pseudo(aco_opcode::p_extract_vector, bld.def(v2b), inputs[1], Operand(0u));
    writeout(10, bld.sop2(aco_opcode::s_or_b64, bld.def(bld.lm), bld.def(s1, scc),
@@ -722,7 +723,7 @@ BEGIN_TEST(optimize.const_comparison_ordering)
 END_TEST
 
 BEGIN_TEST(optimize.add3)
-   //>> v1: %a, v1: %b, v1: %c = p_startpgm
+   //>> v1: %a, v1: %b, v1: %c, s2: %_:exec = p_startpgm
    if (!setup_cs("v1 v1 v1", GFX9))
       return;
 
@@ -735,7 +736,7 @@ BEGIN_TEST(optimize.add3)
    //! v1: %res1 = v_add_u32 %a, %tmp1
    //! p_unit_test 1, %res1
    tmp = bld.vop2_e64(aco_opcode::v_add_u32, bld.def(v1), inputs[1], inputs[2]);
-   tmp.instr->vop3().clamp = true;
+   static_cast<VOP3A_instruction *>(tmp.instr)->clamp = true;
    writeout(1, bld.vop2(aco_opcode::v_add_u32, bld.def(v1), inputs[0], tmp));
 
    //! v1: %tmp2 = v_add_u32 %b, %c
@@ -743,7 +744,7 @@ BEGIN_TEST(optimize.add3)
    //! p_unit_test 2, %res2
    tmp = bld.vop2(aco_opcode::v_add_u32, bld.def(v1), inputs[1], inputs[2]);
    tmp = bld.vop2_e64(aco_opcode::v_add_u32, bld.def(v1), inputs[0], tmp);
-   tmp.instr->vop3().clamp = true;
+   static_cast<VOP3A_instruction *>(tmp.instr)->clamp = true;
    writeout(2, tmp);
 
    finish_opt_test();
@@ -751,7 +752,7 @@ END_TEST
 
 BEGIN_TEST(optimize.minmax)
    for (unsigned i = GFX8; i <= GFX10; i++) {
-      //>> v1: %a = p_startpgm
+      //>> v1: %a, s2: %_:exec = p_startpgm
       if (!setup_cs("v1", (chip_class)i))
          continue;
 
@@ -774,7 +775,7 @@ END_TEST
 
 BEGIN_TEST(optimize.mad_32_24)
    for (unsigned i = GFX8; i <= GFX9; i++) {
-      //>> v1: %a, v1: %b, v1: %c = p_startpgm
+      //>> v1: %a, v1: %b, v1: %c, s2: %_:exec = p_startpgm
       if (!setup_cs("v1 v1 v1", (chip_class)i))
          continue;
 
@@ -795,7 +796,7 @@ END_TEST
 
 BEGIN_TEST(optimize.add_lshlrev)
    for (unsigned i = GFX8; i <= GFX10; i++) {
-      //>> v1: %a, v1: %b, s1: %c = p_startpgm
+      //>> v1: %a, v1: %b, s1: %c, s2: %_:exec = p_startpgm
       if (!setup_cs("v1 v1 s1", (chip_class)i))
          continue;
 

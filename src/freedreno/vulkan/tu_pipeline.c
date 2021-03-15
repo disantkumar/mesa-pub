@@ -262,7 +262,6 @@ struct tu_pipeline_builder
    VkSampleCountFlagBits samples;
    bool use_color_attachments;
    bool use_dual_src_blend;
-   bool alpha_to_coverage;
    uint32_t color_attachment_count;
    VkFormat color_attachment_formats[MAX_RTS];
    VkFormat depth_attachment_format;
@@ -392,14 +391,14 @@ tu6_emit_xs_config(struct tu_cs *cs,
    }
 
    bool is_fs = xs->type == MESA_SHADER_FRAGMENT;
-   enum a6xx_threadsize threadsize = THREAD128;
+   enum a3xx_threadsize threadsize = FOUR_QUADS;
 
-   /* TODO: We probably should be setting the VS threadsize to 64 if paired
-    * with a GS, and HS + DS threadsize to 64 like freedreno. However this
-    * should probably come from ir3.
+   /* TODO:
+    * the "threadsize" field may have nothing to do with threadsize,
+    * use a value that matches the blob until it is figured out
     */
    if (xs->type == MESA_SHADER_GEOMETRY)
-      threadsize = THREAD64;
+      threadsize = TWO_QUADS;
 
    tu_cs_emit_pkt4(cs, cfg->reg_sp_xs_ctrl, 1);
    tu_cs_emit(cs,
@@ -533,10 +532,8 @@ tu6_emit_cs_config(struct tu_cs *cs, const struct tu_shader *shader,
 
    tu6_emit_xs_config(cs, MESA_SHADER_COMPUTE, v, pvtmem, binary_iova);
 
-   uint32_t shared_size = MAX2(((int)v->shared_size - 1) / 1024, 1);
    tu_cs_emit_pkt4(cs, REG_A6XX_SP_CS_UNKNOWN_A9B1, 1);
-   tu_cs_emit(cs, A6XX_SP_CS_UNKNOWN_A9B1_SHARED_SIZE(shared_size) |
-                  A6XX_SP_CS_UNKNOWN_A9B1_UNK6);
+   tu_cs_emit(cs, 0x41);
 
    uint32_t local_invocation_id =
       ir3_find_sysval_regid(v, SYSTEM_VALUE_LOCAL_INVOCATION_ID);
@@ -546,11 +543,10 @@ tu6_emit_cs_config(struct tu_cs *cs, const struct tu_shader *shader,
    tu_cs_emit_pkt4(cs, REG_A6XX_HLSQ_CS_CNTL_0, 2);
    tu_cs_emit(cs,
               A6XX_HLSQ_CS_CNTL_0_WGIDCONSTID(work_group_id) |
-              A6XX_HLSQ_CS_CNTL_0_WGSIZECONSTID(regid(63, 0)) |
-              A6XX_HLSQ_CS_CNTL_0_WGOFFSETCONSTID(regid(63, 0)) |
+              A6XX_HLSQ_CS_CNTL_0_UNK0(regid(63, 0)) |
+              A6XX_HLSQ_CS_CNTL_0_UNK1(regid(63, 0)) |
               A6XX_HLSQ_CS_CNTL_0_LOCALIDREGID(local_invocation_id));
-   tu_cs_emit(cs, A6XX_HLSQ_CS_CNTL_1_LINEARLOCALIDREGID(regid(63, 0)) |
-                  A6XX_HLSQ_CS_CNTL_1_THREADSIZE(THREAD128));
+   tu_cs_emit(cs, 0x2fc);             /* HLSQ_CS_UNKNOWN_B998 */
 }
 
 static void
@@ -993,6 +989,7 @@ tu6_emit_vpc(struct tu_cs *cs,
 
    if (hs) {
       shader_info *hs_info = &hs->shader->nir->info;
+      uint32_t unknown_a831 = vs->output_size;
 
       tu_cs_emit_pkt4(cs, REG_A6XX_PC_TESS_NUM_VERTEX, 1);
       tu_cs_emit(cs, hs_info->tess.tcs_vertices_out);
@@ -1001,23 +998,20 @@ tu6_emit_vpc(struct tu_cs *cs,
       tu_cs_emit_pkt4(cs, REG_A6XX_PC_HS_INPUT_SIZE, 1);
       tu_cs_emit(cs, patch_control_points * vs->output_size / 4);
 
-      const uint32_t wavesize = 64;
-      const uint32_t max_wave_input_size = 64;
-
-      /* note: if HS is really just the VS extended, then this
-       * should be by MAX2(patch_control_points, hs_info->tess.tcs_vertices_out)
-       * however that doesn't match the blob, and fails some dEQP tests.
-       */
-      uint32_t prims_per_wave = wavesize / hs_info->tess.tcs_vertices_out;
-      uint32_t max_prims_per_wave =
-         max_wave_input_size * wavesize / (vs->output_size * patch_control_points);
-      prims_per_wave = MIN2(prims_per_wave, max_prims_per_wave);
-
-      uint32_t total_size = vs->output_size * patch_control_points * prims_per_wave;
-      uint32_t wave_input_size = DIV_ROUND_UP(total_size, wavesize);
+      /* for A650 this value seems to be local memory size per wave */
+      if (vshs_workgroup) {
+         const uint32_t wavesize = 64;
+         /* note: if HS is really just the VS extended, then this
+          * should be by MAX2(patch_control_points, hs_info->tess.tcs_vertices_out)
+          * however that doesn't match the blob, and fails some dEQP tests.
+          */
+         uint32_t prims_per_wave = wavesize / hs_info->tess.tcs_vertices_out;
+         uint32_t total_size = vs->output_size * patch_control_points * prims_per_wave;
+         unknown_a831 = DIV_ROUND_UP(total_size, wavesize);
+      }
 
       tu_cs_emit_pkt4(cs, REG_A6XX_SP_HS_WAVE_INPUT_SIZE, 1);
-      tu_cs_emit(cs, wave_input_size);
+      tu_cs_emit(cs, unknown_a831);
 
       /* In SPIR-V generated from GLSL, the tessellation primitive params are
        * are specified in the tess eval shader, but in SPIR-V generated from
@@ -1061,8 +1055,6 @@ tu6_emit_vpc(struct tu_cs *cs,
 
    if (gs) {
       uint32_t vertices_out, invocations, output, vec4_size;
-      uint32_t prev_stage_output_size = ds ? ds->output_size : vs->output_size;
-
       /* this detects the tu_clear_blit path, which doesn't set ->nir */
       if (gs->shader->nir) {
          if (hs) {
@@ -1075,7 +1067,7 @@ tu6_emit_vpc(struct tu_cs *cs,
          invocations = gs->shader->nir->info.gs.invocations - 1;
          /* Size of per-primitive alloction in ldlw memory in vec4s. */
          vec4_size = gs->shader->nir->info.gs.vertices_in *
-                     DIV_ROUND_UP(prev_stage_output_size, 4);
+                     DIV_ROUND_UP(vs->output_size, 4);
       } else {
          vertices_out = 3;
          output = TESS_CW_TRIS;
@@ -1099,7 +1091,7 @@ tu6_emit_vpc(struct tu_cs *cs,
       tu_cs_emit(cs, A6XX_PC_PRIMITIVE_CNTL_6_STRIDE_IN_VPC(vec4_size));
 
       tu_cs_emit_pkt4(cs, REG_A6XX_SP_GS_PRIM_SIZE, 1);
-      tu_cs_emit(cs, prev_stage_output_size);
+      tu_cs_emit(cs, vs->output_size);
    }
 }
 
@@ -1272,9 +1264,8 @@ tu6_emit_fs_inputs(struct tu_cs *cs, const struct ir3_shader_variant *fs)
                   A6XX_HLSQ_CONTROL_4_REG_IJ_LINEAR_SAMPLE(ij_regid[IJ_LINEAR_SAMPLE]));
    tu_cs_emit(cs, 0xfc);
 
-   tu_cs_emit_pkt4(cs, REG_A6XX_HLSQ_FS_CNTL_0, 1);
-   tu_cs_emit(cs, A6XX_HLSQ_FS_CNTL_0_THREADSIZE(THREAD128) |
-                  COND(enable_varyings, A6XX_HLSQ_FS_CNTL_0_VARYINGS));
+   tu_cs_emit_pkt4(cs, REG_A6XX_HLSQ_UNKNOWN_B980, 1);
+   tu_cs_emit(cs, enable_varyings ? 3 : 1);
 
    bool need_size = fs->frag_face || fs->fragcoord_compmask != 0;
    bool need_size_persamp = false;
@@ -1332,7 +1323,7 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
                     const struct ir3_shader_variant *fs,
                     uint32_t mrt_count, bool dual_src_blend,
                     uint32_t render_components,
-                    bool no_earlyz)
+                    bool is_s8_uint)
 {
    uint32_t smask_regid, posz_regid, stencilref_regid;
 
@@ -1380,7 +1371,7 @@ tu6_emit_fs_outputs(struct tu_cs *cs,
 
    enum a6xx_ztest_mode zmode;
 
-   if (fs->no_earlyz || fs->has_kill || fs->writes_pos || fs->writes_stencilref || no_earlyz) {
+   if (fs->no_earlyz || fs->has_kill || fs->writes_pos || fs->writes_stencilref || is_s8_uint) {
       zmode = A6XX_LATE_Z;
    } else {
       zmode = A6XX_EARLY_Z;
@@ -1531,36 +1522,20 @@ tu6_emit_program(struct tu_cs *cs,
                 builder->device->physical_device->gpu_id == 650);
    tu6_emit_vpc_varying_modes(cs, fs);
 
-   bool no_earlyz = builder->depth_attachment_format == VK_FORMAT_S8_UINT;
-   uint32_t mrt_count = builder->color_attachment_count;
-   uint32_t render_components = builder->render_components;
-
-   if (builder->alpha_to_coverage) {
-      /* alpha to coverage can behave like a discard */
-      no_earlyz = true;
-      /* alpha value comes from first mrt */
-      render_components |= 0xf;
-      if (!mrt_count) {
-         mrt_count = 1;
-         /* Disable memory write for dummy mrt because it doesn't get set otherwise */
-         tu_cs_emit_regs(cs, A6XX_RB_MRT_CONTROL(0, .component_enable = 0));
-      }
-   }
-
    if (fs) {
       tu6_emit_fs_inputs(cs, fs);
-      tu6_emit_fs_outputs(cs, fs, mrt_count,
+      tu6_emit_fs_outputs(cs, fs, builder->color_attachment_count,
                           builder->use_dual_src_blend,
-                          render_components,
-                          no_earlyz);
+                          builder->render_components,
+                          builder->depth_attachment_format == VK_FORMAT_S8_UINT);
    } else {
       /* TODO: check if these can be skipped if fs is disabled */
       struct ir3_shader_variant dummy_variant = {};
       tu6_emit_fs_inputs(cs, &dummy_variant);
-      tu6_emit_fs_outputs(cs, &dummy_variant, mrt_count,
+      tu6_emit_fs_outputs(cs, &dummy_variant, builder->color_attachment_count,
                           builder->use_dual_src_blend,
-                          render_components,
-                          no_earlyz);
+                          builder->render_components,
+                          builder->depth_attachment_format == VK_FORMAT_S8_UINT);
    }
 
    if (gs || hs) {
@@ -1865,10 +1840,17 @@ tu6_rb_mrt_blend_control(const VkPipelineColorBlendAttachmentState *att,
 static uint32_t
 tu6_rb_mrt_control(const VkPipelineColorBlendAttachmentState *att,
                    uint32_t rb_mrt_control_rop,
+                   bool is_int,
                    bool has_alpha)
 {
    uint32_t rb_mrt_control =
       A6XX_RB_MRT_CONTROL_COMPONENT_ENABLE(att->colorWriteMask);
+
+   /* ignore blending and logic op for integer attachments */
+   if (is_int) {
+      rb_mrt_control |= A6XX_RB_MRT_CONTROL_ROP_CODE(ROP_COPY);
+      return rb_mrt_control;
+   }
 
    rb_mrt_control |= rb_mrt_control_rop;
 
@@ -1907,10 +1889,11 @@ tu6_emit_rb_mrt_controls(struct tu_cs *cs,
       uint32_t rb_mrt_control = 0;
       uint32_t rb_mrt_blend_control = 0;
       if (format != VK_FORMAT_UNDEFINED) {
+         const bool is_int = vk_format_is_int(format);
          const bool has_alpha = vk_format_has_alpha(format);
 
          rb_mrt_control =
-            tu6_rb_mrt_control(att, rb_mrt_control_rop, has_alpha);
+            tu6_rb_mrt_control(att, rb_mrt_control_rop, is_int, has_alpha);
          rb_mrt_blend_control = tu6_rb_mrt_blend_control(att, has_alpha);
 
          if (att->blendEnable || rop_reads_dst)
@@ -2877,7 +2860,6 @@ tu_pipeline_builder_init_graphics(
       builder->samples = VK_SAMPLE_COUNT_1_BIT;
    } else {
       builder->samples = create_info->pMultisampleState->rasterizationSamples;
-      builder->alpha_to_coverage = create_info->pMultisampleState->alphaToCoverageEnable;
 
       const uint32_t a = subpass->depth_stencil_attachment.attachment;
       builder->depth_attachment_format = (a != VK_ATTACHMENT_UNUSED) ?
@@ -3020,8 +3002,6 @@ tu_compute_pipeline_create(VkDevice device,
    pipeline->program.state = tu_cs_end_draw_state(&pipeline->cs, &prog_cs);
 
    tu6_emit_load_state(pipeline, true);
-
-   tu_shader_destroy(dev, shader, pAllocator);
 
    *pPipeline = tu_pipeline_to_handle(pipeline);
    return VK_SUCCESS;

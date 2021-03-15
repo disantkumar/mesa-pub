@@ -22,7 +22,6 @@
  */
 
 #include "zink_batch.h"
-#include "zink_context.h"
 #include "zink_fence.h"
 
 #include "zink_query.h"
@@ -59,8 +58,19 @@ zink_create_fence(struct pipe_screen *pscreen, struct zink_batch *batch)
       debug_printf("vkCreateFence failed\n");
       goto fail;
    }
+   ret->active_queries = batch->active_queries;
+   batch->active_queries = NULL;
+
    ret->batch_id = batch->batch_id;
    util_dynarray_init(&ret->resources, NULL);
+   set_foreach(batch->resources, entry) {
+      /* the fence needs its own reference to ensure it can safely access lifetime-dependent
+       * resource members
+       */
+      struct pipe_resource *r = NULL, *pres = (struct pipe_resource *)entry->key;
+      pipe_resource_reference(&r, pres);
+      util_dynarray_append(&ret->resources, struct pipe_resource*, pres);
+   }
 
    pipe_reference_init(&ret->reference, 1);
    return ret;
@@ -68,25 +78,6 @@ zink_create_fence(struct pipe_screen *pscreen, struct zink_batch *batch)
 fail:
    destroy_fence(screen, ret);
    return NULL;
-}
-
-void
-zink_fence_init(struct zink_fence *fence, struct zink_batch *batch)
-{
-   assert(!fence->active_queries);
-   fence->active_queries = batch->active_queries;
-   batch->active_queries = NULL;
-
-   set_foreach(batch->resources, entry) {
-      /* the fence needs its own reference to ensure it can safely access lifetime-dependent
-       * resource members
-       */
-      struct pipe_resource *r = NULL, *pres = (struct pipe_resource *)entry->key;
-      pipe_resource_reference(&r, pres);
-      util_dynarray_append(&fence->resources, struct pipe_resource*, pres);
-   }
-   fence->deferred_ctx = NULL;
-   fence->submitted = true;
 }
 
 void
@@ -116,24 +107,11 @@ fence_remove_resource_access(struct zink_fence *fence, struct zink_resource *res
 }
 
 bool
-zink_fence_finish(struct zink_screen *screen, struct pipe_context *pctx, struct zink_fence *fence,
+zink_fence_finish(struct zink_screen *screen, struct zink_fence *fence,
                   uint64_t timeout_ns)
 {
-   if (pctx && fence->deferred_ctx == pctx) {
-      zink_curr_batch(zink_context(pctx))->has_work = true;
-      /* this must be the current batch */
-      pctx->flush(pctx, NULL, 0);
-   }
-
-   if (!fence->submitted)
-      return true;
-   bool success;
-
-   if (timeout_ns)
-      success = vkWaitForFences(screen->dev, 1, &fence->fence, VK_TRUE, timeout_ns) == VK_SUCCESS;
-   else
-      success = vkGetFenceStatus(screen->dev, fence->fence) == VK_SUCCESS;
-
+   bool success = vkWaitForFences(screen->dev, 1, &fence->fence, VK_TRUE,
+                                  timeout_ns) == VK_SUCCESS;
    if (success) {
       if (fence->active_queries)
          zink_prune_queries(screen, fence);
@@ -150,7 +128,6 @@ zink_fence_finish(struct zink_screen *screen, struct pipe_context *pctx, struct 
          pipe_resource_reference(pres, NULL);
       }
       util_dynarray_clear(&fence->resources);
-      fence->submitted = false;
    }
    return success;
 }
@@ -159,7 +136,7 @@ static bool
 fence_finish(struct pipe_screen *pscreen, struct pipe_context *pctx,
                   struct pipe_fence_handle *pfence, uint64_t timeout_ns)
 {
-   return zink_fence_finish(zink_screen(pscreen), pctx, zink_fence(pfence),
+   return zink_fence_finish(zink_screen(pscreen), zink_fence(pfence),
                             timeout_ns);
 }
 

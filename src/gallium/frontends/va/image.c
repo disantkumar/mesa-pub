@@ -200,7 +200,6 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
    vlVaSurface *surf;
    vlVaBuffer *img_buf;
    VAImage *img;
-   VAStatus status;
    struct pipe_screen *screen;
    struct pipe_surface **surfaces;
    struct pipe_video_buffer *new_buffer = NULL;
@@ -244,9 +243,10 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
          if ((strcmp(derive_interlaced_allowlist[i], proc) == 0))
             break;
 
-      if (i >= ARRAY_SIZE(derive_interlaced_allowlist) ||
-          !screen->get_video_param(screen, PIPE_VIDEO_PROFILE_UNKNOWN,
-                                   PIPE_VIDEO_ENTRYPOINT_BITSTREAM,
+      if (i >= ARRAY_SIZE(derive_interlaced_allowlist))
+         return VA_STATUS_ERROR_OPERATION_FAILED;
+
+      if (!screen->get_video_param(screen, PIPE_VIDEO_PROFILE_UNKNOWN, PIPE_VIDEO_ENTRYPOINT_BITSTREAM,
                                    PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE))
          return VA_STATUS_ERROR_OPERATION_FAILED;
    }
@@ -318,8 +318,9 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
 
          /* not all devices support non-interlaced buffers */
          if (!new_buffer) {
-            status = VA_STATUS_ERROR_OPERATION_FAILED;
-            goto exit_on_error;
+            FREE(img);
+            mtx_unlock(&drv->mutex);
+            return VA_STATUS_ERROR_OPERATION_FAILED;
          }
 
          /* convert the interlaced to the progressive */
@@ -356,14 +357,16 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
    default:
       /* VaDeriveImage only supports contiguous planes. But there is now a
          more generic api vlVaExportSurfaceHandle. */
-      status = VA_STATUS_ERROR_OPERATION_FAILED;
-      goto exit_on_error;
+      FREE(img);
+      mtx_unlock(&drv->mutex);
+      return VA_STATUS_ERROR_OPERATION_FAILED;
    }
 
    img_buf = CALLOC(1, sizeof(vlVaBuffer));
    if (!img_buf) {
-      status = VA_STATUS_ERROR_ALLOCATION_FAILED;
-      goto exit_on_error;
+      FREE(img);
+      mtx_unlock(&drv->mutex);
+      return VA_STATUS_ERROR_ALLOCATION_FAILED;
    }
 
    img->image_id = handle_table_add(drv->htab, img);
@@ -381,11 +384,6 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
    *image = *img;
 
    return VA_STATUS_SUCCESS;
-
-exit_on_error:
-   FREE(img);
-   mtx_unlock(&drv->mutex);
-   return status;
 }
 
 VAStatus
@@ -698,7 +696,6 @@ vlVaPutImage(VADriverContextP ctx, VASurfaceID surface, VAImageID image,
          }
       }
    }
-   drv->pipe->flush(drv->pipe, NULL, 0);
    mtx_unlock(&drv->mutex);
 
    return VA_STATUS_SUCCESS;

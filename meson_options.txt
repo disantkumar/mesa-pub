@@ -322,12 +322,6 @@ option(
   description : 'Whether to link LLVM shared or statically.'
 )
 option(
-  'draw-use-llvm',
-  type : 'boolean',
-  value : 'true',
-  description : 'Whether to use LLVM for the Gallium draw module, if LLVM is included.'
-)
-option(
   'valgrind',
   type : 'combo',
   value : 'auto',
@@ -353,12 +347,6 @@ option(
   type : 'boolean',
   value : false,
   description : 'Build unit tests. Currently this will build *all* unit tests except the ACO tests, which may build more than expected.'
-)
-option(
-  'enable-glcpp-tests',
-  type : 'boolean',
-  value : true,
-  description : 'Build glcpp unit tests. These are flaky on CI.'
 )
 option(
   'build-aco-tests',

@@ -104,7 +104,6 @@ nir_options = {
    .vertex_id_zero_based = true,
    .lower_base_vertex = true,
    .has_cs_global_id = true,
-   .has_txs = true,
 };
 
 const nir_shader_compiler_options*
@@ -4215,7 +4214,7 @@ allocate_sysvalues(struct ntd_context *ctx, nir_shader *s)
 
    for (unsigned i = 0; i < ARRAY_SIZE(possible_sysvalues); ++i) {
       struct sysvalue_name *info = &possible_sysvalues[i];
-      if (BITSET_TEST(s->info.system_values_read, info->value)) {
+      if ((1 << info->value) & s->info.system_values_read) {
          if (!append_input_or_sysvalue(ctx, s, info->slot,
                                        info->value, info->name,
                                        driver_location++))

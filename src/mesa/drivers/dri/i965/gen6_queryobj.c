@@ -486,7 +486,7 @@ flush_batch_if_needed(struct brw_context *brw, struct brw_query_object *query)
                     !brw_batch_references(&brw->batch, query->bo);
 
    if (!query->flushed)
-      brw_batch_flush(brw);
+      intel_batchbuffer_flush(brw);
 }
 
 /**

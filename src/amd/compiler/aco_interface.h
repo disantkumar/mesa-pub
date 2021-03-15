@@ -37,8 +37,11 @@ struct aco_compiler_statistic_info {
    char desc[64];
 };
 
-extern const unsigned aco_num_statistics;
-extern const struct aco_compiler_statistic_info *aco_statistic_infos;
+struct aco_compiler_statistics {
+   unsigned count;
+   const struct aco_compiler_statistic_info *infos;
+   uint32_t values[];
+};
 
 void aco_compile_shader(unsigned shader_count,
                         struct nir_shader *const *shaders,

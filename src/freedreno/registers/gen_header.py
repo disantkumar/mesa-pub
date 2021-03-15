@@ -109,7 +109,7 @@ class Bitset(object):
 		else:
 			self.fields = []
 
-	def dump_pack_struct(self, prefix=None, array=None, bit_size=32):
+	def dump_pack_struct(self, prefix=None, array=None):
 		def field_name(prefix, name):
 			if f.name:
 				name = f.name.lower()
@@ -129,11 +129,11 @@ class Bitset(object):
 		value_name = "dword"
 		print("struct %s {" % prefix)
 		for f in self.fields:
+			if f.type == "waddress":
+				value_name = "qword"
 			if f.type in [ "address", "waddress" ]:
 				tab_to("    __bo_type", "bo;")
 				tab_to("    uint32_t", "bo_offset;")
-				if bit_size == 64:
-                                    value_name = "qword"
 				continue
 			name = field_name(prefix, f.name)
 
@@ -244,7 +244,7 @@ class Array(object):
 		self.length = int(attrs["length"], 0)
 
 	def dump(self):
-		print("#define REG_%s_%s(i0) (0x%08x + 0x%x*(i0))\n" % (self.domain, self.name, self.offset, self.stride))
+		print("static inline uint32_t REG_%s_%s(uint32_t i0) { return 0x%08x + 0x%x*i0; }\n" % (self.domain, self.name, self.offset, self.stride))
 
 	def dump_pack_struct(self):
 		pass
@@ -276,7 +276,7 @@ class Reg(object):
 
 	def dump_pack_struct(self):
 		if self.bitset.inline:
-			self.bitset.dump_pack_struct(self.full_name, not self.array == None, self.bit_size)
+			self.bitset.dump_pack_struct(self.full_name, not self.array == None)
 
 
 def parse_variants(attrs):

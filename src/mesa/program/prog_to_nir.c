@@ -547,7 +547,7 @@ ptn_tex(struct ptn_compile *c, nir_alu_dest dest, nir_ssa_def **src,
 
    instr = nir_tex_instr_create(b->shader, num_srcs);
    instr->op = op;
-   instr->dest_type = nir_type_float32;
+   instr->dest_type = nir_type_float;
    instr->is_shadow = prog_inst->TexShadow;
 
    bool is_array;
@@ -904,8 +904,10 @@ setup_registers_and_variables(struct ptn_compile *c)
    }
 
    /* Create system value variables */
-   int i;
-   BITSET_FOREACH_SET(i, c->prog->info.system_values_read, SYSTEM_VALUE_MAX) {
+   uint64_t system_values_read = c->prog->info.system_values_read;
+   while (system_values_read) {
+      const int i = u_bit_scan64(&system_values_read);
+
       nir_variable *var =
          nir_variable_create(shader, nir_var_system_value, glsl_vec4_type(),
                              ralloc_asprintf(shader, "sv_%d", i));

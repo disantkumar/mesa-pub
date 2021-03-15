@@ -53,26 +53,27 @@
 #include "iris_screen.h"
 #include "compiler/glsl_types.h"
 #include "intel/compiler/brw_compiler.h"
-#include "intel/common/intel_gem.h"
-#include "intel/common/intel_l3_config.h"
-#include "intel/common/intel_uuid.h"
+#include "intel/common/gen_gem.h"
+#include "intel/common/gen_l3_config.h"
+#include "intel/common/gen_uuid.h"
 #include "iris_monitor.h"
 
 #define genX_call(devinfo, func, ...)             \
-   switch ((devinfo)->genx10) {                   \
-   case 125:                                      \
-      gen125_##func(__VA_ARGS__);                 \
+   switch ((devinfo)->gen) {                      \
+   case 12:                                       \
+      if (gen_device_info_is_12hp(devinfo)) {     \
+         gen125_##func(__VA_ARGS__);              \
+      } else {                                    \
+         gen12_##func(__VA_ARGS__);               \
+      }                                           \
       break;                                      \
-   case 120:                                      \
-      gen12_##func(__VA_ARGS__);                  \
-      break;                                      \
-   case 110:                                      \
+   case 11:                                       \
       gen11_##func(__VA_ARGS__);                  \
       break;                                      \
-   case 90:                                       \
+   case 9:                                        \
       gen9_##func(__VA_ARGS__);                   \
       break;                                      \
-   case 80:                                       \
+   case 8:                                        \
       gen8_##func(__VA_ARGS__);                   \
       break;                                      \
    default:                                       \
@@ -106,7 +107,7 @@ iris_get_device_uuid(struct pipe_screen *pscreen, char *uuid)
    struct iris_screen *screen = (struct iris_screen *)pscreen;
    const struct isl_device *isldev = &screen->isl_dev;
 
-   intel_uuid_compute_device_id((uint8_t *)uuid, isldev, PIPE_UUID_SIZE);
+   gen_uuid_compute_device_id((uint8_t *)uuid, isldev, PIPE_UUID_SIZE);
 }
 
 static void
@@ -115,7 +116,7 @@ iris_get_driver_uuid(struct pipe_screen *pscreen, char *uuid)
    struct iris_screen *screen = (struct iris_screen *)pscreen;
    const struct gen_device_info *devinfo = &screen->devinfo;
 
-   intel_uuid_compute_driver_id((uint8_t *)uuid, devinfo, PIPE_UUID_SIZE);
+   gen_uuid_compute_driver_id((uint8_t *)uuid, devinfo, PIPE_UUID_SIZE);
 }
 
 static bool
@@ -611,7 +612,6 @@ iris_get_timestamp(struct pipe_screen *pscreen)
 void
 iris_screen_destroy(struct iris_screen *screen)
 {
-   iris_destroy_screen_measure(screen);
    glsl_type_singleton_decref();
    iris_bo_unreference(screen->workaround_bo);
    u_transfer_helper_destroy(screen->base.transfer_helper);
@@ -674,15 +674,15 @@ iris_getparam_integer(int fd, int param)
    return -1;
 }
 
-static const struct intel_l3_config *
+static const struct gen_l3_config *
 iris_get_default_l3_config(const struct gen_device_info *devinfo,
                            bool compute)
 {
    bool wants_dc_cache = true;
    bool has_slm = compute;
-   const struct intel_l3_weights w =
-      intel_get_default_l3_weights(devinfo, wants_dc_cache, has_slm);
-   return intel_get_l3_config(devinfo, w);
+   const struct gen_l3_weights w =
+      gen_get_default_l3_weights(devinfo, wants_dc_cache, has_slm);
+   return gen_get_l3_config(devinfo, w);
 }
 
 static void
@@ -726,7 +726,7 @@ static void
 iris_detect_kernel_features(struct iris_screen *screen)
 {
    /* Kernel 5.2+ */
-   if (intel_gem_supports_syncobj_wait(screen->fd))
+   if (gen_gem_supports_syncobj_wait(screen->fd))
       screen->kernel_features |= KERNEL_HAS_WAIT_FOR_SUBMIT;
 }
 
@@ -849,7 +849,6 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
 
    iris_init_screen_fence_functions(pscreen);
    iris_init_screen_resource_functions(pscreen);
-   iris_init_screen_measure(screen);
 
    pscreen->destroy = iris_screen_unref;
    pscreen->get_name = iris_get_name;

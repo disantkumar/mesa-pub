@@ -253,7 +253,6 @@ struct ir3_instruction {
 			char comp1, comp2;
 			int  immed;
 			struct ir3_block *target;
-			const char *target_label;
 			brtype_t brtype;
 			unsigned idx;  /* for brac.N */
 		} cat0;
@@ -415,7 +414,9 @@ struct ir3_instruction {
 	/* Entry in ir3_block's instruction list: */
 	struct list_head node;
 
+#ifdef DEBUG
 	uint32_t serialno;
+#endif
 
 	// TODO only computerator/assembler:
 	int line;
@@ -498,9 +499,8 @@ struct ir3 {
 	struct list_head array_list;
 
 #ifdef DEBUG
-	unsigned block_count;
+	unsigned block_count, instr_count;
 #endif
-	unsigned instr_count;
 };
 
 struct ir3_array {
@@ -580,7 +580,7 @@ struct ir3_shader_variant;
 struct ir3 * ir3_create(struct ir3_compiler *compiler, struct ir3_shader_variant *v);
 void ir3_destroy(struct ir3 *shader);
 
-void ir3_collect_info(struct ir3_shader_variant *v);
+void * ir3_assemble(struct ir3_shader_variant *v);
 void * ir3_alloc(struct ir3 *shader, int sz);
 
 struct ir3_block * ir3_block_create(struct ir3 *shader);

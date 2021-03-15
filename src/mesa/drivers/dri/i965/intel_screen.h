@@ -44,7 +44,7 @@
 extern "C" {
 #endif
 
-struct brw_screen
+struct intel_screen
 {
    int deviceID;
    struct gen_device_info devinfo;
@@ -125,55 +125,55 @@ struct brw_screen
    struct disk_cache *disk_cache;
 };
 
-extern void brw_destroy_context(__DRIcontext *driContextPriv);
+extern void intelDestroyContext(__DRIcontext * driContextPriv);
 
-extern GLboolean brw_unbind_context(__DRIcontext *driContextPriv);
+extern GLboolean intelUnbindContext(__DRIcontext * driContextPriv);
 
 PUBLIC const __DRIextension **__driDriverGetExtensions_i965(void);
-extern const __DRI2fenceExtension brwFenceExtension;
+extern const __DRI2fenceExtension intelFenceExtension;
 
 extern GLboolean
-brw_make_current(__DRIcontext *driContextPriv,
-                 __DRIdrawable *driDrawPriv,
-                 __DRIdrawable *driReadPriv);
+intelMakeCurrent(__DRIcontext * driContextPriv,
+                 __DRIdrawable * driDrawPriv,
+                 __DRIdrawable * driReadPriv);
 
 double get_time(void);
 
 const int*
-brw_supported_msaa_modes(const struct brw_screen *screen);
+intel_supported_msaa_modes(const struct intel_screen  *screen);
 
 static inline bool
-can_do_pipelined_register_writes(const struct brw_screen *screen)
+can_do_pipelined_register_writes(const struct intel_screen *screen)
 {
    return screen->kernel_features & KERNEL_ALLOWS_SOL_OFFSET_WRITES;
 }
 
 static inline bool
-can_do_hsw_l3_atomics(const struct brw_screen *screen)
+can_do_hsw_l3_atomics(const struct intel_screen *screen)
 {
    return screen->kernel_features & KERNEL_ALLOWS_HSW_SCRATCH1_AND_ROW_CHICKEN3;
 }
 
 static inline bool
-can_do_mi_math_and_lrr(const struct brw_screen *screen)
+can_do_mi_math_and_lrr(const struct intel_screen *screen)
 {
    return screen->kernel_features & KERNEL_ALLOWS_MI_MATH_AND_LRR;
 }
 
 static inline bool
-can_do_compute_dispatch(const struct brw_screen *screen)
+can_do_compute_dispatch(const struct intel_screen *screen)
 {
    return screen->kernel_features & KERNEL_ALLOWS_COMPUTE_DISPATCH;
 }
 
 static inline bool
-can_do_predicate_writes(const struct brw_screen *screen)
+can_do_predicate_writes(const struct intel_screen *screen)
 {
    return screen->kernel_features & KERNEL_ALLOWS_PREDICATE_WRITES;
 }
 
 static inline bool
-can_do_exec_capture(const struct brw_screen *screen)
+can_do_exec_capture(const struct intel_screen *screen)
 {
    return screen->kernel_features & KERNEL_ALLOWS_EXEC_CAPTURE;
 }

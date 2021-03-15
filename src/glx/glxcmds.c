@@ -1863,8 +1863,8 @@ glXSwapIntervalEXT(Display *dpy, GLXDrawable drawable, int interval)
       __glXSendError(dpy, BadValue, interval, 0, True);
       return;
    }
-   if (pdraw->psc->driScreen->setSwapInterval)
-      pdraw->psc->driScreen->setSwapInterval(pdraw, interval);
+
+   pdraw->psc->driScreen->setSwapInterval(pdraw, interval);
 #endif
 }
 
@@ -1886,9 +1886,6 @@ glXGetVideoSyncSGI(unsigned int *count)
       return GLX_BAD_CONTEXT;
 
    if (!gc->isDirect)
-      return GLX_BAD_CONTEXT;
-
-   if (!gc->currentDrawable)
       return GLX_BAD_CONTEXT;
 
    psc = GetGLXScreenConfigs(gc->currentDpy, gc->screen);
@@ -1927,9 +1924,6 @@ glXWaitVideoSyncSGI(int divisor, int remainder, unsigned int *count)
 
 #ifdef GLX_DIRECT_RENDERING
    if (!gc->isDirect)
-      return GLX_BAD_CONTEXT;
-
-   if (!gc->currentDrawable)
       return GLX_BAD_CONTEXT;
 
    psc = GetGLXScreenConfigs( gc->currentDpy, gc->screen);

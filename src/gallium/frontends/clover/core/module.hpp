@@ -85,8 +85,10 @@ namespace clover {
             constant,
             global,
             local,
-            image_rd,
-            image_wr,
+            image2d_rd,
+            image2d_wr,
+            image3d_rd,
+            image3d_wr,
             sampler
          };
 

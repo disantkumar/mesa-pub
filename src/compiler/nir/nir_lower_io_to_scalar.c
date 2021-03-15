@@ -60,7 +60,8 @@ lower_load_input_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
    }
 
    nir_ssa_def_rewrite_uses(&intr->dest.ssa,
-                            nir_vec(b, loads, intr->num_components));
+                            nir_src_for_ssa(nir_vec(b, loads,
+                                                    intr->num_components)));
    nir_instr_remove(&intr->instr);
 }
 
@@ -230,7 +231,8 @@ lower_load_to_scalar_early(nir_builder *b, nir_intrinsic_instr *intr,
    }
 
    nir_ssa_def_rewrite_uses(&intr->dest.ssa,
-                            nir_vec(b, loads, intr->num_components));
+                            nir_src_for_ssa(nir_vec(b, loads,
+                                                    intr->num_components)));
 
    /* Remove the old load intrinsic */
    nir_instr_remove(&intr->instr);

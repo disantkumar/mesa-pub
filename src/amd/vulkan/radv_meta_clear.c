@@ -194,12 +194,11 @@ create_color_renderpass(struct radv_device *device,
 		return VK_SUCCESS;
 	}
 
-	VkResult result = radv_CreateRenderPass2(radv_device_to_handle(device),
-				       &(VkRenderPassCreateInfo2) {
-					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
+	VkResult result = radv_CreateRenderPass(radv_device_to_handle(device),
+				       &(VkRenderPassCreateInfo) {
+					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 						       .attachmentCount = 1,
-						       .pAttachments = &(VkAttachmentDescription2) {
-						       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,
+						       .pAttachments = &(VkAttachmentDescription) {
 						       .format = vk_format,
 						       .samples = samples,
 						       .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -208,19 +207,16 @@ create_color_renderpass(struct radv_device *device,
 						       .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
 					       },
 						       .subpassCount = 1,
-								.pSubpasses = &(VkSubpassDescription2) {
-						       .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
+								.pSubpasses = &(VkSubpassDescription) {
 						       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 						       .inputAttachmentCount = 0,
 						       .colorAttachmentCount = 1,
-						       .pColorAttachments = &(VkAttachmentReference2) {
-							       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+						       .pColorAttachments = &(VkAttachmentReference) {
 							       .attachment = 0,
 							       .layout = VK_IMAGE_LAYOUT_GENERAL,
 						       },
 						       .pResolveAttachments = NULL,
-						       .pDepthStencilAttachment = &(VkAttachmentReference2) {
-							       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+						       .pDepthStencilAttachment = &(VkAttachmentReference) {
 							       .attachment = VK_ATTACHMENT_UNUSED,
 							       .layout = VK_IMAGE_LAYOUT_GENERAL,
 						       },
@@ -228,9 +224,8 @@ create_color_renderpass(struct radv_device *device,
 						       .pPreserveAttachments = NULL,
 					       },
 							.dependencyCount = 2,
-							.pDependencies = (VkSubpassDependency2[]) {
+							.pDependencies = (VkSubpassDependency[]) {
 								{
-									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = VK_SUBPASS_EXTERNAL,
 									.dstSubpass = 0,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -240,7 +235,6 @@ create_color_renderpass(struct radv_device *device,
 									.dependencyFlags = 0
 								},
 								{
-									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = 0,
 									.dstSubpass = VK_SUBPASS_EXTERNAL,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -485,7 +479,8 @@ emit_color_clear(struct radv_cmd_buffer *cmd_buffer,
 	radv_CmdSetScissor(radv_cmd_buffer_to_handle(cmd_buffer), 0, 1, &clear_rect->rect);
 
 	if (view_mask) {
-		u_foreach_bit(i, view_mask)
+		unsigned i;
+		for_each_bit(i, view_mask)
 			radv_CmdDraw(cmd_buffer_h, 3, 1, 0, i);
 	} else {
 		radv_CmdDraw(cmd_buffer_h, 3, clear_rect->layerCount, 0, clear_rect->baseArrayLayer);
@@ -559,12 +554,11 @@ create_depthstencil_renderpass(struct radv_device *device,
 		return VK_SUCCESS;
 	}
 
-	VkResult result = radv_CreateRenderPass2(radv_device_to_handle(device),
-				       &(VkRenderPassCreateInfo2) {
-					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
+	VkResult result = radv_CreateRenderPass(radv_device_to_handle(device),
+				       &(VkRenderPassCreateInfo) {
+					       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 						       .attachmentCount = 1,
-						       .pAttachments = &(VkAttachmentDescription2) {
-						       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,
+						       .pAttachments = &(VkAttachmentDescription) {
 						       .format = VK_FORMAT_D32_SFLOAT_S8_UINT,
 						       .samples = samples,
 						       .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -573,15 +567,13 @@ create_depthstencil_renderpass(struct radv_device *device,
 						       .finalLayout = VK_IMAGE_LAYOUT_GENERAL,
 					       },
 						       .subpassCount = 1,
-								.pSubpasses = &(VkSubpassDescription2) {
-						       .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
+								.pSubpasses = &(VkSubpassDescription) {
 						       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 						       .inputAttachmentCount = 0,
 						       .colorAttachmentCount = 0,
 						       .pColorAttachments = NULL,
 						       .pResolveAttachments = NULL,
-						       .pDepthStencilAttachment = &(VkAttachmentReference2) {
-							       .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+						       .pDepthStencilAttachment = &(VkAttachmentReference) {
 							       .attachment = 0,
 							       .layout = VK_IMAGE_LAYOUT_GENERAL,
 						       },
@@ -589,9 +581,8 @@ create_depthstencil_renderpass(struct radv_device *device,
 						       .pPreserveAttachments = NULL,
 					       },
 							.dependencyCount = 2,
-							.pDependencies = (VkSubpassDependency2[]) {
+							.pDependencies = (VkSubpassDependency[]) {
 								{
-									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = VK_SUBPASS_EXTERNAL,
 									.dstSubpass = 0,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -601,7 +592,6 @@ create_depthstencil_renderpass(struct radv_device *device,
 									.dependencyFlags = 0
 								},
 								{
-									.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 									.srcSubpass = 0,
 									.dstSubpass = VK_SUBPASS_EXTERNAL,
 									.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -709,7 +699,7 @@ static bool depth_view_can_fast_clear(struct radv_cmd_buffer *cmd_buffer,
 	      clear_value.depth != 1.0) ||
 	     ((aspects & VK_IMAGE_ASPECT_STENCIL_BIT) && clear_value.stencil != 0)))
 		return false;
-	if (radv_htile_enabled(iview->image, iview->base_mip) &&
+	if (radv_image_has_htile(iview->image) &&
 	    iview->base_mip == 0 &&
 	    iview->base_layer == 0 &&
 	    iview->layer_count == iview->image->info.array_size &&
@@ -732,7 +722,7 @@ pick_depthstencil_pipeline(struct radv_cmd_buffer *cmd_buffer,
 {
 	bool fast = depth_view_can_fast_clear(cmd_buffer, iview, aspects, layout,
 	                                      in_render_loop, clear_rect, clear_value);
-	bool unrestricted = cmd_buffer->device->vk.enabled_extensions.EXT_depth_range_unrestricted;
+	bool unrestricted = cmd_buffer->device->enabled_extensions.EXT_depth_range_unrestricted;
 	int index = DEPTH_CLEAR_SLOW;
 	VkPipeline *pipeline;
 
@@ -817,7 +807,7 @@ emit_depthstencil_clear(struct radv_cmd_buffer *cmd_buffer,
 	if (!(aspects & VK_IMAGE_ASPECT_DEPTH_BIT))
 		clear_value.depth = 1.0f;
 
-	if (cmd_buffer->device->vk.enabled_extensions.EXT_depth_range_unrestricted) {
+	if (cmd_buffer->device->enabled_extensions.EXT_depth_range_unrestricted) {
 		radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
 				      device->meta_state.clear_depth_unrestricted_p_layout,
 				      VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4,
@@ -876,7 +866,8 @@ emit_depthstencil_clear(struct radv_cmd_buffer *cmd_buffer,
 	radv_CmdSetScissor(radv_cmd_buffer_to_handle(cmd_buffer), 0, 1, &clear_rect->rect);
 
 	if (view_mask) {
-		u_foreach_bit(i, view_mask)
+		unsigned i;
+		for_each_bit(i, view_mask)
 			radv_CmdDraw(cmd_buffer_h, 3, 1, 0, i);
 	} else {
 		radv_CmdDraw(cmd_buffer_h, 3, clear_rect->layerCount, 0, clear_rect->baseArrayLayer);
@@ -1062,12 +1053,12 @@ radv_fast_clear_depth(struct radv_cmd_buffer *cmd_buffer,
 		*pre_flush |= cmd_buffer->state.flush_bits;
 	}
 
-	VkImageSubresourceRange range = {
+	struct VkImageSubresourceRange range = {
 		.aspectMask = aspects,
-		.baseMipLevel = iview->base_mip,
-		.levelCount = iview->level_count,
-		.baseArrayLayer = iview->base_layer,
-		.layerCount = iview->layer_count,
+		.baseMipLevel = 0,
+		.levelCount = VK_REMAINING_MIP_LEVELS,
+		.baseArrayLayer = 0,
+		.layerCount = VK_REMAINING_ARRAY_LAYERS,
 	};
 
 	flush_bits = radv_clear_htile(cmd_buffer, iview->image, &range, clear_word);
@@ -1464,51 +1455,22 @@ radv_clear_htile(struct radv_cmd_buffer *cmd_buffer,
 		 const VkImageSubresourceRange *range,
 		 uint32_t value)
 {
-	uint32_t level_count = radv_get_levelCount(image, range);
-	uint32_t flush_bits = 0;
-	uint32_t htile_mask;
+	unsigned layer_count = radv_get_layerCount(image, range);
+	uint64_t size = image->planes[0].surface.htile_slice_size * layer_count;
+	uint64_t offset = image->offset + image->planes[0].surface.htile_offset +
+	                  image->planes[0].surface.htile_slice_size * range->baseArrayLayer;
+	uint32_t htile_mask, flush_bits;
 
 	htile_mask = radv_get_htile_mask(cmd_buffer->device, image, range->aspectMask);
 
-	if (level_count != image->info.levels) {
-		assert(cmd_buffer->device->physical_device->rad_info.chip_class >= GFX10);
-
-		/* Clear individuals levels separately. */
-		for (uint32_t l = 0; l < level_count; l++) {
-			uint32_t level = range->baseMipLevel + l;
-			uint64_t offset = image->offset + image->planes[0].surface.htile_offset +
-					  image->planes[0].surface.u.gfx9.htile_levels[level].offset;
-			uint32_t size = image->planes[0].surface.u.gfx9.htile_levels[level].size;
-
-			/* Do not clear this level if it can be compressed. */
-			if (!size)
-				continue;
-
-			if (htile_mask == UINT_MAX) {
-				/* Clear the whole HTILE buffer. */
-				flush_bits = radv_fill_buffer(cmd_buffer, image, image->bo, offset,
-							      size, value);
-			} else {
-				/* Only clear depth or stencil bytes in the HTILE buffer. */
-				flush_bits = clear_htile_mask(cmd_buffer, image, image->bo, offset,
-							      size, value, htile_mask);
-			}
-		}
+	if (htile_mask == UINT_MAX) {
+		/* Clear the whole HTILE buffer. */
+		flush_bits = radv_fill_buffer(cmd_buffer, image, image->bo, offset,
+					      size, value);
 	} else {
-		unsigned layer_count = radv_get_layerCount(image, range);
-		uint64_t size = image->planes[0].surface.htile_slice_size * layer_count;
-		uint64_t offset = image->offset + image->planes[0].surface.htile_offset +
-		                  image->planes[0].surface.htile_slice_size * range->baseArrayLayer;
-
-		if (htile_mask == UINT_MAX) {
-			/* Clear the whole HTILE buffer. */
-			flush_bits = radv_fill_buffer(cmd_buffer, image, image->bo, offset,
-						      size, value);
-		} else {
-			/* Only clear depth or stencil bytes in the HTILE buffer. */
-			flush_bits = clear_htile_mask(cmd_buffer, image, image->bo, offset,
-						      size, value, htile_mask);
-		}
+		/* Only clear depth or stencil bytes in the HTILE buffer. */
+		flush_bits = clear_htile_mask(cmd_buffer, image, image->bo, offset,
+					      size, value, htile_mask);
 	}
 
 	return flush_bits;
@@ -1537,12 +1499,12 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 
 	*reset_value = RADV_DCC_CLEAR_REG;
 
-	const struct util_format_description *desc = vk_format_description(view_format);
+	const struct vk_format_description *desc = vk_format_description(view_format);
 	if (view_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
 	    view_format == VK_FORMAT_R5G6B5_UNORM_PACK16 ||
 	    view_format == VK_FORMAT_B5G6R5_UNORM_PACK16)
 		extra_channel = -1;
-	else if (desc->layout == UTIL_FORMAT_LAYOUT_PLAIN) {
+	else if (desc->layout == VK_FORMAT_LAYOUT_PLAIN) {
 		if (vi_alpha_is_on_msb(device, view_format))
 			extra_channel = desc->nr_channels - 1;
 		else
@@ -1551,13 +1513,13 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 		return;
 
 	for (int i = 0; i < 4; i++) {
-		int index = desc->swizzle[i] - PIPE_SWIZZLE_X;
-		if (desc->swizzle[i] < PIPE_SWIZZLE_X ||
-		    desc->swizzle[i] > PIPE_SWIZZLE_W)
+		int index = desc->swizzle[i] - VK_SWIZZLE_X;
+		if (desc->swizzle[i] < VK_SWIZZLE_X ||
+		    desc->swizzle[i] > VK_SWIZZLE_W)
 			continue;
 
 		if (desc->channel[i].pure_integer &&
-		    desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED) {
+		    desc->channel[i].type == VK_FORMAT_TYPE_SIGNED) {
 			/* Use the maximum value for clamping the clear color. */
 			int max = u_bit_consecutive(0, desc->channel[i].size - 1);
 
@@ -1565,7 +1527,7 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 			if (clear_value->int32[i] != 0 && MIN2(clear_value->int32[i], max) != max)
 				return;
 		} else if (desc->channel[i].pure_integer &&
-			   desc->channel[i].type == UTIL_FORMAT_TYPE_UNSIGNED) {
+			   desc->channel[i].type == VK_FORMAT_TYPE_UNSIGNED) {
 			/* Use the maximum value for clamping the clear color. */
 			unsigned max = u_bit_consecutive(0, desc->channel[i].size);
 
@@ -1595,9 +1557,9 @@ static void vi_get_fast_clear_parameters(struct radv_device *device,
 
 	for (int i = 0; i < 4; ++i)
 		if (values[i] != main_value &&
-		    desc->swizzle[i] - PIPE_SWIZZLE_X != extra_channel &&
-		    desc->swizzle[i] >= PIPE_SWIZZLE_X &&
-		    desc->swizzle[i] <= PIPE_SWIZZLE_W)
+		    desc->swizzle[i] - VK_SWIZZLE_X != extra_channel &&
+		    desc->swizzle[i] >= VK_SWIZZLE_X &&
+		    desc->swizzle[i] <= VK_SWIZZLE_W)
 			return;
 
 	*can_avoid_fast_clear_elim = true;
@@ -1737,6 +1699,8 @@ radv_fast_clear_color(struct radv_cmd_buffer *cmd_buffer,
 		if (radv_image_has_cmask(iview->image)) {
 			flush_bits = radv_clear_cmask(cmd_buffer, iview->image,
 						      &range, cmask_clear_value);
+
+			need_decompress_pass = true;
 		}
 
 		if (!can_avoid_fast_clear_elim)
@@ -2013,8 +1977,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 			       &cmd_buffer->pool->alloc,
 			       &fb);
 
-	VkAttachmentDescription2 att_desc = {
-		.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,
+	VkAttachmentDescription att_desc = {
 		.format = iview.vk_format,
 		.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
 		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -2024,8 +1987,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 		.finalLayout = image_layout,
 	};
 
-	VkSubpassDescription2 subpass_desc = {
-		.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
+	VkSubpassDescription subpass_desc = {
 		.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 		.inputAttachmentCount = 0,
 		.colorAttachmentCount = 0,
@@ -2036,8 +1998,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 		.pPreserveAttachments = NULL,
 	};
 
-	const VkAttachmentReference2 att_ref = {
-		.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+	const VkAttachmentReference att_ref = {
 		.attachment = 0,
 		.layout = image_layout,
 	};
@@ -2050,17 +2011,16 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 	}
 
 	VkRenderPass pass;
-	radv_CreateRenderPass2(device_h,
-			      &(VkRenderPassCreateInfo2) {
-				      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,
+	radv_CreateRenderPass(device_h,
+			      &(VkRenderPassCreateInfo) {
+				      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 					      .attachmentCount = 1,
 					      .pAttachments = &att_desc,
 					      .subpassCount = 1,
 					      .pSubpasses = &subpass_desc,
 					      .dependencyCount = 2,
-						.pDependencies = (VkSubpassDependency2[]) {
+					      .pDependencies = (VkSubpassDependency[]) {
 							{
-								.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 								.srcSubpass = VK_SUBPASS_EXTERNAL,
 								.dstSubpass = 0,
 								.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -2070,7 +2030,6 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer,
 								.dependencyFlags = 0
 							},
 							{
-								.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2,
 								.srcSubpass = 0,
 								.dstSubpass = VK_SUBPASS_EXTERNAL,
 								.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,

@@ -120,9 +120,6 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
 	OUT_PKT4(ring, REG_A6XX_SP_MODE_CONTROL, 1);
 	OUT_RING(ring, A6XX_SP_MODE_CONTROL_CONSTANT_DEMOTION_ENABLE | 4);
 
-	OUT_PKT4(ring, REG_A6XX_SP_PERFCTR_ENABLE, 1);
-	OUT_RING(ring, A6XX_SP_PERFCTR_ENABLE_CS);
-
 	OUT_PKT4(ring, REG_A6XX_HLSQ_INVALIDATE_CMD, 1);
 	OUT_RING(ring, A6XX_HLSQ_INVALIDATE_CMD_VS_STATE |
                    A6XX_HLSQ_INVALIDATE_CMD_HS_STATE |
@@ -162,19 +159,18 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_CS_CNTL_0, 2);
 	OUT_RING(ring, A6XX_HLSQ_CS_CNTL_0_WGIDCONSTID(work_group_id) |
-		A6XX_HLSQ_CS_CNTL_0_WGSIZECONSTID(regid(63, 0)) |
-		A6XX_HLSQ_CS_CNTL_0_WGOFFSETCONSTID(regid(63, 0)) |
+		A6XX_HLSQ_CS_CNTL_0_UNK0(regid(63, 0)) |
+		A6XX_HLSQ_CS_CNTL_0_UNK1(regid(63, 0)) |
 		A6XX_HLSQ_CS_CNTL_0_LOCALIDREGID(local_invocation_id));
-	OUT_RING(ring, A6XX_HLSQ_CS_CNTL_1_LINEARLOCALIDREGID(regid(63, 0)) |
-			       A6XX_HLSQ_CS_CNTL_1_THREADSIZE(THREAD128));
+	OUT_RING(ring, 0x2fc);             /* HLSQ_CS_UNKNOWN_B998 */
 
-	OUT_PKT4(ring, REG_A6XX_SP_CS_OBJ_START, 2);
+	OUT_PKT4(ring, REG_A6XX_SP_CS_OBJ_START_LO, 2);
 	OUT_RELOC(ring, v->bo, 0, 0, 0);   /* SP_CS_OBJ_START_LO/HI */
 
 	OUT_PKT4(ring, REG_A6XX_SP_CS_INSTRLEN, 1);
 	OUT_RING(ring, v->instrlen);
 
-	OUT_PKT4(ring, REG_A6XX_SP_CS_OBJ_START, 2);
+	OUT_PKT4(ring, REG_A6XX_SP_CS_OBJ_START_LO, 2);
 	OUT_RELOC(ring, v->bo, 0, 0, 0);
 
 	OUT_PKT7(ring, CP_LOAD_STATE6_FRAG, 3);
@@ -294,7 +290,7 @@ cs_ibo_emit(struct fd_ringbuffer *ring, struct fd_submit *submit,
 		CP_LOAD_STATE6_0_NUM_UNIT(kernel->num_bufs));
 	OUT_RB(ring, state);
 
-	OUT_PKT4(ring, REG_A6XX_SP_CS_IBO, 2);
+	OUT_PKT4(ring, REG_A6XX_SP_CS_IBO_LO, 2);
 	OUT_RB(ring, state);
 
 	OUT_PKT4(ring, REG_A6XX_SP_CS_IBO_COUNT, 1);

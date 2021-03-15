@@ -154,7 +154,6 @@ struct gl_program_parameter_list
     */
    int UniformBytes;
    int FirstStateVarIndex;
-   int LastStateVarIndex;
 };
 
 

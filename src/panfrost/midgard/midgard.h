@@ -34,7 +34,6 @@
 #define MIDGARD_DBG_MSGS		0x0001
 #define MIDGARD_DBG_SHADERS		0x0002
 #define MIDGARD_DBG_SHADERDB            0x0004
-#define MIDGARD_DBG_INORDER             0x0008
 
 extern int midgard_debug;
 
@@ -128,7 +127,7 @@ typedef enum {
         midgard_alu_op_ixor       = 0x76,
         midgard_alu_op_inxor      = 0x77, /* ~(a & b) */
         midgard_alu_op_iclz       = 0x78, /* Number of zeroes on left */
-        midgard_alu_op_ipopcnt    = 0x7A, /* Population count */
+        midgard_alu_op_ibitcount8 = 0x7A, /* Counts bits in 8-bit increments */
         midgard_alu_op_imov       = 0x7B,
         midgard_alu_op_iabsdiff   = 0x7C,
         midgard_alu_op_uabsdiff   = 0x7D,
@@ -419,9 +418,6 @@ typedef enum {
         /* Likewise packs from fp32 */
         midgard_op_pack_colour_32 = 0x0A,
 
-        /* Converts image/tex coordinates into mem address */
-        midgard_op_lea_tex = 0x0D,
-
         /* Unclear why this is on the L/S unit, but moves fp32 cube map
          * coordinates in r27 to its cube map texture coordinate destination
          * (e.g r29). */
@@ -503,11 +499,6 @@ typedef enum {
         midgard_op_ld_ubo_short4 = 0xAC,
         midgard_op_ld_ubo_int4   = 0xB0,
 
-        midgard_op_ld_image_32f = 0xB4,
-        midgard_op_ld_image_16f = 0xB5,
-        midgard_op_ld_image_32u = 0xB6,
-        midgard_op_ld_image_32i = 0xB7,
-
         /* New-style blending ops. Works on T760/T860 */
         midgard_op_ld_color_buffer_as_fp32 = 0xB8,
         midgard_op_ld_color_buffer_as_fp16 = 0xB9,
@@ -525,10 +516,9 @@ typedef enum {
         midgard_op_st_vary_32i = 0xD7,
 
         /* Value to st in r27, location r26.w as short2 */
-        midgard_op_st_image_32f = 0xD8,
-        midgard_op_st_image_16f = 0xD9,
-        midgard_op_st_image_32u = 0xDA,
-        midgard_op_st_image_32i = 0xDB,
+        midgard_op_st_image_f = 0xD8,
+        midgard_op_st_image_ui = 0xDA,
+        midgard_op_st_image_i = 0xDB,
 } midgard_load_store_op;
 
 typedef enum {

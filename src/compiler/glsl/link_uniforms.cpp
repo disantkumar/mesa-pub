@@ -1039,7 +1039,7 @@ private:
       assert(!type->without_array()->is_interface());
       assert(!(type->is_array() && type->fields.array->is_array()));
 
-      unsigned id = 0;
+      unsigned id;
       bool found = this->map->get(id, name);
       assert(found);
 

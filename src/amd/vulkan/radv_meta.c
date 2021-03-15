@@ -29,9 +29,7 @@
 
 #include <fcntl.h>
 #include <limits.h>
-#ifndef _WIN32
 #include <pwd.h>
-#endif
 #include <sys/stat.h>
 
 void
@@ -295,7 +293,6 @@ meta_free(void* _device, void *data)
 	device->vk.alloc.pfnFree(device->vk.alloc.pUserData, data);
 }
 
-#ifndef _WIN32
 static bool
 radv_builtin_cache_path(char *path)
 {
@@ -325,14 +322,10 @@ radv_builtin_cache_path(char *path)
 		       pwd.pw_dir, suffix2, sizeof(void *) * 8);
 	return ret > 0 && ret < PATH_MAX + 1;
 }
-#endif
 
 static bool
 radv_load_meta_pipeline(struct radv_device *device)
 {
-#ifdef _WIN32
-	return false;
-#else
 	char path[PATH_MAX + 1];
 	struct stat st;
 	void *data = NULL;
@@ -357,13 +350,11 @@ fail:
 	free(data);
 	close(fd);
 	return ret;
-#endif
 }
 
 static void
 radv_store_meta_pipeline(struct radv_device *device)
 {
-#ifndef _WIN32
 	char path[PATH_MAX + 1], path2[PATH_MAX + 7];
 	size_t size;
 	void *data = NULL;
@@ -400,7 +391,6 @@ fail:
 	free(data);
 	close(fd);
 	unlink(path2);
-#endif
 }
 
 VkResult
@@ -472,16 +462,8 @@ radv_device_init_meta(struct radv_device *device)
 	if (result != VK_SUCCESS)
 		goto fail_fmask_expand;
 
-	if (!on_demand) {
-		result = radv_device_init_meta_dcc_retile_state(device);
-		if (result != VK_SUCCESS)
-			goto fail_dcc_retile;
-	}
-
 	return VK_SUCCESS;
 
-fail_dcc_retile:
-	radv_device_finish_meta_fmask_expand_state(device);
 fail_fmask_expand:
 	radv_device_finish_meta_resolve_fragment_state(device);
 fail_resolve_fragment:
@@ -525,7 +507,6 @@ radv_device_finish_meta(struct radv_device *device)
 	radv_device_finish_meta_resolve_compute_state(device);
 	radv_device_finish_meta_resolve_fragment_state(device);
 	radv_device_finish_meta_fmask_expand_state(device);
-	radv_device_finish_meta_dcc_retile_state(device);
 
 	radv_store_meta_pipeline(device);
 	radv_pipeline_cache_finish(&device->meta_state.cache);
@@ -617,7 +598,7 @@ void radv_meta_build_resolve_shader_core(nir_builder *b,
 	tex->src[1].src = nir_src_for_ssa(nir_imm_int(b, 0));
 	tex->src[2].src_type = nir_tex_src_texture_deref;
 	tex->src[2].src = nir_src_for_ssa(input_img_deref);
-	tex->dest_type = nir_type_float32;
+	tex->dest_type = nir_type_float;
 	tex->is_array = false;
 	tex->coord_components = 2;
 
@@ -634,7 +615,7 @@ void radv_meta_build_resolve_shader_core(nir_builder *b,
 		tex_all_same->src[0].src = nir_src_for_ssa(img_coord);
 		tex_all_same->src[1].src_type = nir_tex_src_texture_deref;
 		tex_all_same->src[1].src = nir_src_for_ssa(input_img_deref);
-		tex_all_same->dest_type = nir_type_bool1;
+		tex_all_same->dest_type = nir_type_uint;
 		tex_all_same->is_array = false;
 		tex_all_same->coord_components = 2;
 
@@ -653,7 +634,7 @@ void radv_meta_build_resolve_shader_core(nir_builder *b,
 			tex_add->src[1].src = nir_src_for_ssa(nir_imm_int(b, i));
 			tex_add->src[2].src_type = nir_tex_src_texture_deref;
 			tex_add->src[2].src = nir_src_for_ssa(input_img_deref);
-			tex_add->dest_type = nir_type_float32;
+			tex_add->dest_type = nir_type_float;
 			tex_add->is_array = false;
 			tex_add->coord_components = 2;
 

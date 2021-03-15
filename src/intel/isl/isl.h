@@ -61,12 +61,10 @@ struct brw_image_param;
  * `gcc -DISL_DEV_GEN(dev)=9 ...`.
  */
 #define ISL_DEV_GEN(__dev) ((__dev)->info->gen)
-#define ISL_DEV_GENX10(__dev) ((__dev)->info->genx10)
 #define ISL_DEV_GEN_SANITIZE(__dev)
 #else
 #define ISL_DEV_GEN_SANITIZE(__dev) \
-   (assert(ISL_DEV_GEN(__dev) == (__dev)->info->gen) && \
-           ISL_DEV_GENX10(__dev) == (__dev)->info->genx10))
+   (assert(ISL_DEV_GEN(__dev) == (__dev)->info->gen))
 #endif
 
 #ifndef ISL_DEV_IS_G4X
@@ -85,6 +83,10 @@ struct brw_image_param;
 
 #ifndef ISL_DEV_IS_BAYTRAIL
 #define ISL_DEV_IS_BAYTRAIL(__dev) ((__dev)->info->is_baytrail)
+#endif
+
+#ifndef ISL_DEV_IS_GEN12HP
+#define ISL_DEV_IS_GEN12HP(__dev) (gen_device_info_is_12hp((__dev)->info))
 #endif
 
 #ifndef ISL_DEV_USE_SEPARATE_STENCIL
@@ -2025,8 +2027,7 @@ isl_swizzle_compose(struct isl_swizzle first, struct isl_swizzle second);
 struct isl_swizzle
 isl_swizzle_invert(struct isl_swizzle swizzle);
 
-uint32_t isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage,
-                  bool external);
+uint32_t isl_mocs(const struct isl_device *dev, isl_surf_usage_flags_t usage);
 
 #define isl_surf_init(dev, surf, ...) \
    isl_surf_init_s((dev), (surf), \

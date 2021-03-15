@@ -115,7 +115,7 @@ static void matrix_frustum(struct gl_matrix_stack* stack,
       return;
    }
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
 
    _math_matrix_frustum(stack->Top,
                         (GLfloat) left, (GLfloat) right,
@@ -196,7 +196,7 @@ matrix_ortho(struct gl_matrix_stack* stack,
       return;
    }
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
 
    _math_matrix_ortho( stack->Top,
                        (GLfloat) left, (GLfloat) right,
@@ -285,7 +285,6 @@ _mesa_MatrixMode( GLenum mode )
    if (stack) {
       ctx->CurrentStack = stack;
       ctx->Transform.MatrixMode = mode;
-      ctx->PopAttribState |= GL_TRANSFORM_BIT;
    }
 }
 
@@ -378,7 +377,7 @@ pop_matrix( struct gl_context *ctx, struct gl_matrix_stack *stack )
     */
    if (memcmp(stack->Top, &stack->Stack[stack->Depth],
               sizeof(GLmatrix))) {
-      FLUSH_VERTICES(ctx, 0, 0);
+      FLUSH_VERTICES(ctx, 0);
       ctx->NewState |= stack->DirtyFlag;
    }
 
@@ -446,7 +445,7 @@ _mesa_MatrixPopEXT( GLenum matrixMode )
 void
 _mesa_load_identity_matrix(struct gl_context *ctx, struct gl_matrix_stack *stack)
 {
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
 
    _math_matrix_set_identity(stack->Top);
    ctx->NewState |= stack->DirtyFlag;
@@ -492,7 +491,7 @@ _mesa_load_matrix(struct gl_context *ctx, struct gl_matrix_stack *stack,
                   const GLfloat *m)
 {
    if (memcmp(m, stack->Top->m, 16 * sizeof(GLfloat)) != 0) {
-      FLUSH_VERTICES(ctx, 0, 0);
+      FLUSH_VERTICES(ctx, 0);
       _math_matrix_loadf(stack->Top, m);
       ctx->NewState |= stack->DirtyFlag;
    }
@@ -576,7 +575,7 @@ matrix_mult(struct gl_matrix_stack *stack, const GLfloat *m, const char* caller)
           m[2], m[6], m[10], m[14],
           m[3], m[7], m[11], m[15]);
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
    _math_matrix_mul_floats(stack->Top, m);
    ctx->NewState |= stack->DirtyFlag;
 }
@@ -620,7 +619,7 @@ matrix_rotate(struct gl_matrix_stack *stack, GLfloat angle,
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
    if (angle != 0.0F) {
       _math_matrix_rotate(stack->Top, angle, x, y, z);
       ctx->NewState |=stack->DirtyFlag;
@@ -681,7 +680,7 @@ _mesa_Scalef( GLfloat x, GLfloat y, GLfloat z )
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
    _math_matrix_scale( ctx->CurrentStack->Top, x, y, z);
    ctx->NewState |= ctx->CurrentStack->DirtyFlag;
 }
@@ -697,7 +696,7 @@ _mesa_MatrixScalefEXT( GLenum matrixMode, GLfloat x, GLfloat y, GLfloat z )
    if (!stack)
       return;
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
    _math_matrix_scale(stack->Top, x, y, z);
    ctx->NewState |= stack->DirtyFlag;
 }
@@ -721,7 +720,7 @@ _mesa_Translatef( GLfloat x, GLfloat y, GLfloat z )
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
    _math_matrix_translate( ctx->CurrentStack->Top, x, y, z);
    ctx->NewState |= ctx->CurrentStack->DirtyFlag;
 }
@@ -736,7 +735,7 @@ _mesa_MatrixTranslatefEXT( GLenum matrixMode, GLfloat x, GLfloat y, GLfloat z )
    if (!stack)
       return;
 
-   FLUSH_VERTICES(ctx, 0, 0);
+   FLUSH_VERTICES(ctx, 0);
    _math_matrix_translate(stack->Top, x, y, z);
    ctx->NewState |= stack->DirtyFlag;
 }
@@ -914,7 +913,8 @@ _mesa_MatrixMultTransposedEXT( GLenum matrixMode, const GLdouble *m )
  *
  * \param ctx GL context.
  *
- * Recomputes user clip positions if necessary.
+ * Calls _math_matrix_analyse() with the top-matrix of the projection matrix
+ * stack, and recomputes user clip positions if necessary.
  *
  * \note This routine references __struct gl_contextRec::Tranform attribute
  * values to compute userclip positions in clip space, but is only called on
@@ -924,23 +924,41 @@ _mesa_MatrixMultTransposedEXT( GLenum matrixMode, const GLdouble *m )
 static void
 update_projection( struct gl_context *ctx )
 {
+   GLbitfield mask;
+
+   _math_matrix_analyse( ctx->ProjectionMatrixStack.Top );
+
    /* Recompute clip plane positions in clipspace.  This is also done
     * in _mesa_ClipPlane().
     */
-   GLbitfield mask = ctx->Transform.ClipPlanesEnabled;
+   mask = ctx->Transform.ClipPlanesEnabled;
+   while (mask) {
+      const int p = u_bit_scan(&mask);
 
-   if (mask) {
-      /* make sure the inverse is up to date */
-      _math_matrix_analyse(ctx->ProjectionMatrixStack.Top);
-
-      do {
-         const int p = u_bit_scan(&mask);
-
-         _mesa_transform_vector(ctx->Transform._ClipUserPlane[p],
-                                ctx->Transform.EyeUserPlane[p],
-                                ctx->ProjectionMatrixStack.Top->inv);
-      } while (mask);
+      _mesa_transform_vector( ctx->Transform._ClipUserPlane[p],
+                              ctx->Transform.EyeUserPlane[p],
+                              ctx->ProjectionMatrixStack.Top->inv );
    }
+}
+
+
+/**
+ * Calculate the combined modelview-projection matrix.
+ *
+ * \param ctx GL context.
+ *
+ * Multiplies the top matrices of the projection and model view stacks into
+ * __struct gl_contextRec::_ModelProjectMatrix via _math_matrix_mul_matrix()
+ * and analyzes the resulting matrix via _math_matrix_analyse().
+ */
+static void
+calculate_model_project_matrix( struct gl_context *ctx )
+{
+   _math_matrix_mul_matrix( &ctx->_ModelProjectMatrix,
+                            ctx->ProjectionMatrixStack.Top,
+                            ctx->ModelviewMatrixStack.Top );
+
+   _math_matrix_analyse( &ctx->_ModelProjectMatrix );
 }
 
 
@@ -963,10 +981,10 @@ void _mesa_update_modelview_project( struct gl_context *ctx, GLuint new_state )
    if (new_state & _NEW_PROJECTION)
       update_projection( ctx );
 
-   /* Calculate ModelViewMatrix * ProjectionMatrix. */
-   _math_matrix_mul_matrix(&ctx->_ModelProjectMatrix,
-                           ctx->ProjectionMatrixStack.Top,
-                           ctx->ModelviewMatrixStack.Top);
+   /* Keep ModelviewProject up to date always to allow tnl
+    * implementations that go model->clip even when eye is required.
+    */
+   calculate_model_project_matrix(ctx);
 }
 
 /*@}*/

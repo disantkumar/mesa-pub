@@ -295,7 +295,8 @@ instr_try_combine(struct nir_shader *nir, struct set *instr_set,
       nir_if_rewrite_condition(src->parent_if, nir_src_for_ssa(new_alu1));
    }
 
-   assert(nir_ssa_def_is_unused(&alu1->dest.dest.ssa));
+   assert(list_is_empty(&alu1->dest.dest.ssa.uses));
+   assert(list_is_empty(&alu1->dest.dest.ssa.if_uses));
 
    nir_foreach_use_safe(src, &alu2->dest.dest.ssa) {
       if (src->parent_instr->type == nir_instr_type_alu) {
@@ -331,7 +332,8 @@ instr_try_combine(struct nir_shader *nir, struct set *instr_set,
       nir_if_rewrite_condition(src->parent_if, nir_src_for_ssa(new_alu2));
    }
 
-   assert(nir_ssa_def_is_unused(&alu2->dest.dest.ssa));
+   assert(list_is_empty(&alu2->dest.dest.ssa.uses));
+   assert(list_is_empty(&alu2->dest.dest.ssa.if_uses));
 
    nir_instr_remove(instr1);
    nir_instr_remove(instr2);

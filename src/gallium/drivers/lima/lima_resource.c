@@ -361,18 +361,6 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
    else
       res->levels[0].width = pres->width0;
 
-   if (screen->ro) {
-      /* Make sure that renderonly has a handle to our buffer in the
-       * display's fd, so that a later renderonly_get_handle()
-       * returns correct handles or GEM names.
-       */
-      res->scanout =
-         renderonly_create_gpu_import_for_resource(pres,
-                                                   screen->ro,
-                                                   NULL);
-      /* ignore failiure to allow importing non-displayable buffer */
-   }
-
    return pres;
 
 err_out:
@@ -718,8 +706,8 @@ lima_util_blitter_save_states(struct lima_context *ctx)
    util_blitter_save_depth_stencil_alpha(ctx->blitter, (void *)ctx->zsa);
    util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
    util_blitter_save_rasterizer(ctx->blitter, (void *)ctx->rasterizer);
-   util_blitter_save_fragment_shader(ctx->blitter, ctx->bind_fs);
-   util_blitter_save_vertex_shader(ctx->blitter, ctx->bind_vs);
+   util_blitter_save_fragment_shader(ctx->blitter, ctx->fs);
+   util_blitter_save_vertex_shader(ctx->blitter, ctx->vs);
    util_blitter_save_viewport(ctx->blitter,
                               &ctx->viewport.transform);
    util_blitter_save_scissor(ctx->blitter, &ctx->scissor);

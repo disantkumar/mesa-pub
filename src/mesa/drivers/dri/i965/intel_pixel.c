@@ -41,9 +41,9 @@ effective_func(GLenum func, bool src_alpha_is_one)
 {
    if (src_alpha_is_one) {
       if (func == GL_SRC_ALPHA)
-         return GL_ONE;
+	 return GL_ONE;
       if (func == GL_ONE_MINUS_SRC_ALPHA)
-         return GL_ZERO;
+	 return GL_ZERO;
    }
 
    return func;
@@ -54,7 +54,7 @@ effective_func(GLenum func, bool src_alpha_is_one)
  * glDraw/CopyPixels.
  */
 bool
-brw_check_blit_fragment_ops(struct gl_context * ctx, bool src_alpha_is_one)
+intel_check_blit_fragment_ops(struct gl_context * ctx, bool src_alpha_is_one)
 {
    if (ctx->NewState)
       _mesa_update_state(ctx);
@@ -66,11 +66,11 @@ brw_check_blit_fragment_ops(struct gl_context * ctx, bool src_alpha_is_one)
 
    if (ctx->Color.BlendEnabled &&
        (effective_func(ctx->Color.Blend[0].SrcRGB, src_alpha_is_one) != GL_ONE ||
-        effective_func(ctx->Color.Blend[0].DstRGB, src_alpha_is_one) != GL_ZERO ||
-        ctx->Color.Blend[0].EquationRGB != GL_FUNC_ADD ||
-        effective_func(ctx->Color.Blend[0].SrcA, src_alpha_is_one) != GL_ONE ||
-        effective_func(ctx->Color.Blend[0].DstA, src_alpha_is_one) != GL_ZERO ||
-        ctx->Color.Blend[0].EquationA != GL_FUNC_ADD)) {
+	effective_func(ctx->Color.Blend[0].DstRGB, src_alpha_is_one) != GL_ZERO ||
+	ctx->Color.Blend[0].EquationRGB != GL_FUNC_ADD ||
+	effective_func(ctx->Color.Blend[0].SrcA, src_alpha_is_one) != GL_ONE ||
+	effective_func(ctx->Color.Blend[0].DstA, src_alpha_is_one) != GL_ZERO ||
+	ctx->Color.Blend[0].EquationA != GL_FUNC_ADD)) {
       DBG("fallback due to blend\n");
       return false;
    }
@@ -124,11 +124,11 @@ brw_check_blit_fragment_ops(struct gl_context * ctx, bool src_alpha_is_one)
 }
 
 void
-brw_init_pixel_functions(struct dd_function_table *functions)
+intelInitPixelFuncs(struct dd_function_table *functions)
 {
-   functions->Bitmap = brw_bitmap;
-   functions->CopyPixels = brw_copypixels;
-   functions->DrawPixels = brw_drawpixels;
-   functions->ReadPixels = brw_readpixels;
+   functions->Bitmap = intelBitmap;
+   functions->CopyPixels = intelCopyPixels;
+   functions->DrawPixels = intelDrawPixels;
+   functions->ReadPixels = intelReadPixels;
 }
 
