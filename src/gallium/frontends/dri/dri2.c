@@ -732,8 +732,8 @@ static const struct dri2_format_mapping r8_g8b8_mapping = {
    __DRI_IMAGE_COMPONENTS_Y_UV,
    PIPE_FORMAT_R8_G8B8_420_UNORM,
    2,
-   { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8, 1 },
-     { 1, 1, 1, __DRI_IMAGE_FORMAT_GR88, 2 } }
+   { { 0, 0, 0, __DRI_IMAGE_FORMAT_R8 },
+     { 1, 1, 1, __DRI_IMAGE_FORMAT_GR88 } }
 };
 
 static __DRIimage *
@@ -1925,10 +1925,10 @@ dri2_interop_export_object(__DRIcontext *_ctx,
          }
 
          out->internal_format = obj->Image[0][0]->InternalFormat;
-         out->view_minlevel = obj->MinLevel;
-         out->view_numlevels = obj->NumLevels;
-         out->view_minlayer = obj->MinLayer;
-         out->view_numlayers = obj->NumLayers;
+         out->view_minlevel = obj->Attrib.MinLevel;
+         out->view_numlevels = obj->Attrib.NumLevels;
+         out->view_minlayer = obj->Attrib.MinLayer;
+         out->view_numlayers = obj->Attrib.NumLayers;
       }
    }
 

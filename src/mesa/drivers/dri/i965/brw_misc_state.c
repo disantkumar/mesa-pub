@@ -31,9 +31,9 @@
 
 
 
-#include "intel_batchbuffer.h"
-#include "intel_fbo.h"
-#include "intel_mipmap_tree.h"
+#include "brw_batch.h"
+#include "brw_fbo.h"
+#include "brw_mipmap_tree.h"
 
 #include "brw_context.h"
 #include "brw_state.h"
@@ -105,14 +105,14 @@ brw_depthbuffer_format(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    struct gl_framebuffer *fb = ctx->DrawBuffer;
-   struct intel_renderbuffer *drb = intel_get_renderbuffer(fb, BUFFER_DEPTH);
-   struct intel_renderbuffer *srb;
+   struct brw_renderbuffer *drb = brw_get_renderbuffer(fb, BUFFER_DEPTH);
+   struct brw_renderbuffer *srb;
 
    if (!drb &&
-       (srb = intel_get_renderbuffer(fb, BUFFER_STENCIL)) &&
+       (srb = brw_get_renderbuffer(fb, BUFFER_STENCIL)) &&
        !srb->mt->stencil_mt &&
-       (intel_rb_format(srb) == MESA_FORMAT_Z24_UNORM_S8_UINT ||
-	intel_rb_format(srb) == MESA_FORMAT_Z32_FLOAT_S8X24_UINT)) {
+       (brw_rb_format(srb) == MESA_FORMAT_Z24_UNORM_S8_UINT ||
+        brw_rb_format(srb) == MESA_FORMAT_Z32_FLOAT_S8X24_UINT)) {
       drb = srb;
    }
 
@@ -122,18 +122,18 @@ brw_depthbuffer_format(struct brw_context *brw)
    return brw_depth_format(brw, drb->mt->format);
 }
 
-static struct intel_mipmap_tree *
-get_stencil_miptree(struct intel_renderbuffer *irb)
+static struct brw_mipmap_tree *
+get_stencil_miptree(struct brw_renderbuffer *irb)
 {
    if (!irb)
       return NULL;
    if (irb->mt->stencil_mt)
       return irb->mt->stencil_mt;
-   return intel_renderbuffer_get_mt(irb);
+   return brw_renderbuffer_get_mt(irb);
 }
 
 static bool
-rebase_depth_stencil(struct brw_context *brw, struct intel_renderbuffer *irb,
+rebase_depth_stencil(struct brw_context *brw, struct brw_renderbuffer *irb,
                      bool invalidate)
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
@@ -142,7 +142,7 @@ rebase_depth_stencil(struct brw_context *brw, struct intel_renderbuffer *irb,
 
    isl_get_tile_masks(irb->mt->surf.tiling, irb->mt->cpp,
                       &tile_mask_x, &tile_mask_y);
-   assert(!intel_miptree_level_has_hiz(irb->mt, irb->mt_level));
+   assert(!brw_miptree_level_has_hiz(irb->mt, irb->mt_level));
 
    uint32_t tile_x = irb->draw_x & tile_mask_x;
    uint32_t tile_y = irb->draw_y & tile_mask_y;
@@ -163,7 +163,7 @@ rebase_depth_stencil(struct brw_context *brw, struct intel_renderbuffer *irb,
       perf_debug("HW workaround: blitting depth level %d to a temporary "
                  "to fix alignment (depth tile offset %d,%d)\n",
                  irb->mt_level, tile_x, tile_y);
-      intel_renderbuffer_move_to_temp(brw, irb, invalidate);
+      brw_renderbuffer_move_to_temp(brw, irb, invalidate);
 
       /* There is now only single slice miptree. */
       brw->depthstencil.tile_x = 0;
@@ -186,7 +186,7 @@ rebase_depth_stencil(struct brw_context *brw, struct intel_renderbuffer *irb,
 
    brw->depthstencil.tile_x = tile_x;
    brw->depthstencil.tile_y = tile_y;
-   brw->depthstencil.depth_offset = intel_miptree_get_aligned_offset(
+   brw->depthstencil.depth_offset = brw_miptree_get_aligned_offset(
                                        irb->mt,
                                        irb->draw_x & ~tile_mask_x,
                                        irb->draw_y & ~tile_mask_y);
@@ -201,9 +201,9 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
    struct gl_context *ctx = &brw->ctx;
    struct gl_framebuffer *fb = ctx->DrawBuffer;
-   struct intel_renderbuffer *depth_irb = intel_get_renderbuffer(fb, BUFFER_DEPTH);
-   struct intel_renderbuffer *stencil_irb = intel_get_renderbuffer(fb, BUFFER_STENCIL);
-   struct intel_mipmap_tree *depth_mt = NULL;
+   struct brw_renderbuffer *depth_irb = brw_get_renderbuffer(fb, BUFFER_DEPTH);
+   struct brw_renderbuffer *stencil_irb = brw_get_renderbuffer(fb, BUFFER_STENCIL);
+   struct brw_mipmap_tree *depth_mt = NULL;
    bool invalidate_depth = clear_mask & BUFFER_BIT_DEPTH;
    bool invalidate_stencil = clear_mask & BUFFER_BIT_STENCIL;
 
@@ -237,8 +237,8 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
          if (stencil_irb &&
              stencil_irb != depth_irb &&
              stencil_irb->mt == depth_mt) {
-            intel_miptree_reference(&stencil_irb->mt, depth_irb->mt);
-            intel_renderbuffer_set_draw_offset(stencil_irb);
+            brw_miptree_reference(&stencil_irb->mt, depth_irb->mt);
+            brw_renderbuffer_set_draw_offset(stencil_irb);
          }
       }
 
@@ -256,10 +256,10 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
 
 static void
 brw_emit_depth_stencil_hiz(struct brw_context *brw,
-                           struct intel_renderbuffer *depth_irb,
-                           struct intel_mipmap_tree *depth_mt,
-                           struct intel_renderbuffer *stencil_irb,
-                           struct intel_mipmap_tree *stencil_mt)
+                           struct brw_renderbuffer *depth_irb,
+                           struct brw_mipmap_tree *depth_mt,
+                           struct brw_renderbuffer *stencil_irb,
+                           struct brw_mipmap_tree *stencil_mt)
 {
    uint32_t tile_x = brw->depthstencil.tile_x;
    uint32_t tile_y = brw->depthstencil.tile_y;
@@ -325,10 +325,10 @@ brw_emit_depthbuffer(struct brw_context *brw)
    struct gl_context *ctx = &brw->ctx;
    struct gl_framebuffer *fb = ctx->DrawBuffer;
    /* _NEW_BUFFERS */
-   struct intel_renderbuffer *depth_irb = intel_get_renderbuffer(fb, BUFFER_DEPTH);
-   struct intel_renderbuffer *stencil_irb = intel_get_renderbuffer(fb, BUFFER_STENCIL);
-   struct intel_mipmap_tree *depth_mt = intel_renderbuffer_get_mt(depth_irb);
-   struct intel_mipmap_tree *stencil_mt = get_stencil_miptree(stencil_irb);
+   struct brw_renderbuffer *depth_irb = brw_get_renderbuffer(fb, BUFFER_DEPTH);
+   struct brw_renderbuffer *stencil_irb = brw_get_renderbuffer(fb, BUFFER_STENCIL);
+   struct brw_mipmap_tree *depth_mt = brw_renderbuffer_get_mt(depth_irb);
+   struct brw_mipmap_tree *stencil_mt = get_stencil_miptree(stencil_irb);
 
    if (depth_mt)
       brw_cache_flush_for_depth(brw, depth_mt->bo);
@@ -350,7 +350,7 @@ brw_emit_depthbuffer(struct brw_context *brw)
    brw_emit_depth_stall_flushes(brw);
 
    const unsigned ds_dwords = brw->isl_dev.ds.size / 4;
-   intel_batchbuffer_begin(brw, ds_dwords);
+   brw_batch_begin(brw, ds_dwords);
    uint32_t *ds_map = brw->batch.map_next;
    const uint32_t ds_offset = (char *)ds_map - (char *)brw->batch.batch.map;
 
@@ -383,10 +383,10 @@ brw_emit_depthbuffer(struct brw_context *brw)
       view.format = depth_mt->surf.format;
 
       info.hiz_usage = depth_mt->aux_usage;
-      if (!intel_renderbuffer_has_hiz(depth_irb)) {
+      if (!brw_renderbuffer_has_hiz(depth_irb)) {
          /* Just because a miptree has ISL_AUX_USAGE_HIZ does not mean that
           * all miplevels of that miptree are guaranteed to support HiZ.  See
-          * intel_miptree_level_enable_hiz for details.
+          * brw_miptree_level_enable_hiz for details.
           */
          info.hiz_usage = ISL_AUX_USAGE_NONE;
       }
@@ -450,7 +450,7 @@ brw_emit_depthbuffer(struct brw_context *brw)
    isl_emit_depth_stencil_hiz_s(&brw->isl_dev, ds_map, &info);
 
    brw->batch.map_next += ds_dwords;
-   intel_batchbuffer_advance(brw);
+   brw_batch_advance(brw);
 
    brw->no_depth_or_stencil = !depth_mt && !stencil_mt;
 }
@@ -838,20 +838,20 @@ brw_upload_state_base_address(struct brw_context *brw)
                  mocs << 4 | /* Stateless Data Port Access Memory Object Control State */
                  1); /* General State Base Address Modify Enable */
        /* Surface state base address:
-	* BINDING_TABLE_STATE
-	* SURFACE_STATE
-	*/
+        * BINDING_TABLE_STATE
+        * SURFACE_STATE
+        */
        OUT_RELOC(brw->batch.state.bo, 0, 1);
         /* Dynamic state base address:
-	 * SAMPLER_STATE
-	 * SAMPLER_BORDER_COLOR_STATE
-	 * CLIP, SF, WM/CC viewport state
-	 * COLOR_CALC_STATE
-	 * DEPTH_STENCIL_STATE
-	 * BLEND_STATE
-	 * Push constants (when INSTPM: CONSTANT_BUFFER Address Offset
-	 * Disable is clear, which we rely on)
-	 */
+         * SAMPLER_STATE
+         * SAMPLER_BORDER_COLOR_STATE
+         * CLIP, SF, WM/CC viewport state
+         * COLOR_CALC_STATE
+         * DEPTH_STENCIL_STATE
+         * BLEND_STATE
+         * Push constants (when INSTPM: CONSTANT_BUFFER Address Offset
+         * Disable is clear, which we rely on)
+         */
        OUT_RELOC(brw->batch.state.bo, 0, 1);
 
        OUT_BATCH(1); /* Indirect object base address: MEDIA_OBJECT data */
@@ -861,10 +861,10 @@ brw_upload_state_base_address(struct brw_context *brw)
 
        OUT_BATCH(1); /* General state upper bound */
        /* Dynamic state upper bound.  Although the documentation says that
-	* programming it to zero will cause it to be ignored, that is a lie.
-	* If this isn't programmed to a real bound, the sampler border color
-	* pointer is rejected, causing border color to mysteriously fail.
-	*/
+        * programming it to zero will cause it to be ignored, that is a lie.
+        * If this isn't programmed to a real bound, the sampler border color
+        * pointer is rejected, causing border color to mysteriously fail.
+        */
        OUT_BATCH(0xfffff001);
        OUT_BATCH(1); /* Indirect object upper bound */
        OUT_BATCH(1); /* Instruction access upper bound */

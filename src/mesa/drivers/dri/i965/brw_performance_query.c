@@ -70,7 +70,7 @@
 
 #include "brw_context.h"
 #include "brw_defines.h"
-#include "intel_batchbuffer.h"
+#include "brw_batch.h"
 
 #include "perf/gen_perf.h"
 #include "perf/gen_perf_regs.h"
@@ -157,7 +157,7 @@ brw_get_perf_query_info(struct gl_context *ctx,
 }
 
 static GLuint
-gen_counter_type_enum_to_gl_type(enum gen_perf_counter_type type)
+intel_counter_type_enum_to_gl_type(enum gen_perf_counter_type type)
 {
    switch (type) {
    case GEN_PERF_COUNTER_TYPE_EVENT: return GL_PERFQUERY_COUNTER_EVENT_INTEL;
@@ -211,7 +211,7 @@ brw_get_perf_counter_info(struct gl_context *ctx,
    *desc = counter->desc;
    *offset = counter->offset;
    *data_size = gen_perf_query_counter_get_size(counter);
-   *type_enum = gen_counter_type_enum_to_gl_type(counter->type);
+   *type_enum = intel_counter_type_enum_to_gl_type(counter->type);
    *data_type_enum = gen_counter_data_type_to_gl_type(counter->data_type);
    *raw_max = counter->raw_max;
 }
@@ -442,7 +442,7 @@ static void
 brw_oa_batchbuffer_flush(void *c, const char *file, int line)
 {
    struct brw_context *ctx = c;
-   _intel_batchbuffer_flush_fence(ctx, -1, NULL, file,  line);
+   _brw_batch_flush_fence(ctx, -1, NULL, file,  line);
 }
 
 static void
@@ -487,7 +487,7 @@ brw_init_perf_query_info(struct gl_context *ctx)
    if (!oa_metrics_kernel_support(brw->screen->fd, devinfo))
       return 0;
 
-   perf_cfg = gen_perf_new(ctx);
+   perf_cfg = gen_perf_new(brw->mem_ctx);
 
    perf_cfg->vtbl.bo_alloc = brw_oa_bo_alloc;
    perf_cfg->vtbl.bo_unreference = (bo_unreference_t)brw_bo_unreference;
@@ -504,8 +504,8 @@ brw_init_perf_query_info(struct gl_context *ctx)
    perf_cfg->vtbl.bo_wait_rendering = (bo_wait_rendering_t)brw_bo_wait_rendering;
    perf_cfg->vtbl.bo_busy = (bo_busy_t)brw_bo_busy;
 
-   gen_perf_init_context(perf_ctx, perf_cfg, brw, brw->bufmgr, devinfo,
-                         brw->hw_ctx, brw->screen->fd);
+   gen_perf_init_context(perf_ctx, perf_cfg, brw->mem_ctx, brw, brw->bufmgr,
+                         devinfo, brw->hw_ctx, brw->screen->fd);
    gen_perf_init_metrics(perf_cfg, devinfo, brw->screen->fd,
                          true /* pipeline stats */);
 

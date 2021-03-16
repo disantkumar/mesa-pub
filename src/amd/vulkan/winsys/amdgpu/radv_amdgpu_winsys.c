@@ -57,10 +57,6 @@ do_winsys_init(struct radv_amdgpu_winsys *ws, int fd)
 		return false;
 	}
 
-	/* temporary */
-	ws->info.use_display_dcc_unaligned = false;
-	ws->info.use_display_dcc_with_retile_blit = false;
-
 	ws->addrlib = ac_addrlib_create(&ws->info, &ws->info.max_alignment);
 	if (!ws->addrlib) {
 		fprintf(stderr, "amdgpu: Cannot create addrlib.\n");
@@ -166,8 +162,10 @@ static void radv_amdgpu_winsys_destroy(struct radeon_winsys *rws)
 		amdgpu_cs_destroy_syncobj(ws->dev, ws->syncobj[i]);
 	free(ws->syncobj);
 
+	u_rwlock_destroy(&ws->global_bo_list.lock);
+	free(ws->global_bo_list.bos);
+
 	pthread_mutex_destroy(&ws->syncobj_lock);
-	u_rwlock_destroy(&ws->global_bo_list_lock);
 	u_rwlock_destroy(&ws->log_bo_list_lock);
 	ac_addrlib_destroy(ws->addrlib);
 	amdgpu_device_deinitialize(ws->dev);
@@ -204,8 +202,7 @@ radv_amdgpu_winsys_create(int fd, uint64_t debug_flags, uint64_t perftest_flags)
 	ws->zero_all_vram_allocs = debug_flags & RADV_DEBUG_ZERO_VRAM;
 	ws->use_llvm = debug_flags & RADV_DEBUG_LLVM;
 	ws->cs_bo_domain = radv_cmdbuffer_domain(&ws->info, perftest_flags);
-	list_inithead(&ws->global_bo_list);
-	u_rwlock_init(&ws->global_bo_list_lock);
+	u_rwlock_init(&ws->global_bo_list.lock);
 	list_inithead(&ws->log_bo_list);
 	u_rwlock_init(&ws->log_bo_list_lock);
 	pthread_mutex_init(&ws->syncobj_lock, NULL);

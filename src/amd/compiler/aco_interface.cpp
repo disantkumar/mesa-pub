@@ -30,22 +30,24 @@
 #include <array>
 #include <iostream>
 
-const std::array<aco_compiler_statistic_info, aco::num_statistics> statistic_infos = []()
+static const std::array<aco_compiler_statistic_info, aco::num_statistics> statistic_infos = []()
 {
    std::array<aco_compiler_statistic_info, aco::num_statistics> ret{};
    ret[aco::statistic_hash] = aco_compiler_statistic_info{"Hash", "CRC32 hash of code and constant data"};
    ret[aco::statistic_instructions] = aco_compiler_statistic_info{"Instructions", "Instruction count"};
    ret[aco::statistic_copies] = aco_compiler_statistic_info{"Copies", "Copy instructions created for pseudo-instructions"};
    ret[aco::statistic_branches] = aco_compiler_statistic_info{"Branches", "Branch instructions"};
-   ret[aco::statistic_cycles] = aco_compiler_statistic_info{"Busy Cycles", "Estimate of busy cycles"};
+   ret[aco::statistic_latency] = aco_compiler_statistic_info{"Latency", "Issue cycles plus stall cycles"};
+   ret[aco::statistic_inv_throughput] = aco_compiler_statistic_info{"Inverse Throughput", "Estimated busy cycles to execute one wave"};
    ret[aco::statistic_vmem_clauses] = aco_compiler_statistic_info{"VMEM Clause", "Number of VMEM clauses (includes 1-sized clauses)"};
    ret[aco::statistic_smem_clauses] = aco_compiler_statistic_info{"SMEM Clause", "Number of SMEM clauses (includes 1-sized clauses)"};
-   ret[aco::statistic_vmem_score] = aco_compiler_statistic_info{"VMEM Score", "Average VMEM def-use distances"};
-   ret[aco::statistic_smem_score] = aco_compiler_statistic_info{"SMEM Score", "Average SMEM def-use distances"};
    ret[aco::statistic_sgpr_presched] = aco_compiler_statistic_info{"Pre-Sched SGPRs", "SGPR usage before scheduling"};
    ret[aco::statistic_vgpr_presched] = aco_compiler_statistic_info{"Pre-Sched VGPRs", "VGPR usage before scheduling"};
    return ret;
 }();
+
+const unsigned aco_num_statistics = aco::num_statistics;
+const aco_compiler_statistic_info *aco_statistic_infos = statistic_infos.data();
 
 static void validate(aco::Program *program)
 {
@@ -163,7 +165,7 @@ void aco_compile_shader(unsigned shader_count,
    if (program->chip_class >= GFX10)
       aco::form_hard_clauses(program.get());
 
-   if (program->collect_statistics)
+   if (program->collect_statistics || (aco::debug_flags & aco::DEBUG_PERF_INFO))
       aco::collect_preasm_stats(program.get());
 
    /* Assembly */
@@ -184,16 +186,9 @@ void aco_compile_shader(unsigned shader_count,
       struct u_memstream mem;
       if (u_memstream_open(&mem, &data, &disasm_size)) {
          FILE *const memf = u_memstream_get(&mem);
-         bool fail = aco::print_asm(program.get(), code, exec_size / 4u, memf);
+         aco::print_asm(program.get(), code, exec_size / 4u, memf);
          fputc(0, memf);
          u_memstream_close(&mem);
-
-         if (fail) {
-            fprintf(stderr, "Failed to disassemble program:\n");
-            aco_print_program(program.get(), stderr);
-            fputs(data, stderr);
-            abort();
-         }
       }
 
       disasm = std::string(data, data + disasm_size);
@@ -203,7 +198,7 @@ void aco_compile_shader(unsigned shader_count,
 
    size_t stats_size = 0;
    if (program->collect_statistics)
-      stats_size = sizeof(aco_compiler_statistics) + aco::num_statistics * sizeof(uint32_t);
+      stats_size = aco::num_statistics * sizeof(uint32_t);
    size += stats_size;
 
    size += code.size() * sizeof(uint32_t) + sizeof(radv_shader_binary_legacy);
@@ -218,12 +213,8 @@ void aco_compile_shader(unsigned shader_count,
    legacy_binary->base.is_gs_copy_shader = args->is_gs_copy_shader;
    legacy_binary->base.total_size = size;
 
-   if (program->collect_statistics) {
-      aco_compiler_statistics *statistics = (aco_compiler_statistics *)legacy_binary->data;
-      statistics->count = aco::num_statistics;
-      statistics->infos = statistic_infos.data();
-      memcpy(statistics->values, program->statistics, aco::num_statistics * sizeof(uint32_t));
-   }
+   if (program->collect_statistics)
+      memcpy(legacy_binary->data, program->statistics, aco::num_statistics * sizeof(uint32_t));
    legacy_binary->stats_size = stats_size;
 
    memcpy(legacy_binary->data + legacy_binary->stats_size, code.data(), code.size() * sizeof(uint32_t));

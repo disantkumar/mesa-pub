@@ -70,14 +70,12 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
    case PIPE_CAP_VERTEX_SHADER_SATURATE:
-   case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_PRIMITIVE_RESTART:
    case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_CONDITIONAL_RENDER:
    case PIPE_CAP_TEXTURE_BARRIER:
    case PIPE_CAP_INDEP_BLEND_ENABLE:
    case PIPE_CAP_INDEP_BLEND_FUNC:
-   case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
    case PIPE_CAP_START_INSTANCE:
    case PIPE_CAP_NPOT_TEXTURES:
@@ -92,7 +90,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
-   case PIPE_CAP_CUBE_MAP_ARRAY:
    case PIPE_CAP_SAMPLE_SHADING:
    case PIPE_CAP_DRAW_INDIRECT:
    case PIPE_CAP_CLIP_HALFZ:
@@ -105,7 +102,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
-   case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
    case PIPE_CAP_TEXTURE_QUERY_LOD:
@@ -122,7 +118,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
-   case PIPE_CAP_GENERATE_MIPMAP:
    case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
    case PIPE_CAP_STRING_MARKER:
    case PIPE_CAP_CLEAR_TEXTURE:
@@ -169,6 +164,12 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_GLSL_ZERO_INIT:
       return 2;
+
+   case PIPE_CAP_GENERATE_MIPMAP:
+   case PIPE_CAP_SEAMLESS_CUBE_MAP:
+   case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
+   case PIPE_CAP_CUBE_MAP_ARRAY:
+      return sscreen->info.has_3d_cube_border_color_mipmap;
 
    case PIPE_CAP_QUERY_SO_OVERFLOW:
       return !sscreen->use_ngg_streamout;
@@ -282,8 +283,12 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
       return 16384;
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
+      if (!sscreen->info.has_3d_cube_border_color_mipmap)
+         return 0;
       return 15; /* 16384 */
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
+      if (!sscreen->info.has_3d_cube_border_color_mipmap)
+         return 0;
       if (sscreen->info.chip_class >= GFX10)
          return 14;
       /* textures support 8192, but layered rendering supports 2048 */
@@ -833,8 +838,8 @@ static void si_query_memory_info(struct pipe_screen *screen, struct pipe_memory_
    struct radeon_winsys *ws = sscreen->ws;
    unsigned vram_usage, gtt_usage;
 
-   info->total_device_memory = sscreen->info.vram_size / 1024;
-   info->total_staging_memory = sscreen->info.gart_size / 1024;
+   info->total_device_memory = sscreen->info.vram_size_kb;
+   info->total_staging_memory = sscreen->info.gart_size_kb;
 
    /* The real TTM memory usage is somewhat random, because:
     *

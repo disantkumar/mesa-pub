@@ -323,11 +323,27 @@ blorp_hiz_op(struct blorp_batch *batch, struct blorp_surf *surf,
              uint32_t level, uint32_t start_layer, uint32_t num_layers,
              enum isl_aux_op op)
 {
+   const struct gen_device_info *devinfo = batch->blorp->isl_dev->info;
+
    struct blorp_params params;
    blorp_params_init(&params);
 
    params.hiz_op = op;
    params.full_surface_hiz_op = true;
+   switch (op) {
+   case ISL_AUX_OP_FULL_RESOLVE:
+      params.snapshot_type = INTEL_SNAPSHOT_HIZ_RESOLVE;
+      break;
+   case ISL_AUX_OP_AMBIGUATE:
+      params.snapshot_type = INTEL_SNAPSHOT_HIZ_AMBIGUATE;
+      break;
+   case ISL_AUX_OP_FAST_CLEAR:
+      params.snapshot_type = INTEL_SNAPSHOT_HIZ_CLEAR;
+      break;
+   case ISL_AUX_OP_PARTIAL_RESOLVE:
+   case ISL_AUX_OP_NONE:
+      unreachable("Invalid HiZ op");
+   }
 
    for (uint32_t a = 0; a < num_layers; a++) {
       const uint32_t layer = start_layer + a;
@@ -372,6 +388,41 @@ blorp_hiz_op(struct blorp_batch *batch, struct blorp_surf *surf,
          /* TODO: What about MSAA? */
          params.depth.surf.logical_level0_px.width = params.x1;
          params.depth.surf.logical_level0_px.height = params.y1;
+      } else if (devinfo->gen >= 8 && devinfo->gen <= 9 &&
+                 op == ISL_AUX_OP_AMBIGUATE) {
+         /* On some platforms, it's not enough to just adjust the clear
+          * rectangle when the LOD is greater than 0.
+          *
+          * From the BDW and SKL PRMs, Vol 7, "Optimized Hierarchical Depth
+          * Buffer Resolve":
+          *
+          *    The following is required when performing a hierarchical depth
+          *    buffer resolve:
+          *
+          *    - A rectangle primitive covering the full render target must be
+          *      programmed on Xmin, Ymin, Xmax, and Ymax in the
+          *      3DSTATE_WM_HZ_OP command.
+          *
+          *    - The rectangle primitive size must be aligned to 8x4 pixels.
+          *
+          * And from the Clear Rectangle programming note in 3DSTATE_WM_HZ_OP
+          * (Vol 2a):
+          *
+          *    Hence the max values must be less than or equal to: ( Surface
+          *    Width » LOD ) and ( Surface Height » LOD ) for X Max and Y Max
+          *    respectively.
+          *
+          * This means that the extent of the LOD must be naturally
+          * 8x4-aligned after minification of the base LOD. Since the base LOD
+          * dimensions affect the placement of smaller LODs, it's not trivial
+          * (nor possible, at times) to satisfy the requirement by adjusting
+          * the base LOD extent. Just assert that the caller is accessing an
+          * LOD that satisfies this requirement.
+          */
+         assert(minify(params.depth.surf.logical_level0_px.width,
+                       params.depth.view.base_level) == params.x1);
+         assert(minify(params.depth.surf.logical_level0_px.height,
+                       params.depth.view.base_level) == params.y1);
       }
 
       params.dst.surf.samples = params.depth.surf.samples;

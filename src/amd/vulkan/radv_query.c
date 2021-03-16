@@ -26,7 +26,6 @@
 #include <assert.h>
 #include <stdbool.h>
 #include <string.h>
-#include <unistd.h>
 #include <fcntl.h>
 
 #include "nir/nir_builder.h"
@@ -672,20 +671,20 @@ build_timestamp_query_shader(struct radv_device *device)
 static VkResult radv_device_init_meta_query_state_internal(struct radv_device *device)
 {
 	VkResult result;
-	struct radv_shader_module occlusion_cs = { .nir = NULL };
-	struct radv_shader_module pipeline_statistics_cs = { .nir = NULL };
-	struct radv_shader_module tfb_cs = { .nir = NULL };
-	struct radv_shader_module timestamp_cs = { .nir = NULL };
+	nir_shader *occlusion_cs = NULL;
+	nir_shader *pipeline_statistics_cs = NULL;
+	nir_shader *tfb_cs = NULL;
+	nir_shader *timestamp_cs = NULL;
 
 	mtx_lock(&device->meta_state.mtx);
 	if (device->meta_state.query.pipeline_statistics_query_pipeline) {
 		mtx_unlock(&device->meta_state.mtx);
 		return VK_SUCCESS;
 	}
-	occlusion_cs.nir = build_occlusion_query_shader(device);
-	pipeline_statistics_cs.nir = build_pipeline_statistics_query_shader(device);
-	tfb_cs.nir = build_tfb_query_shader(device);
-	timestamp_cs.nir = build_timestamp_query_shader(device);
+	occlusion_cs = build_occlusion_query_shader(device);
+	pipeline_statistics_cs = build_pipeline_statistics_query_shader(device);
+	tfb_cs = build_tfb_query_shader(device);
+	timestamp_cs = build_timestamp_query_shader(device);
 
 	VkDescriptorSetLayoutCreateInfo occlusion_ds_create_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -734,7 +733,7 @@ static VkResult radv_device_init_meta_query_state_internal(struct radv_device *d
 	VkPipelineShaderStageCreateInfo occlusion_pipeline_shader_stage = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = radv_shader_module_to_handle(&occlusion_cs),
+		.module = vk_shader_module_handle_from_nir(occlusion_cs),
 		.pName = "main",
 		.pSpecializationInfo = NULL,
 	};
@@ -756,7 +755,7 @@ static VkResult radv_device_init_meta_query_state_internal(struct radv_device *d
 	VkPipelineShaderStageCreateInfo pipeline_statistics_pipeline_shader_stage = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = radv_shader_module_to_handle(&pipeline_statistics_cs),
+		.module = vk_shader_module_handle_from_nir(pipeline_statistics_cs),
 		.pName = "main",
 		.pSpecializationInfo = NULL,
 	};
@@ -778,7 +777,7 @@ static VkResult radv_device_init_meta_query_state_internal(struct radv_device *d
 	VkPipelineShaderStageCreateInfo tfb_pipeline_shader_stage = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = radv_shader_module_to_handle(&tfb_cs),
+		.module = vk_shader_module_handle_from_nir(tfb_cs),
 		.pName = "main",
 		.pSpecializationInfo = NULL,
 	};
@@ -800,7 +799,7 @@ static VkResult radv_device_init_meta_query_state_internal(struct radv_device *d
 	VkPipelineShaderStageCreateInfo timestamp_pipeline_shader_stage = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 		.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-		.module = radv_shader_module_to_handle(&timestamp_cs),
+		.module = vk_shader_module_handle_from_nir(timestamp_cs),
 		.pName = "main",
 		.pSpecializationInfo = NULL,
 	};
@@ -820,10 +819,10 @@ static VkResult radv_device_init_meta_query_state_internal(struct radv_device *d
 fail:
 	if (result != VK_SUCCESS)
 		radv_device_finish_meta_query_state(device);
-	ralloc_free(occlusion_cs.nir);
-	ralloc_free(pipeline_statistics_cs.nir);
-	ralloc_free(tfb_cs.nir);
-	ralloc_free(timestamp_cs.nir);
+	ralloc_free(occlusion_cs);
+	ralloc_free(pipeline_statistics_cs);
+	ralloc_free(tfb_cs);
+	ralloc_free(timestamp_cs);
 	mtx_unlock(&device->meta_state.mtx);
 	return result;
 }
@@ -1007,7 +1006,7 @@ radv_destroy_query_pool(struct radv_device *device,
 			struct radv_query_pool *pool)
 {
 	if (pool->bo)
-		device->ws->buffer_destroy(pool->bo);
+		device->ws->buffer_destroy(device->ws, pool->bo);
 	vk_object_base_finish(&pool->base);
 	vk_free2(&device->vk.alloc, pAllocator, pool);
 }
@@ -1317,9 +1316,11 @@ void radv_CmdCopyQueryPoolResults(
 	switch (pool->type) {
 	case VK_QUERY_TYPE_OCCLUSION:
 		if (flags & VK_QUERY_RESULT_WAIT_BIT) {
+			unsigned enabled_rb_mask = cmd_buffer->device->physical_device->rad_info.enabled_rb_mask;
+			uint32_t rb_avail_offset = 16 * util_last_bit(enabled_rb_mask) - 4;
 			for(unsigned i = 0; i < queryCount; ++i, dest_va += stride) {
 				unsigned query = firstQuery + i;
-				uint64_t src_va = va + query * pool->stride + pool->stride - 4;
+				uint64_t src_va = va + query * pool->stride + rb_avail_offset;
 
 				radeon_check_space(cmd_buffer->device->ws, cs, 7);
 

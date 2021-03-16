@@ -26,8 +26,8 @@
 
 #include "blorp_priv.h"
 #include "dev/gen_device_info.h"
-#include "common/gen_sample_positions.h"
-#include "common/gen_l3_config.h"
+#include "common/intel_sample_positions.h"
+#include "common/intel_l3_config.h"
 #include "genxml/gen_macros.h"
 
 /**
@@ -51,6 +51,10 @@ blorp_emit_dwords(struct blorp_batch *batch, unsigned n);
 static uint64_t
 blorp_emit_reloc(struct blorp_batch *batch,
                  void *location, struct blorp_address address, uint32_t delta);
+
+static void
+blorp_measure_start(struct blorp_batch *batch,
+                    const struct blorp_params *params);
 
 static void *
 blorp_alloc_dynamic_state(struct blorp_batch *batch,
@@ -92,7 +96,7 @@ blorp_get_surface_base_address(struct blorp_batch *batch);
 #endif
 
 #if GEN_GEN >= 7
-static const struct gen_l3_config *
+static const struct intel_l3_config *
 blorp_get_l3_config(struct blorp_batch *batch);
 # else
 static void
@@ -190,7 +194,7 @@ _blorp_combine_address(struct blorp_batch *batch, void *location,
 static void
 emit_urb_config(struct blorp_batch *batch,
                 const struct blorp_params *params,
-                UNUSED enum gen_urb_deref_block_size *deref_block_size)
+                UNUSED enum intel_urb_deref_block_size *deref_block_size)
 {
    /* Once vertex fetcher has written full VUE entries with complete
     * header the space requirement is as follows per vertex (in bytes):
@@ -217,10 +221,11 @@ emit_urb_config(struct blorp_batch *batch,
    const unsigned entry_size[4] = { vs_entry_size, 1, 1, 1 };
 
    unsigned entries[4], start[4];
-   gen_get_urb_config(batch->blorp->compiler->devinfo,
-                      blorp_get_l3_config(batch),
-                      false, false, entry_size,
-                      entries, start, deref_block_size);
+   bool constrained;
+   intel_get_urb_config(batch->blorp->compiler->devinfo,
+                        blorp_get_l3_config(batch),
+                        false, false, entry_size,
+                        entries, start, deref_block_size, &constrained);
 
 #if GEN_GEN == 7 && !GEN_IS_HASWELL
    /* From the IVB PRM Vol. 2, Part 1, Section 3.2.1:
@@ -687,7 +692,7 @@ blorp_emit_vs_config(struct blorp_batch *batch,
 static void
 blorp_emit_sf_config(struct blorp_batch *batch,
                      const struct blorp_params *params,
-                     UNUSED enum gen_urb_deref_block_size urb_deref_block_size)
+                     UNUSED enum intel_urb_deref_block_size urb_deref_block_size)
 {
    const struct brw_wm_prog_data *prog_data = params->wm_prog_data;
 
@@ -1234,22 +1239,22 @@ blorp_emit_3dstate_multisample(struct blorp_batch *batch,
 
       switch (params->num_samples) {
       case 1:
-         GEN_SAMPLE_POS_1X(ms.Sample);
+         INTEL_SAMPLE_POS_1X(ms.Sample);
          break;
       case 2:
-         GEN_SAMPLE_POS_2X(ms.Sample);
+         INTEL_SAMPLE_POS_2X(ms.Sample);
          break;
       case 4:
-         GEN_SAMPLE_POS_4X(ms.Sample);
+         INTEL_SAMPLE_POS_4X(ms.Sample);
          break;
       case 8:
-         GEN_SAMPLE_POS_8X(ms.Sample);
+         INTEL_SAMPLE_POS_8X(ms.Sample);
          break;
       default:
          break;
       }
 #else
-      GEN_SAMPLE_POS_4X(ms.Sample);
+      INTEL_SAMPLE_POS_4X(ms.Sample);
 #endif
       ms.PixelLocation              = CENTER;
    }
@@ -1263,7 +1268,7 @@ blorp_emit_pipeline(struct blorp_batch *batch,
    uint32_t color_calc_state_offset;
    uint32_t depth_stencil_state_offset;
 
-   enum gen_urb_deref_block_size urb_deref_block_size;
+   enum intel_urb_deref_block_size urb_deref_block_size;
    emit_urb_config(batch, params, &urb_deref_block_size);
 
    if (params->wm_prog_data) {
@@ -1419,7 +1424,12 @@ blorp_emit_surface_state(struct blorp_batch *batch,
       /* We can't reinterpret HiZ */
       assert(surface->surf.format == surface->view.format);
    }
+
    enum isl_aux_usage aux_usage = surface->aux_usage;
+
+   /* On gen12, implicit CCS has no aux buffer */
+   bool use_aux_address = (aux_usage != ISL_AUX_USAGE_NONE) &&
+                          (surface->aux_addr.buffer != NULL);
 
    isl_channel_mask_t write_disable_mask = 0;
    if (is_render_target && GEN_GEN <= 5) {
@@ -1441,7 +1451,7 @@ blorp_emit_surface_state(struct blorp_batch *batch,
                        .aux_surf = &surface->aux_surf, .aux_usage = aux_usage,
                        .address =
                           blorp_get_surface_address(batch, surface->addr),
-                       .aux_address = aux_usage == ISL_AUX_USAGE_NONE ? 0 :
+                       .aux_address = !use_aux_address ? 0 :
                           blorp_get_surface_address(batch, surface->aux_addr),
                        .clear_address = !use_clear_address ? 0 :
                           blorp_get_surface_address(batch,
@@ -1454,7 +1464,7 @@ blorp_emit_surface_state(struct blorp_batch *batch,
    blorp_surface_reloc(batch, state_offset + isl_dev->ss.addr_offset,
                        surface->addr, 0);
 
-   if (aux_usage != ISL_AUX_USAGE_NONE) {
+   if (use_aux_address) {
       /* On gen7 and prior, the bottom 12 bits of the MCS base address are
        * used to store other information.  This should be ok, however, because
        * surface buffer addresses are always 4K page alinged.
@@ -1765,6 +1775,8 @@ blorp_emit_gen8_hiz_op(struct blorp_batch *batch,
       blorp_emit_depth_stencil_config(batch, params);
    }
 
+   blorp_measure_start(batch, params);
+
    blorp_emit(batch, GENX(3DSTATE_WM_HZ_OP), hzp) {
       switch (params->hiz_op) {
       case ISL_AUX_OP_FAST_CLEAR:
@@ -1968,6 +1980,8 @@ blorp_exec(struct blorp_batch *batch, const struct blorp_params *params)
 
    if (!(batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL))
       blorp_emit_depth_stencil_config(batch, params);
+
+   blorp_measure_start(batch, params);
 
    blorp_emit(batch, GENX(3DPRIMITIVE), prim) {
       prim.VertexAccessType = SEQUENTIAL;

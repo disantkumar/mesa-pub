@@ -142,6 +142,7 @@ _mesa_new_parameter_list(void)
 
    list->UniformBytes = 0;
    list->FirstStateVarIndex = INT_MAX;
+   list->LastStateVarIndex = 0;
    return list;
 }
 
@@ -335,10 +336,14 @@ _mesa_add_parameter(struct gl_program_parameter_list *paramList,
 
    if (type == PROGRAM_UNIFORM || type == PROGRAM_CONSTANT) {
       paramList->UniformBytes =
-         MAX2(paramList->UniformBytes, paramList->NumParameterValues * 4);
+         MAX2(paramList->UniformBytes,
+              (paramList->Parameters[oldNum].ValueOffset +
+               paramList->Parameters[oldNum].Size) * 4);
    } else if (type == PROGRAM_STATE_VAR) {
       paramList->FirstStateVarIndex =
          MIN2(paramList->FirstStateVarIndex, oldNum);
+      paramList->LastStateVarIndex =
+         MAX2(paramList->LastStateVarIndex, oldNum);
    } else {
       unreachable("invalid parameter type");
    }
@@ -454,13 +459,18 @@ _mesa_add_state_reference(struct gl_program_parameter_list *paramList,
 void
 _mesa_recompute_parameter_bounds(struct gl_program_parameter_list *list)
 {
+   list->UniformBytes = 0;
    list->FirstStateVarIndex = INT_MAX;
+   list->LastStateVarIndex = 0;
 
    for (int i = 0; i < (int)list->NumParameters; i++) {
       if (list->Parameters[i].Type == PROGRAM_STATE_VAR) {
          list->FirstStateVarIndex = MIN2(list->FirstStateVarIndex, i);
+         list->LastStateVarIndex = MAX2(list->LastStateVarIndex, i);
       } else {
-         list->UniformBytes = MAX2(list->UniformBytes, list->NumParameterValues * 4);
+         list->UniformBytes = MAX2(list->UniformBytes,
+                                   (list->Parameters[i].ValueOffset +
+                                    list->Parameters[i].Size) * 4);
       }
    }
 }

@@ -35,8 +35,8 @@
 #include "brw_defines.h"
 #include "brw_state.h"
 #include "perf/gen_perf_regs.h"
-#include "intel_batchbuffer.h"
-#include "intel_buffer_objects.h"
+#include "brw_batch.h"
+#include "brw_buffer_objects.h"
 
 static inline void
 set_query_availability(struct brw_context *brw, struct brw_query_object *query,
@@ -486,7 +486,7 @@ flush_batch_if_needed(struct brw_context *brw, struct brw_query_object *query)
                     !brw_batch_references(&brw->batch, query->bo);
 
    if (!query->flushed)
-      intel_batchbuffer_flush(brw);
+      brw_batch_flush(brw);
 }
 
 /**

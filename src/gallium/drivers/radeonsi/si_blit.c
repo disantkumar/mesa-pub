@@ -43,10 +43,10 @@ enum
 
 void si_blitter_begin(struct si_context *sctx, enum si_blitter_op op)
 {
-   util_blitter_save_vertex_shader(sctx->blitter, sctx->vs_shader.cso);
-   util_blitter_save_tessctrl_shader(sctx->blitter, sctx->tcs_shader.cso);
-   util_blitter_save_tesseval_shader(sctx->blitter, sctx->tes_shader.cso);
-   util_blitter_save_geometry_shader(sctx->blitter, sctx->gs_shader.cso);
+   util_blitter_save_vertex_shader(sctx->blitter, sctx->shader.vs.cso);
+   util_blitter_save_tessctrl_shader(sctx->blitter, sctx->shader.tcs.cso);
+   util_blitter_save_tesseval_shader(sctx->blitter, sctx->shader.tes.cso);
+   util_blitter_save_geometry_shader(sctx->blitter, sctx->shader.gs.cso);
    util_blitter_save_so_targets(sctx->blitter, sctx->streamout.num_targets,
                                 (struct pipe_stream_output_target **)sctx->streamout.targets);
    util_blitter_save_rasterizer(sctx->blitter, sctx->queued.named.rasterizer);
@@ -55,7 +55,7 @@ void si_blitter_begin(struct si_context *sctx, enum si_blitter_op op)
       util_blitter_save_blend(sctx->blitter, sctx->queued.named.blend);
       util_blitter_save_depth_stencil_alpha(sctx->blitter, sctx->queued.named.dsa);
       util_blitter_save_stencil_ref(sctx->blitter, &sctx->stencil_ref.state);
-      util_blitter_save_fragment_shader(sctx->blitter, sctx->ps_shader.cso);
+      util_blitter_save_fragment_shader(sctx->blitter, sctx->shader.ps.cso);
       util_blitter_save_sample_mask(sctx->blitter, sctx->sample_mask);
       util_blitter_save_scissor(sctx->blitter, &sctx->scissors[0]);
       util_blitter_save_window_rectangles(sctx->blitter, sctx->window_rectangles_include,
@@ -74,28 +74,35 @@ void si_blitter_begin(struct si_context *sctx, enum si_blitter_op op)
    }
 
    if (op & SI_DISABLE_RENDER_COND)
-      sctx->render_cond_force_off = true;
+      sctx->render_cond_enabled = false;
 
    if (sctx->screen->dpbb_allowed) {
       sctx->dpbb_force_off = true;
       si_mark_atom_dirty(sctx, &sctx->atoms.s.dpbb_state);
    }
+
+   sctx->blitter_running = true;
 }
 
 void si_blitter_end(struct si_context *sctx)
 {
+   sctx->blitter_running = false;
+
    if (sctx->screen->dpbb_allowed) {
       sctx->dpbb_force_off = false;
       si_mark_atom_dirty(sctx, &sctx->atoms.s.dpbb_state);
    }
 
-   sctx->render_cond_force_off = false;
+   sctx->render_cond_enabled = sctx->render_cond;
 
    /* Restore shader pointers because the VS blit shader changed all
     * non-global VS user SGPRs. */
    sctx->shader_pointers_dirty |= SI_DESCS_SHADER_MASK(VERTEX);
-   sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL;
-   sctx->vertex_buffer_user_sgprs_dirty = sctx->num_vertex_elements > 0;
+   sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL &&
+                                       sctx->num_vertex_elements >
+                                       sctx->screen->num_vbos_in_user_sgprs;
+   sctx->vertex_buffer_user_sgprs_dirty = sctx->num_vertex_elements > 0 &&
+                                          sctx->screen->num_vbos_in_user_sgprs;
    si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
 }
 
@@ -586,9 +593,10 @@ static void si_check_render_feedback_texture(struct si_context *sctx, struct si_
       si_texture_disable_dcc(sctx, tex);
 }
 
-static void si_check_render_feedback_textures(struct si_context *sctx, struct si_samplers *textures)
+static void si_check_render_feedback_textures(struct si_context *sctx, struct si_samplers *textures,
+                                              uint32_t in_use_mask)
 {
-   uint32_t mask = textures->enabled_mask;
+   uint32_t mask = textures->enabled_mask & in_use_mask;
 
    while (mask) {
       const struct pipe_sampler_view *view;
@@ -607,9 +615,10 @@ static void si_check_render_feedback_textures(struct si_context *sctx, struct si
    }
 }
 
-static void si_check_render_feedback_images(struct si_context *sctx, struct si_images *images)
+static void si_check_render_feedback_images(struct si_context *sctx, struct si_images *images,
+                                            uint32_t in_use_mask)
 {
-   uint32_t mask = images->enabled_mask;
+   uint32_t mask = images->enabled_mask & in_use_mask;
 
    while (mask) {
       const struct pipe_image_view *view;
@@ -673,9 +682,15 @@ static void si_check_render_feedback(struct si_context *sctx)
    if (!si_get_total_colormask(sctx))
       return;
 
-   for (int i = 0; i < SI_NUM_SHADERS; ++i) {
-      si_check_render_feedback_images(sctx, &sctx->images[i]);
-      si_check_render_feedback_textures(sctx, &sctx->samplers[i]);
+   for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; ++i) {
+      if (!sctx->shaders[i].cso)
+         continue;
+
+      struct si_shader_info *info = &sctx->shaders[i].cso->info;
+      si_check_render_feedback_images(sctx, &sctx->images[i],
+                                      u_bit_consecutive(0, info->base.num_images));
+      si_check_render_feedback_textures(sctx, &sctx->samplers[i],
+                                        info->base.textures_used[0]);
    }
 
    si_check_render_feedback_resident_images(sctx);
@@ -723,7 +738,7 @@ void si_decompress_textures(struct si_context *sctx, unsigned shader_mask)
 {
    unsigned compressed_colortex_counter, mask;
 
-   if (sctx->blitter->running)
+   if (sctx->blitter_running)
       return;
 
    /* Update the compressed_colortex_mask if necessary. */
@@ -837,11 +852,10 @@ static void si_use_compute_copy_for_float_formats(struct si_context *sctx,
     * lost so we need to disable DCC as well.
     *
     * This makes KHR-GL45.texture_view.view_classes pass on gfx9.
-    * gfx10 has the same issue, but the test doesn't use a large enough texture
-    * to enable DCC and fail, so it always passes.
     */
    if (vi_dcc_enabled(tex, level) &&
-       util_format_is_float(texture->format)) {
+       util_format_is_float(texture->format) &&
+       sctx->chip_class < GFX10) {
       si_texture_disable_dcc(sctx, tex);
    }
 }
@@ -870,7 +884,8 @@ void si_resource_copy_region(struct pipe_context *ctx, struct pipe_resource *dst
 
    if (!util_format_is_compressed(src->format) && !util_format_is_compressed(dst->format) &&
        !util_format_is_depth_or_stencil(src->format) && src->nr_samples <= 1 &&
-       !vi_dcc_enabled(sdst, dst_level) &&
+       /* DCC compression from image store is enabled for GFX10+. */
+       (!vi_dcc_enabled(sdst, dst_level) || sctx->chip_class >= GFX10) &&
        !(dst->target != src->target &&
          (src->target == PIPE_TEXTURE_1D_ARRAY || dst->target == PIPE_TEXTURE_1D_ARRAY))) {
       si_compute_copy_image(sctx, dst, dst_level, src, src_level, dstx, dsty, dstz,
@@ -1141,6 +1156,9 @@ static void si_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
       return;
    }
 
+   if (unlikely(sctx->thread_trace_enabled))
+      sctx->sqtt_next_event = EventCmdCopyImage;
+
    /* Using compute for copying to a linear texture in GTT is much faster than
     * going through RBs (render backends). This improves DRI PRIME performance.
     */
@@ -1161,6 +1179,9 @@ static void si_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
                                          info->dst.format);
    si_decompress_subresource(ctx, info->src.resource, PIPE_MASK_RGBAZS, info->src.level,
                              info->src.box.z, info->src.box.z + info->src.box.depth - 1);
+
+   if (unlikely(sctx->thread_trace_enabled))
+      sctx->sqtt_next_event = EventCmdBlitImage;
 
    si_blitter_begin(sctx, SI_BLIT | (info->render_condition_enable ? 0 : SI_DISABLE_RENDER_COND));
    util_blitter_blit(sctx->blitter, info);
@@ -1285,11 +1306,17 @@ void si_decompress_dcc(struct si_context *sctx, struct si_texture *tex)
                                true);
       }
 
-      /* Now clear DCC metadata to uncompressed. */
+      /* Now clear DCC metadata to uncompressed.
+       *
+       * This uses SI_COMPUTE_CLEAR_METHOD to avoid a failure when running this
+       * deqp caselist on gfx10:
+       *  dEQP-GLES31.functional.image_load_store.2d.format_reinterpret.rgba32f_rgba32ui
+       *  dEQP-GLES31.functional.image_load_store.2d.format_reinterpret.rgba32f_rgba32i
+       */
       uint32_t clear_value = DCC_UNCOMPRESSED;
       si_clear_buffer(sctx, ptex, tex->surface.dcc_offset,
                       tex->surface.dcc_size, &clear_value, 4,
-                      SI_COHERENCY_CB_META, false);
+                      SI_COHERENCY_CB_META, SI_COMPUTE_CLEAR_METHOD);
    }
 }
 

@@ -27,38 +27,65 @@
 struct pipe_screen;
 struct sw_displaytarget;
 struct zink_batch;
+struct zink_context;
 
 #include "util/u_transfer.h"
+#include "util/u_range.h"
+#include "util/u_dynarray.h"
+
+#include "zink_descriptors.h"
 
 #include <vulkan/vulkan.h>
 
 #define ZINK_RESOURCE_ACCESS_READ 1
-#define ZINK_RESOURCE_ACCESS_WRITE 16
+#define ZINK_RESOURCE_ACCESS_WRITE 32
+
+struct mem_key {
+   VkMemoryRequirements reqs;
+   VkMemoryPropertyFlags flags;
+};
+
+struct zink_resource_object {
+   struct pipe_reference reference;
+   union {
+      VkBuffer buffer;
+      VkImage image;
+   };
+   VkDeviceMemory mem;
+   uint32_t mem_hash;
+   struct mem_key mkey;
+   VkDeviceSize offset, size;
+
+   unsigned persistent_maps; //if nonzero, requires vkFlushMappedMemoryRanges during batch use
+   struct zink_descriptor_refs desc_set_refs;
+
+   /* this has to be atomic for fence access, so we can't use a bitmask and make everything neat */
+   uint8_t batch_uses[5]; //ZINK_NUM_BATCHES
+   bool is_buffer;
+   bool host_visible;
+};
 
 struct zink_resource {
    struct pipe_resource base;
 
    enum pipe_format internal_format:16;
 
+   VkPipelineStageFlagBits access_stage;
+   VkAccessFlags access;
+
+   struct zink_resource_object *obj;
    union {
-      VkBuffer buffer;
+      struct util_range valid_buffer_range;
       struct {
          VkFormat format;
-         VkImage image;
          VkImageLayout layout;
          VkImageAspectFlags aspect;
          bool optimal_tiling;
       };
    };
-   VkDeviceMemory mem;
-   VkDeviceSize offset, size;
 
    struct sw_displaytarget *dt;
    unsigned dt_stride;
-
-   /* this has to be atomic for fence access, so we can't use a bitmask and make everything neat */
-   uint8_t batch_uses[4];
-   bool needs_xfb_barrier;
 };
 
 struct zink_transfer {
@@ -72,7 +99,7 @@ zink_resource(struct pipe_resource *r)
    return (struct zink_resource *)r;
 }
 
-void
+bool
 zink_screen_resource_init(struct pipe_screen *pscreen);
 
 void
@@ -84,5 +111,35 @@ zink_get_depth_stencil_resources(struct pipe_resource *res,
                                  struct zink_resource **out_s);
 
 void
-zink_resource_setup_transfer_layouts(struct zink_batch *batch, struct zink_resource *src, struct zink_resource *dst);
+zink_resource_setup_transfer_layouts(struct zink_context *ctx, struct zink_resource *src, struct zink_resource *dst);
+
+int
+zink_get_resource_latest_batch_usage(struct zink_context *ctx, uint32_t batch_uses);
+
+uint32_t
+zink_get_resource_usage(struct zink_resource *res);
+
+void
+zink_resource_desc_set_add(struct zink_resource *res, struct zink_descriptor_set *zds, unsigned idx);
+
+
+void
+zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *resource_object);
+
+void
+debug_describe_zink_resource_object(char *buf, const struct zink_resource_object *ptr);
+
+static inline void
+zink_resource_object_reference(struct zink_screen *screen,
+                             struct zink_resource_object **dst,
+                             struct zink_resource_object *src)
+{
+   struct zink_resource_object *old_dst = dst ? *dst : NULL;
+
+   if (pipe_reference_described(old_dst ? &old_dst->reference : NULL, &src->reference,
+                                (debug_reference_descriptor)debug_describe_zink_resource_object))
+      zink_destroy_resource_object(screen, old_dst);
+   if (dst) *dst = src;
+}
+
 #endif

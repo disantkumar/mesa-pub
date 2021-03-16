@@ -57,21 +57,6 @@ uint64_t pan_best_modifiers[PAN_MODIFIER_COUNT] = {
         DRM_FORMAT_MOD_LINEAR
 };
 
-/* Map modifiers to mali_texture_layout for packing in a texture descriptor */
-
-static enum mali_texture_layout
-panfrost_modifier_to_layout(uint64_t modifier)
-{
-        if (drm_is_afbc(modifier))
-                return MALI_TEXTURE_LAYOUT_AFBC;
-        else if (modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED)
-                return MALI_TEXTURE_LAYOUT_TILED;
-        else if (modifier == DRM_FORMAT_MOD_LINEAR)
-                return MALI_TEXTURE_LAYOUT_LINEAR;
-        else
-                unreachable("Invalid modifer");
-}
-
 /* Check if we need to set a custom stride by computing the "expected"
  * stride and comparing it to what the user actually wants. Only applies
  * to linear textures, since tiled/compressed textures have strict
@@ -86,7 +71,7 @@ panfrost_needs_explicit_stride(const struct panfrost_device *dev,
                                unsigned last_level)
 {
         /* Stride is explicit on Bifrost */
-        if (dev->quirks & IS_BIFROST)
+        if (pan_is_bifrost(dev))
                 return true;
 
         if (layout->modifier != DRM_FORMAT_MOD_LINEAR)
@@ -135,13 +120,11 @@ panfrost_compression_tag(const struct panfrost_device *dev,
                          enum mali_texture_dimension dim,
                          uint64_t modifier)
 {
-        bool is_bifrost = dev->quirks & IS_BIFROST;
-
         if (drm_is_afbc(modifier)) {
                 unsigned flags = (modifier & AFBC_FORMAT_MOD_YTR) ?
                                  MALI_AFBC_SURFACE_FLAG_YTR : 0;
 
-                if (!is_bifrost)
+                if (!pan_is_bifrost(dev))
                         return flags;
 
                 /* Prefetch enable */
@@ -229,9 +212,8 @@ panfrost_estimate_texture_payload_size(const struct panfrost_device *dev,
                                        enum mali_texture_dimension dim,
                                        uint64_t modifier)
 {
-        bool is_bifrost = dev->quirks & IS_BIFROST;
         /* Assume worst case */
-        unsigned manual_stride = is_bifrost ||
+        unsigned manual_stride = pan_is_bifrost(dev) ||
                                  (modifier == DRM_FORMAT_MOD_LINEAR);
 
         unsigned elements = panfrost_texture_num_elements(
@@ -429,7 +411,6 @@ panfrost_new_texture(const struct panfrost_device *dev,
         const struct util_format_description *desc =
                 util_format_description(format);
 
-        bool is_bifrost = dev->quirks & IS_BIFROST;
         bool manual_stride =
                 panfrost_needs_explicit_stride(dev, layout, format, width,
                                                first_level, last_level);
@@ -443,7 +424,7 @@ panfrost_new_texture(const struct panfrost_device *dev,
                                       manual_stride,
                                       base);
 
-        if (is_bifrost) {
+        if (pan_is_bifrost(dev)) {
                 pan_pack(out, BIFROST_TEXTURE, cfg) {
                         cfg.dimension = dim;
                         cfg.format = dev->formats[format].hw;

@@ -48,6 +48,7 @@ meson _build --native-file=native.file \
       -D libdir=lib \
       -D buildtype=${BUILDTYPE:-debug} \
       -D build-tests=true \
+      -D enable-glcpp-tests=false \
       -D libunwind=${UNWIND} \
       ${DRI_LOADERS} \
       -D dri-drivers=${DRI_DRIVERS:-[]} \
@@ -58,6 +59,6 @@ meson _build --native-file=native.file \
 cd _build
 meson configure
 ninja
-LC_ALL=C.UTF-8 ninja test
+LC_ALL=C.UTF-8 meson test --num-processes ${FDO_CI_CONCURRENT:-4} ${MESON_TEST_ARGS} --wrapper=$PWD/../.gitlab-ci/meson/test-wrapper.sh
 ninja install
 cd ..

@@ -57,40 +57,13 @@ v3dv_print_v3d_key(struct v3d_key *key,
    fprintf(stderr, "key %p: %s\n", key, sha1buf);
 }
 
-VkResult
-v3dv_CreateShaderModule(VkDevice _device,
-                        const VkShaderModuleCreateInfo *pCreateInfo,
-                        const VkAllocationCallbacks *pAllocator,
-                        VkShaderModule *pShaderModule)
-{
-   V3DV_FROM_HANDLE(v3dv_device, device, _device);
-   struct v3dv_shader_module *module;
-
-   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
-   assert(pCreateInfo->flags == 0);
-
-   module = vk_object_zalloc(&device->vk, pAllocator,
-                             sizeof(*module) + pCreateInfo->codeSize,
-                             VK_OBJECT_TYPE_SHADER_MODULE);
-   if (module == NULL)
-      return vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   module->nir = NULL;
-
-   module->size = pCreateInfo->codeSize;
-   memcpy(module->data, pCreateInfo->pCode, module->size);
-
-   _mesa_sha1_compute(module->data, module->size, module->sha1);
-
-   *pShaderModule = v3dv_shader_module_to_handle(module);
-
-   return VK_SUCCESS;
-}
-
 void
-v3dv_shader_module_internal_init(struct v3dv_shader_module *module,
+v3dv_shader_module_internal_init(struct v3dv_device *device,
+                                 struct vk_shader_module *module,
                                  nir_shader *nir)
 {
+   vk_object_base_init(&device->vk, &module->base,
+                       VK_OBJECT_TYPE_SHADER_MODULE);
    module->nir = nir;
    module->size = 0;
 
@@ -104,27 +77,6 @@ v3dv_shader_module_internal_init(struct v3dv_shader_module *module,
 
       blob_finish(&blob);
    }
-}
-
-void
-v3dv_DestroyShaderModule(VkDevice _device,
-                         VkShaderModule _module,
-                         const VkAllocationCallbacks *pAllocator)
-{
-   V3DV_FROM_HANDLE(v3dv_device, device, _device);
-   V3DV_FROM_HANDLE(v3dv_shader_module, module, _module);
-
-   if (!module)
-      return;
-
-   /* NIR modules (which are only created internally by the driver) are not
-    * dynamically allocated so we should never call this for them.
-    * Instead the driver is responsible for freeing the NIR code when it is
-    * no longer needed.
-    */
-   assert(module->nir == NULL);
-
-   vk_object_free(&device->vk, pAllocator, module);
 }
 
 void
@@ -205,6 +157,7 @@ static const struct spirv_to_nir_options default_spirv_options =  {
 };
 
 const nir_shader_compiler_options v3dv_nir_options = {
+   .lower_add_sat = true,
    .lower_all_io_to_temps = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
@@ -399,8 +352,10 @@ preprocess_nir(nir_shader *nir,
    NIR_PASS_V(nir, nir_lower_var_copies);
 
    NIR_PASS_V(nir, nir_lower_indirect_derefs, nir_var_shader_in |
-              nir_var_shader_out |
-              nir_var_function_temp, UINT32_MAX);
+              nir_var_shader_out, UINT32_MAX);
+
+   NIR_PASS_V(nir, nir_lower_indirect_derefs,
+              nir_var_function_temp, 2);
 
    NIR_PASS_V(nir, nir_lower_array_deref_of_vec,
               nir_var_mem_ubo | nir_var_mem_ssbo,
@@ -638,7 +593,7 @@ lower_vulkan_resource_index(nir_builder *b,
     * second component (unused right now) to zero.
     */
    nir_ssa_def_rewrite_uses(&instr->dest.ssa,
-                            nir_src_for_ssa(nir_imm_int(b, index)));
+                            nir_imm_int(b, index));
    nir_instr_remove(&instr->instr);
 }
 
@@ -746,7 +701,7 @@ lower_sampler(nir_builder *b, nir_tex_instr *instr,
               struct v3dv_pipeline *pipeline,
               const struct v3dv_pipeline_layout *layout)
 {
-   uint8_t return_size;
+   uint8_t return_size = 0;
 
    int texture_idx =
       nir_tex_instr_src_index(instr, nir_tex_src_texture_deref);
@@ -857,7 +812,7 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *instr,
        * lowering
        */
       nir_ssa_def_rewrite_uses(&instr->dest.ssa,
-                               nir_src_for_ssa(nir_imm_int(b, 0)));
+                               nir_imm_int(b, 0));
       nir_instr_remove(&instr->instr);
       return true;
 
@@ -876,7 +831,7 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *instr,
        * lower the desc back to a vec2, as it is what load_ssbo/ubo expects.
        */
       nir_ssa_def *desc = nir_vec2(b, instr->src[0].ssa, nir_imm_int(b, 0));
-      nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(desc));
+      nir_ssa_def_rewrite_uses(&instr->dest.ssa, desc);
       nir_instr_remove(&instr->instr);
       return true;
    }
@@ -1103,9 +1058,6 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
    key->is_lines = (topology >= PIPE_PRIM_LINES &&
                     topology <= PIPE_PRIM_LINE_STRIP);
 
-   /* Vulkan doesn't appear to specify (anv does the same) */
-   key->clamp_color = false;
-
    const VkPipelineColorBlendStateCreateInfo *cb_info =
       pCreateInfo->pColorBlendState;
 
@@ -1133,10 +1085,6 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
          key->sample_alpha_to_one = ms_info->alphaToOneEnable;
       }
    }
-
-   /* Vulkan doesn't support alpha test */
-   key->alpha_test = false;
-   key->alpha_test_func = COMPARE_FUNC_NEVER;
 
    /* This is intended for V3D versions before 4.1, otherwise we just use the
     * tile buffer load/store swap R/B bit.
@@ -1192,15 +1140,6 @@ pipeline_populate_v3d_fs_key(struct v3d_fs_key *key,
          key->point_coord_upper_left = true;
       }
    }
-
-   /* FIXME: we understand that this is used on GL to configure fixed-function
-    * two side lighting support, and not make sense for Vulkan. Need to
-    * confirm though.
-    */
-   key->light_twoside = false;
-
-   /* FIXME: ditto, although for flat lighting. Again, neet to confirm.*/
-   key->shade_model_flat = false;
 }
 
 static void
@@ -1212,9 +1151,6 @@ pipeline_populate_v3d_vs_key(struct v3d_vs_key *key,
 
    const bool rba = p_stage->pipeline->device->features.robustBufferAccess;
    pipeline_populate_v3d_key(&key->base, p_stage, 0, rba);
-
-   /* Vulkan doesn't appear to specify (anv does the same) */
-   key->clamp_color = false;
 
    /* Vulkan specifies a point size per vertex, so true for if the prim are
     * points, like on ES2)
@@ -1794,7 +1730,7 @@ pipeline_stage_get_nir(struct v3dv_pipeline_stage *p_stage,
 }
 
 static void
-pipeline_hash_shader(const struct v3dv_shader_module *module,
+pipeline_hash_shader(const struct vk_shader_module *module,
                      const char *entrypoint,
                      gl_shader_stage stage,
                      const VkSpecializationInfo *spec_info,
@@ -1943,7 +1879,7 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
       if (stage == MESA_SHADER_VERTEX)
          p_stage->is_coord = false;
       p_stage->entrypoint = sinfo->pName;
-      p_stage->module = v3dv_shader_module_from_handle(sinfo->module);
+      p_stage->module = vk_shader_module_from_handle(sinfo->module);
       p_stage->spec_info = sinfo->pSpecializationInfo;
 
       pipeline_hash_shader(p_stage->module,
@@ -2139,6 +2075,8 @@ pipeline_init_dynamic_state(
           !(dynamic_states & V3DV_DYNAMIC_DEPTH_BIAS)) {
          dynamic->depth_bias.constant_factor =
             pRasterizationState->depthBiasConstantFactor;
+         dynamic->depth_bias.depth_bias_clamp =
+            pRasterizationState->depthBiasClamp;
          dynamic->depth_bias.slope_factor =
             pRasterizationState->depthBiasSlopeFactor;
       }
@@ -2334,6 +2272,8 @@ pack_cfg_bits(struct v3dv_pipeline *pipeline,
 
       config.stencil_enable =
          ds_info ? ds_info->stencilTestEnable && has_ds_attachment: false;
+
+      pipeline->z_updates_enable = config.z_updates_enable;
    };
 }
 
@@ -2988,7 +2928,11 @@ v3dv_CreateGraphicsPipelines(VkDevice _device,
                              const VkAllocationCallbacks *pAllocator,
                              VkPipeline *pPipelines)
 {
+   V3DV_FROM_HANDLE(v3dv_device, device, _device);
    VkResult result = VK_SUCCESS;
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_lock(&device->pdevice->mutex);
 
    for (uint32_t i = 0; i < count; i++) {
       VkResult local_result;
@@ -3004,6 +2948,9 @@ v3dv_CreateGraphicsPipelines(VkDevice _device,
          pPipelines[i] = VK_NULL_HANDLE;
       }
    }
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_unlock(&device->pdevice->mutex);
 
    return result;
 }
@@ -3053,7 +3000,7 @@ pipeline_compile_compute(struct v3dv_pipeline *pipeline,
    p_stage->pipeline = pipeline;
    p_stage->stage = stage;
    p_stage->entrypoint = sinfo->pName;
-   p_stage->module = v3dv_shader_module_from_handle(sinfo->module);
+   p_stage->module = vk_shader_module_from_handle(sinfo->module);
    p_stage->spec_info = sinfo->pSpecializationInfo;
 
    pipeline_hash_shader(p_stage->module,
@@ -3141,7 +3088,11 @@ v3dv_CreateComputePipelines(VkDevice _device,
                             const VkAllocationCallbacks *pAllocator,
                             VkPipeline *pPipelines)
 {
+   V3DV_FROM_HANDLE(v3dv_device, device, _device);
    VkResult result = VK_SUCCESS;
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_lock(&device->pdevice->mutex);
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
       VkResult local_result;
@@ -3156,6 +3107,9 @@ v3dv_CreateComputePipelines(VkDevice _device,
          pPipelines[i] = VK_NULL_HANDLE;
       }
    }
+
+   if (unlikely(V3D_DEBUG & V3D_DEBUG_SHADERS))
+      mtx_unlock(&device->pdevice->mutex);
 
    return result;
 }

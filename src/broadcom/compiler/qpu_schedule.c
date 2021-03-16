@@ -83,6 +83,7 @@ struct schedule_state {
         struct schedule_node *last_vpm;
         struct schedule_node *last_unif;
         struct schedule_node *last_rtop;
+        struct schedule_node *last_unifa;
         enum direction dir;
         /* Estimated cycle when the current instruction would start. */
         uint32_t time;
@@ -167,6 +168,36 @@ process_mux_deps(struct schedule_state *state, struct schedule_node *n,
         }
 }
 
+static bool
+tmu_write_is_sequence_terminator(uint32_t waddr)
+{
+        switch (waddr) {
+        case V3D_QPU_WADDR_TMUS:
+        case V3D_QPU_WADDR_TMUSCM:
+        case V3D_QPU_WADDR_TMUSF:
+        case V3D_QPU_WADDR_TMUSLOD:
+        case V3D_QPU_WADDR_TMUA:
+        case V3D_QPU_WADDR_TMUAU:
+                return true;
+        default:
+                return false;
+        }
+}
+
+static bool
+can_reorder_tmu_write(const struct v3d_device_info *devinfo, uint32_t waddr)
+{
+        if (devinfo->ver < 40)
+                return false;
+
+        if (tmu_write_is_sequence_terminator(waddr))
+                return false;
+
+        if (waddr == V3D_QPU_WADDR_TMUD)
+                return false;
+
+        return true;
+}
 
 static void
 process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
@@ -174,21 +205,14 @@ process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
 {
         if (!magic) {
                 add_write_dep(state, &state->last_rf[waddr], n);
-        } else if (v3d_qpu_magic_waddr_is_tmu(waddr)) {
-                /* XXX perf: For V3D 4.x, we could reorder TMU writes other
-                 * than the TMUS/TMUD/TMUA to improve scheduling flexibility.
-                 */
-                add_write_dep(state, &state->last_tmu_write, n);
-                switch (waddr) {
-                case V3D_QPU_WADDR_TMUS:
-                case V3D_QPU_WADDR_TMUSCM:
-                case V3D_QPU_WADDR_TMUSF:
-                case V3D_QPU_WADDR_TMUSLOD:
+        } else if (v3d_qpu_magic_waddr_is_tmu(state->devinfo, waddr)) {
+                if (can_reorder_tmu_write(state->devinfo, waddr))
+                        add_read_dep(state, state->last_tmu_write, n);
+                else
+                        add_write_dep(state, &state->last_tmu_write, n);
+
+                if (tmu_write_is_sequence_terminator(waddr))
                         add_write_dep(state, &state->last_tmu_config, n);
-                        break;
-                default:
-                        break;
-                }
         } else if (v3d_qpu_magic_waddr_is_sfu(waddr)) {
                 /* Handled by v3d_qpu_writes_r4() check. */
         } else {
@@ -224,6 +248,11 @@ process_waddr_deps(struct schedule_state *state, struct schedule_node *n,
                          * barriers to affect ALU operations.
                          */
                         add_write_dep(state, &state->last_tmu_write, n);
+                        break;
+
+                case V3D_QPU_WADDR_UNIFA:
+                        if (state->devinfo->ver >= 40)
+                                add_write_dep(state, &state->last_unifa, n);
                         break;
 
                 case V3D_QPU_WADDR_NOP:
@@ -378,8 +407,12 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
                 add_write_dep(state, &state->last_tmu_write, n);
         }
 
+        /* Allow wrtmuc to be reordered with other instructions in the
+         * same TMU sequence by using a read dependency on the last TMU
+         * sequence terminator.
+         */
         if (inst->sig.wrtmuc)
-                add_write_dep(state, &state->last_tmu_config, n);
+                add_read_dep(state, state->last_tmu_config, n);
 
         if (inst->sig.ldtlb | inst->sig.ldtlbu)
                 add_write_dep(state, &state->last_tlb, n);
@@ -397,6 +430,10 @@ calculate_deps(struct schedule_state *state, struct schedule_node *n)
         /* inst->sig.ldunif or sideband uniform read */
         if (vir_has_uniform(qinst))
                 add_write_dep(state, &state->last_unif, n);
+
+        /* Both unifa and ldunifa must preserve ordering */
+        if (inst->sig.ldunifa || inst->sig.ldunifarf)
+                add_write_dep(state, &state->last_unifa, n);
 
         if (v3d_qpu_reads_flags(inst))
                 add_read_dep(state, state->last_sf, n);
@@ -443,9 +480,12 @@ struct choose_scoreboard {
         int last_stallable_sfu_reg;
         int last_stallable_sfu_tick;
         int last_ldvary_tick;
+        int last_unifa_write_tick;
         int last_uniforms_reset_tick;
         int last_thrsw_tick;
         bool tlb_locked;
+        bool fixup_ldvary;
+        int ldvary_count;
 };
 
 static bool
@@ -566,7 +606,8 @@ mux_read_stalls(struct choose_scoreboard *scoreboard,
 #define MAX_SCHEDULE_PRIORITY 16
 
 static int
-get_instruction_priority(const struct v3d_qpu_instr *inst)
+get_instruction_priority(const struct v3d_device_info *devinfo,
+                         const struct v3d_qpu_instr *inst)
 {
         uint32_t baseline_score;
         uint32_t next_score = 0;
@@ -588,7 +629,7 @@ get_instruction_priority(const struct v3d_qpu_instr *inst)
         next_score++;
 
         /* Schedule texture read setup early to hide their latency better. */
-        if (v3d_qpu_writes_tmu(inst))
+        if (v3d_qpu_writes_tmu(devinfo, inst))
                 return next_score;
         next_score++;
 
@@ -599,9 +640,10 @@ get_instruction_priority(const struct v3d_qpu_instr *inst)
 }
 
 static bool
-qpu_magic_waddr_is_periph(enum v3d_qpu_waddr waddr)
+qpu_magic_waddr_is_periph(const struct v3d_device_info *devinfo,
+                          enum v3d_qpu_waddr waddr)
 {
-        return (v3d_qpu_magic_waddr_is_tmu(waddr) ||
+        return (v3d_qpu_magic_waddr_is_tmu(devinfo, waddr) ||
                 v3d_qpu_magic_waddr_is_sfu(waddr) ||
                 v3d_qpu_magic_waddr_is_tlb(waddr) ||
                 v3d_qpu_magic_waddr_is_vpm(waddr) ||
@@ -609,7 +651,8 @@ qpu_magic_waddr_is_periph(enum v3d_qpu_waddr waddr)
 }
 
 static bool
-qpu_accesses_peripheral(const struct v3d_qpu_instr *inst)
+qpu_accesses_peripheral(const struct v3d_device_info *devinfo,
+                        const struct v3d_qpu_instr *inst)
 {
         if (v3d_qpu_uses_vpm(inst))
                 return true;
@@ -619,7 +662,7 @@ qpu_accesses_peripheral(const struct v3d_qpu_instr *inst)
         if (inst->type == V3D_QPU_INSTR_TYPE_ALU) {
                 if (inst->alu.add.op != V3D_QPU_A_NOP &&
                     inst->alu.add.magic_write &&
-                    qpu_magic_waddr_is_periph(inst->alu.add.waddr)) {
+                    qpu_magic_waddr_is_periph(devinfo, inst->alu.add.waddr)) {
                         return true;
                 }
 
@@ -628,7 +671,7 @@ qpu_accesses_peripheral(const struct v3d_qpu_instr *inst)
 
                 if (inst->alu.mul.op != V3D_QPU_M_NOP &&
                     inst->alu.mul.magic_write &&
-                    qpu_magic_waddr_is_periph(inst->alu.mul.waddr)) {
+                    qpu_magic_waddr_is_periph(devinfo, inst->alu.mul.waddr)) {
                         return true;
                 }
         }
@@ -645,8 +688,8 @@ qpu_compatible_peripheral_access(const struct v3d_device_info *devinfo,
                                  const struct v3d_qpu_instr *a,
                                  const struct v3d_qpu_instr *b)
 {
-        const bool a_uses_peripheral = qpu_accesses_peripheral(a);
-        const bool b_uses_peripheral = qpu_accesses_peripheral(b);
+        const bool a_uses_peripheral = qpu_accesses_peripheral(devinfo, a);
+        const bool b_uses_peripheral = qpu_accesses_peripheral(devinfo, b);
 
         /* We can always do one peripheral access per instruction. */
         if (!a_uses_peripheral || !b_uses_peripheral)
@@ -663,12 +706,118 @@ qpu_compatible_peripheral_access(const struct v3d_device_info *devinfo,
                 return true;
         }
 
-        if ((a->sig.wrtmuc && v3d_qpu_writes_tmu_not_tmuc(b)) ||
-            (b->sig.wrtmuc && v3d_qpu_writes_tmu_not_tmuc(a))) {
+        if ((a->sig.wrtmuc && v3d_qpu_writes_tmu_not_tmuc(devinfo, b)) ||
+            (b->sig.wrtmuc && v3d_qpu_writes_tmu_not_tmuc(devinfo, a))) {
                 return true;
         }
 
         return false;
+}
+
+/* Compute a bitmask of which rf registers are used between
+ * the two instructions.
+ */
+static uint64_t
+qpu_raddrs_used(const struct v3d_qpu_instr *a,
+                const struct v3d_qpu_instr *b)
+{
+        assert(a->type == V3D_QPU_INSTR_TYPE_ALU);
+        assert(b->type == V3D_QPU_INSTR_TYPE_ALU);
+
+        uint64_t raddrs_used = 0;
+        if (v3d_qpu_uses_mux(a, V3D_QPU_MUX_A))
+                raddrs_used |= (1ll << a->raddr_a);
+        if (!a->sig.small_imm && v3d_qpu_uses_mux(a, V3D_QPU_MUX_B))
+                raddrs_used |= (1ll << a->raddr_b);
+        if (v3d_qpu_uses_mux(b, V3D_QPU_MUX_A))
+                raddrs_used |= (1ll << b->raddr_a);
+        if (!b->sig.small_imm && v3d_qpu_uses_mux(b, V3D_QPU_MUX_B))
+                raddrs_used |= (1ll << b->raddr_b);
+
+        return raddrs_used;
+}
+
+/* Take two instructions and attempt to merge their raddr fields
+ * into one merged instruction. Returns false if the two instructions
+ * access more than two different rf registers between them, or more
+ * than one rf register and one small immediate.
+ */
+static bool
+qpu_merge_raddrs(struct v3d_qpu_instr *result,
+                 const struct v3d_qpu_instr *add_instr,
+                 const struct v3d_qpu_instr *mul_instr)
+{
+        uint64_t raddrs_used = qpu_raddrs_used(add_instr, mul_instr);
+        int naddrs = util_bitcount64(raddrs_used);
+
+        if (naddrs > 2)
+                return false;
+
+        if ((add_instr->sig.small_imm || mul_instr->sig.small_imm)) {
+                if (naddrs > 1)
+                        return false;
+
+                if (add_instr->sig.small_imm && mul_instr->sig.small_imm)
+                        if (add_instr->raddr_b != mul_instr->raddr_b)
+                                return false;
+
+                result->sig.small_imm = true;
+                result->raddr_b = add_instr->sig.small_imm ?
+                        add_instr->raddr_b : mul_instr->raddr_b;
+        }
+
+        if (naddrs == 0)
+                return true;
+
+        int raddr_a = ffsll(raddrs_used) - 1;
+        raddrs_used &= ~(1ll << raddr_a);
+        result->raddr_a = raddr_a;
+
+        if (!result->sig.small_imm) {
+                if (v3d_qpu_uses_mux(add_instr, V3D_QPU_MUX_B) &&
+                    raddr_a == add_instr->raddr_b) {
+                        if (add_instr->alu.add.a == V3D_QPU_MUX_B)
+                                result->alu.add.a = V3D_QPU_MUX_A;
+                        if (add_instr->alu.add.b == V3D_QPU_MUX_B &&
+                            v3d_qpu_add_op_num_src(add_instr->alu.add.op) > 1) {
+                                result->alu.add.b = V3D_QPU_MUX_A;
+                        }
+                }
+                if (v3d_qpu_uses_mux(mul_instr, V3D_QPU_MUX_B) &&
+                    raddr_a == mul_instr->raddr_b) {
+                        if (mul_instr->alu.mul.a == V3D_QPU_MUX_B)
+                                result->alu.mul.a = V3D_QPU_MUX_A;
+                        if (mul_instr->alu.mul.b == V3D_QPU_MUX_B &&
+                            v3d_qpu_mul_op_num_src(mul_instr->alu.mul.op) > 1) {
+                                result->alu.mul.b = V3D_QPU_MUX_A;
+                        }
+                }
+        }
+        if (!raddrs_used)
+                return true;
+
+        int raddr_b = ffsll(raddrs_used) - 1;
+        result->raddr_b = raddr_b;
+        if (v3d_qpu_uses_mux(add_instr, V3D_QPU_MUX_A) &&
+            raddr_b == add_instr->raddr_a) {
+                if (add_instr->alu.add.a == V3D_QPU_MUX_A)
+                        result->alu.add.a = V3D_QPU_MUX_B;
+                if (add_instr->alu.add.b == V3D_QPU_MUX_A &&
+                    v3d_qpu_add_op_num_src(add_instr->alu.add.op) > 1) {
+                        result->alu.add.b = V3D_QPU_MUX_B;
+                }
+        }
+        if (v3d_qpu_uses_mux(mul_instr, V3D_QPU_MUX_A) &&
+            raddr_b == mul_instr->raddr_a) {
+                if (mul_instr->alu.mul.a == V3D_QPU_MUX_A)
+                        result->alu.mul.a = V3D_QPU_MUX_B;
+                if (mul_instr->alu.mul.b == V3D_QPU_MUX_A &&
+                    v3d_qpu_add_op_num_src(mul_instr->alu.mul.op) > 1) {
+                        result->alu.mul.b = V3D_QPU_MUX_B;
+                }
+        }
+
+        return true;
 }
 
 static bool
@@ -686,6 +835,7 @@ qpu_merge_inst(const struct v3d_device_info *devinfo,
                 return false;
 
         struct v3d_qpu_instr merge = *a;
+        const struct v3d_qpu_instr *add_instr = NULL, *mul_instr = NULL;
 
         if (b->alu.add.op != V3D_QPU_A_NOP) {
                 if (a->alu.add.op != V3D_QPU_A_NOP)
@@ -695,6 +845,9 @@ qpu_merge_inst(const struct v3d_device_info *devinfo,
                 merge.flags.ac = b->flags.ac;
                 merge.flags.apf = b->flags.apf;
                 merge.flags.auf = b->flags.auf;
+
+                add_instr = b;
+                mul_instr = a;
         }
 
         if (b->alu.mul.op != V3D_QPU_M_NOP) {
@@ -705,23 +858,14 @@ qpu_merge_inst(const struct v3d_device_info *devinfo,
                 merge.flags.mc = b->flags.mc;
                 merge.flags.mpf = b->flags.mpf;
                 merge.flags.muf = b->flags.muf;
+
+                mul_instr = b;
+                add_instr = a;
         }
 
-        if (v3d_qpu_uses_mux(b, V3D_QPU_MUX_A)) {
-                if (v3d_qpu_uses_mux(a, V3D_QPU_MUX_A) &&
-                    a->raddr_a != b->raddr_a) {
+        if (add_instr && mul_instr &&
+            !qpu_merge_raddrs(&merge, add_instr, mul_instr)) {
                         return false;
-                }
-                merge.raddr_a = b->raddr_a;
-        }
-
-        if (v3d_qpu_uses_mux(b, V3D_QPU_MUX_B)) {
-                if (v3d_qpu_uses_mux(a, V3D_QPU_MUX_B) &&
-                    (a->raddr_b != b->raddr_b ||
-                     a->sig.small_imm != b->sig.small_imm)) {
-                        return false;
-                }
-                merge.raddr_b = b->raddr_b;
         }
 
         merge.sig.thrsw |= b->sig.thrsw;
@@ -755,8 +899,14 @@ qpu_merge_inst(const struct v3d_device_info *devinfo,
         return ok;
 }
 
+static inline bool
+try_skip_for_ldvary_pipelining(const struct v3d_qpu_instr *inst)
+{
+        return inst->sig.ldunif || inst->sig.ldunifrf;
+}
+
 static struct schedule_node *
-choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
+choose_instruction_to_schedule(struct v3d_compile *c,
                                struct choose_scoreboard *scoreboard,
                                struct schedule_node *prev_inst)
 {
@@ -771,9 +921,18 @@ choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
                         return NULL;
         }
 
+        bool ldvary_pipelining = c->s->info.stage == MESA_SHADER_FRAGMENT &&
+                                 scoreboard->ldvary_count < c->num_inputs;
+        bool skipped_insts_for_ldvary_pipelining = false;
+retry:
         list_for_each_entry(struct schedule_node, n, &scoreboard->dag->heads,
                             dag.link) {
                 const struct v3d_qpu_instr *inst = &n->inst->qpu;
+
+                if (ldvary_pipelining && try_skip_for_ldvary_pipelining(inst)) {
+                        skipped_insts_for_ldvary_pipelining = true;
+                        continue;
+                }
 
                 /* Don't choose the branch instruction until it's the last one
                  * left.  We'll move it up to fit its delay slots after we
@@ -784,6 +943,13 @@ choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
                         continue;
                 }
 
+                /* We need to have 3 delay slots between a write to unifa and
+                 * a follow-up ldunifa.
+                 */
+                if ((inst->sig.ldunifa || inst->sig.ldunifarf) &&
+                    scoreboard->tick - scoreboard->last_unifa_write_tick <= 3)
+                        continue;
+
                 /* "An instruction must not read from a location in physical
                  *  regfile A or B that was written to by the previous
                  *  instruction."
@@ -791,7 +957,7 @@ choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
                 if (reads_too_soon_after_write(scoreboard, n->inst))
                         continue;
 
-                if (writes_too_soon_after_write(devinfo, scoreboard, n->inst))
+                if (writes_too_soon_after_write(c->devinfo, scoreboard, n->inst))
                         continue;
 
                 /* "A scoreboard wait must not occur in the first two
@@ -806,12 +972,6 @@ choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
                  * sooner.  If the ldvary's r5 wasn't used, then ldunif might
                  * otherwise get scheduled so ldunif and ldvary try to update
                  * r5 in the same tick.
-                 *
-                 * XXX perf: To get good pipelining of a sequence of varying
-                 * loads, we need to figure out how to pair the ldvary signal
-                 * up to the instruction before the last r5 user in the
-                 * previous ldvary sequence.  Currently, it usually pairs with
-                 * the last r5 user.
                  */
                 if ((inst->sig.ldunif || inst->sig.ldunifa) &&
                     scoreboard->tick == scoreboard->last_ldvary_tick + 1) {
@@ -832,6 +992,22 @@ choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
                             n->inst->uniform != -1)
                                 continue;
 
+                       /* Simulator complains if we have two uniforms loaded in
+                        * the the same instruction, which could happen if we
+                        * have a ldunif or sideband uniform and we pair that
+                        * with ldunifa.
+                        */
+                        if (vir_has_uniform(prev_inst->inst) &&
+                            (inst->sig.ldunifa || inst->sig.ldunifarf)) {
+                                continue;
+                        }
+
+                        if ((prev_inst->inst->qpu.sig.ldunifa ||
+                             prev_inst->inst->qpu.sig.ldunifarf) &&
+                            vir_has_uniform(n->inst)) {
+                                continue;
+                        }
+
                         /* Don't merge in something that will lock the TLB.
                          * Hopwefully what we have in inst will release some
                          * other instructions, allowing us to delay the
@@ -841,13 +1017,13 @@ choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
                                 continue;
 
                         struct v3d_qpu_instr merged_inst;
-                        if (!qpu_merge_inst(devinfo, &merged_inst,
+                        if (!qpu_merge_inst(c->devinfo, &merged_inst,
                                             &prev_inst->inst->qpu, inst)) {
                                 continue;
                         }
                 }
 
-                int prio = get_instruction_priority(inst);
+                int prio = get_instruction_priority(c->devinfo, inst);
 
                 if (mux_read_stalls(scoreboard, inst)) {
                         /* Don't merge an instruction that stalls */
@@ -885,15 +1061,36 @@ choose_instruction_to_schedule(const struct v3d_device_info *devinfo,
                 }
         }
 
+        /* If we did not find any instruction to schedule but we discarded
+         * some of them to prioritize ldvary pipelining, try again.
+         */
+        if (!chosen && !prev_inst && skipped_insts_for_ldvary_pipelining) {
+                skipped_insts_for_ldvary_pipelining = false;
+                ldvary_pipelining = false;
+                goto retry;
+        }
+
+        if (chosen && chosen->inst->qpu.sig.ldvary) {
+                scoreboard->ldvary_count++;
+                /* If we are pairing an ldvary, flag it so we can fix it up for
+                 * optimal pipelining of ldvary sequences.
+                 */
+                if (prev_inst)
+                        scoreboard->fixup_ldvary = true;
+        }
+
         return chosen;
 }
 
 static void
 update_scoreboard_for_magic_waddr(struct choose_scoreboard *scoreboard,
-                                  enum v3d_qpu_waddr waddr)
+                                  enum v3d_qpu_waddr waddr,
+                                  const struct v3d_device_info *devinfo)
 {
         if (v3d_qpu_magic_waddr_is_sfu(waddr))
                 scoreboard->last_magic_sfu_write_tick = scoreboard->tick;
+        else if (devinfo->ver >= 40 && waddr == V3D_QPU_WADDR_UNIFA)
+                scoreboard->last_unifa_write_tick = scoreboard->tick;
 }
 
 static void
@@ -908,7 +1105,8 @@ update_scoreboard_for_sfu_stall_waddr(struct choose_scoreboard *scoreboard,
 
 static void
 update_scoreboard_for_chosen(struct choose_scoreboard *scoreboard,
-                             const struct v3d_qpu_instr *inst)
+                             const struct v3d_qpu_instr *inst,
+                             const struct v3d_device_info *devinfo)
 {
         if (inst->type == V3D_QPU_INSTR_TYPE_BRANCH)
                 return;
@@ -918,7 +1116,8 @@ update_scoreboard_for_chosen(struct choose_scoreboard *scoreboard,
         if (inst->alu.add.op != V3D_QPU_A_NOP)  {
                 if (inst->alu.add.magic_write) {
                         update_scoreboard_for_magic_waddr(scoreboard,
-                                                          inst->alu.add.waddr);
+                                                          inst->alu.add.waddr,
+                                                          devinfo);
                 } else {
                         update_scoreboard_for_sfu_stall_waddr(scoreboard,
                                                               inst);
@@ -928,7 +1127,8 @@ update_scoreboard_for_chosen(struct choose_scoreboard *scoreboard,
         if (inst->alu.mul.op != V3D_QPU_M_NOP) {
                 if (inst->alu.mul.magic_write) {
                         update_scoreboard_for_magic_waddr(scoreboard,
-                                                          inst->alu.mul.waddr);
+                                                          inst->alu.mul.waddr,
+                                                          devinfo);
                 }
         }
 
@@ -962,7 +1162,8 @@ dump_state(const struct v3d_device_info *devinfo, struct dag *dag)
         }
 }
 
-static uint32_t magic_waddr_latency(enum v3d_qpu_waddr waddr,
+static uint32_t magic_waddr_latency(const struct v3d_device_info *devinfo,
+                                    enum v3d_qpu_waddr waddr,
                                     const struct v3d_qpu_instr *after)
 {
         /* Apply some huge latency between texture fetch requests and getting
@@ -988,8 +1189,10 @@ static uint32_t magic_waddr_latency(enum v3d_qpu_waddr waddr,
          *
          * because we associate the first load_tmu0 with the *second* tmu0_s.
          */
-        if (v3d_qpu_magic_waddr_is_tmu(waddr) && v3d_qpu_waits_on_tmu(after))
+        if (v3d_qpu_magic_waddr_is_tmu(devinfo, waddr) &&
+            v3d_qpu_waits_on_tmu(after)) {
                 return 100;
+        }
 
         /* Assume that anything depending on us is consuming the SFU result. */
         if (v3d_qpu_magic_waddr_is_sfu(waddr))
@@ -999,7 +1202,8 @@ static uint32_t magic_waddr_latency(enum v3d_qpu_waddr waddr,
 }
 
 static uint32_t
-instruction_latency(struct schedule_node *before, struct schedule_node *after)
+instruction_latency(const struct v3d_device_info *devinfo,
+                    struct schedule_node *before, struct schedule_node *after)
 {
         const struct v3d_qpu_instr *before_inst = &before->inst->qpu;
         const struct v3d_qpu_instr *after_inst = &after->inst->qpu;
@@ -1011,13 +1215,15 @@ instruction_latency(struct schedule_node *before, struct schedule_node *after)
 
         if (before_inst->alu.add.magic_write) {
                 latency = MAX2(latency,
-                               magic_waddr_latency(before_inst->alu.add.waddr,
+                               magic_waddr_latency(devinfo,
+                                                   before_inst->alu.add.waddr,
                                                    after_inst));
         }
 
         if (before_inst->alu.mul.magic_write) {
                 latency = MAX2(latency,
-                               magic_waddr_latency(before_inst->alu.mul.waddr,
+                               magic_waddr_latency(devinfo,
+                                                   before_inst->alu.mul.waddr,
                                                    after_inst));
         }
 
@@ -1032,6 +1238,7 @@ static void
 compute_delay(struct dag_node *node, void *state)
 {
         struct schedule_node *n = (struct schedule_node *)node;
+        struct v3d_compile *c = (struct v3d_compile *) state;
 
         n->delay = 1;
 
@@ -1040,7 +1247,8 @@ compute_delay(struct dag_node *node, void *state)
                         (struct schedule_node *)edge->child;
 
                 n->delay = MAX2(n->delay, (child->delay +
-                                           instruction_latency(n, child)));
+                                           instruction_latency(c->devinfo, n,
+                                                               child)));
         }
 }
 
@@ -1059,7 +1267,8 @@ pre_remove_head(struct dag *dag, struct schedule_node *n)
 }
 
 static void
-mark_instruction_scheduled(struct dag *dag,
+mark_instruction_scheduled(const struct v3d_device_info *devinfo,
+                           struct dag *dag,
                            uint32_t time,
                            struct schedule_node *node)
 {
@@ -1073,7 +1282,7 @@ mark_instruction_scheduled(struct dag *dag,
                 if (!child)
                         continue;
 
-                uint32_t latency = instruction_latency(node, child);
+                uint32_t latency = instruction_latency(devinfo, node, child);
 
                 child->unblocked_time = MAX2(child->unblocked_time,
                                              time + latency);
@@ -1089,7 +1298,7 @@ insert_scheduled_instruction(struct v3d_compile *c,
 {
         list_addtail(&inst->link, &block->instructions);
 
-        update_scoreboard_for_chosen(scoreboard, &inst->qpu);
+        update_scoreboard_for_chosen(scoreboard, &inst->qpu, c->devinfo);
         c->qpu_inst_count++;
         scoreboard->tick++;
 }
@@ -1200,6 +1409,23 @@ valid_thrsw_sequence(struct v3d_compile *c, struct choose_scoreboard *scoreboard
                         return false;
                 }
 
+                /* unifa and the following 3 instructions can't overlap a
+                 * thread switch/end. The docs further clarify that this means
+                 * the cycle at which the actual thread switch/end happens
+                 * and not when the thrsw instruction is processed, which would
+                 * be after the 2 delay slots following the thrsw instruction.
+                 * This means that we can move up a thrsw up to the instruction
+                 * right after unifa:
+                 *
+                 * unifa, r5
+                 * thrsw
+                 * delay slot 1
+                 * delay slot 2
+                 * Thread switch happens here, 4 instructions away from unifa
+                 */
+                if (v3d_qpu_writes_unifa(c->devinfo, &qinst->qpu))
+                        return false;
+
                 /* Note that the list is circular, so we can only do this up
                  * to instructions_in_sequence.
                  */
@@ -1288,6 +1514,155 @@ emit_thrsw(struct v3d_compile *c,
         return time;
 }
 
+static bool
+alu_reads_register(struct v3d_qpu_instr *inst,
+                   bool add, bool magic, uint32_t index)
+{
+        uint32_t num_src;
+        enum v3d_qpu_mux mux_a, mux_b;
+
+        if (add) {
+                num_src = v3d_qpu_add_op_num_src(inst->alu.add.op);
+                mux_a = inst->alu.add.a;
+                mux_b = inst->alu.add.b;
+        } else {
+                num_src = v3d_qpu_mul_op_num_src(inst->alu.mul.op);
+                mux_a = inst->alu.mul.a;
+                mux_b = inst->alu.mul.b;
+        }
+
+        for (int i = 0; i < num_src; i++) {
+                if (magic) {
+                        if (i == 0 && mux_a == index)
+                                return true;
+                        if (i == 1 && mux_b == index)
+                                return true;
+                } else {
+                        if (i == 0 && mux_a == V3D_QPU_MUX_A &&
+                            inst->raddr_a == index) {
+                                return true;
+                        }
+                        if (i == 0 && mux_a == V3D_QPU_MUX_B &&
+                            inst->raddr_b == index) {
+                                return true;
+                        }
+                        if (i == 1 && mux_b == V3D_QPU_MUX_A &&
+                            inst->raddr_a == index) {
+                                return true;
+                        }
+                        if (i == 1 && mux_b == V3D_QPU_MUX_B &&
+                            inst->raddr_b == index) {
+                                return true;
+                        }
+                }
+        }
+
+        return false;
+}
+
+/**
+ * This takes and ldvary signal merged into 'inst' and tries to move it up to
+ * the previous instruction to get good pipelining of ldvary sequences,
+ * transforming this:
+ *
+ * nop                  ; nop               ; ldvary.r4
+ * nop                  ; fmul  r0, r4, rf0 ;
+ * fadd  rf13, r0, r5   ; nop;              ; ldvary.r1  <-- inst
+ *
+ * into:
+ *
+ * nop                  ; nop               ; ldvary.r4
+ * nop                  ; fmul  r0, r4, rf0 ; ldvary.r1
+ * fadd  rf13, r0, r5   ; nop;              ;            <-- inst
+ *
+ * If we manage to do this successfully (we return true here), then flagging
+ * the ldvary as "scheduled" may promote the follow-up fmul to a DAG head that
+ * we will be able to pick up to merge into 'inst', leading to code like this:
+ *
+ * nop                  ; nop               ; ldvary.r4
+ * nop                  ; fmul  r0, r4, rf0 ; ldvary.r1
+ * fadd  rf13, r0, r5   ; fmul  r2, r1, rf0 ;            <-- inst
+ */
+static bool
+fixup_pipelined_ldvary(struct v3d_compile *c,
+                       struct choose_scoreboard *scoreboard,
+                       struct qblock *block,
+                       struct v3d_qpu_instr *inst)
+{
+        /* We only call this if we have successfuly merged an ldvary into a
+         * previous instruction.
+         */
+        assert(inst->type == V3D_QPU_INSTR_TYPE_ALU);
+        assert(inst->sig.ldvary);
+        uint32_t ldvary_magic = inst->sig_magic;
+        uint32_t ldvary_index = inst->sig_addr;
+
+        /* The instruction in which we merged the ldvary cannot read
+         * the ldvary destination, if it does, then moving the ldvary before
+         * it would overwrite it.
+         */
+        if (alu_reads_register(inst, true, ldvary_magic, ldvary_index))
+                return false;
+        if (alu_reads_register(inst, false, ldvary_magic, ldvary_index))
+                return false;
+
+        /* The previous instruction can't write to the same destination as the
+         * ldvary.
+         */
+        struct qinst *prev = (struct qinst *) block->instructions.prev;
+        if (!prev || prev->qpu.type != V3D_QPU_INSTR_TYPE_ALU)
+                return false;
+
+        if (prev->qpu.alu.add.op != V3D_QPU_A_NOP) {
+                if (prev->qpu.alu.add.magic_write == ldvary_magic &&
+                    prev->qpu.alu.add.waddr == ldvary_index) {
+                        return false;
+                }
+        }
+
+        if (prev->qpu.alu.mul.op != V3D_QPU_M_NOP) {
+                if (prev->qpu.alu.mul.magic_write == ldvary_magic &&
+                    prev->qpu.alu.mul.waddr == ldvary_index) {
+                        return false;
+                }
+        }
+
+        /* The previous instruction cannot have a conflicting signal */
+        if (v3d_qpu_sig_writes_address(c->devinfo, &prev->qpu.sig))
+                return false;
+
+        /* The previous instruction cannot use flags since ldvary uses the
+         * 'cond' instruction field to store the destination.
+         */
+        if (v3d_qpu_writes_flags(&prev->qpu))
+                return false;
+        if (v3d_qpu_reads_flags(&prev->qpu))
+                return false;
+
+        /* Move the ldvary to the previous instruction and remove it from the
+         * current one.
+         */
+        prev->qpu.sig.ldvary = true;
+        prev->qpu.sig_magic = ldvary_magic;
+        prev->qpu.sig_addr = ldvary_index;
+        scoreboard->last_ldvary_tick = scoreboard->tick - 1;
+
+        inst->sig.ldvary = false;
+        inst->sig_magic = false;
+        inst->sig_addr = 0;
+
+        /* By moving ldvary to the previous instruction we make it update
+         * r5 in the current one, so nothing else in it should write r5.
+         * This should've been prevented by our depedency tracking, which
+         * would not allow ldvary to be paired up with an instruction that
+         * writes r5 (since our dependency tracking doesn't know that the
+         * ldvary write r5 happens in the next instruction).
+         */
+        assert(!v3d_qpu_writes_r5(c->devinfo, inst));
+
+        return true;
+}
+
 static uint32_t
 schedule_instructions(struct v3d_compile *c,
                       struct choose_scoreboard *scoreboard,
@@ -1301,9 +1676,7 @@ schedule_instructions(struct v3d_compile *c,
 
         while (!list_is_empty(&scoreboard->dag->heads)) {
                 struct schedule_node *chosen =
-                        choose_instruction_to_schedule(devinfo,
-                                                       scoreboard,
-                                                       NULL);
+                        choose_instruction_to_schedule(c, scoreboard, NULL);
                 struct schedule_node *merge = NULL;
 
                 /* If there are no valid instructions to schedule, drop a NOP
@@ -1336,11 +1709,10 @@ schedule_instructions(struct v3d_compile *c,
                         pre_remove_head(scoreboard->dag, chosen);
 
                         while ((merge =
-                                choose_instruction_to_schedule(devinfo,
-                                                               scoreboard,
+                                choose_instruction_to_schedule(c, scoreboard,
                                                                chosen))) {
                                 time = MAX2(merge->unblocked_time, time);
-                                pre_remove_head(scoreboard->dag, chosen);
+                                pre_remove_head(scoreboard->dag, merge);
                                 list_addtail(&merge->link, &merged_list);
                                 (void)qpu_merge_inst(devinfo, inst,
                                                      inst, &merge->inst->qpu);
@@ -1357,6 +1729,21 @@ schedule_instructions(struct v3d_compile *c,
                                         fprintf(stderr, "         result: ");
                                         v3d_qpu_dump(devinfo, inst);
                                         fprintf(stderr, "\n");
+                                }
+
+                                if (scoreboard->fixup_ldvary) {
+                                        scoreboard->fixup_ldvary = false;
+                                        if (fixup_pipelined_ldvary(c, scoreboard, block, inst)) {
+                                                /* Flag the ldvary as scheduled
+                                                 * now so we can try to merge the
+                                                 * follow-up instruction in the
+                                                 * the ldvary sequence into the
+                                                 * current instruction.
+                                                 */
+                                                mark_instruction_scheduled(
+                                                        devinfo, scoreboard->dag,
+                                                        time, merge);
+                                        }
                                 }
                         }
                         if (mux_read_stalls(scoreboard, inst))
@@ -1388,10 +1775,10 @@ schedule_instructions(struct v3d_compile *c,
                  * be scheduled.  Update the children's unblocked time for this
                  * DAG edge as we do so.
                  */
-                mark_instruction_scheduled(scoreboard->dag, time, chosen);
+                mark_instruction_scheduled(devinfo, scoreboard->dag, time, chosen);
                 list_for_each_entry(struct schedule_node, merge, &merged_list,
                                     link) {
-                        mark_instruction_scheduled(scoreboard->dag, time, merge);
+                        mark_instruction_scheduled(devinfo, scoreboard->dag, time, merge);
 
                         /* The merged VIR instruction doesn't get re-added to the
                          * block, so free it now.
@@ -1454,7 +1841,7 @@ qpu_schedule_instructions_block(struct v3d_compile *c,
         calculate_forward_deps(c, scoreboard->dag, &setup_list);
         calculate_reverse_deps(c, scoreboard->dag, &setup_list);
 
-        dag_traverse_bottom_up(scoreboard->dag, compute_delay, NULL);
+        dag_traverse_bottom_up(scoreboard->dag, compute_delay, c);
 
         uint32_t cycles = schedule_instructions(c, scoreboard, block,
                                                 orig_uniform_contents,
@@ -1541,6 +1928,7 @@ v3d_qpu_schedule_instructions(struct v3d_compile *c)
         struct choose_scoreboard scoreboard;
         memset(&scoreboard, 0, sizeof(scoreboard));
         scoreboard.last_ldvary_tick = -10;
+        scoreboard.last_unifa_write_tick = -10;
         scoreboard.last_magic_sfu_write_tick = -10;
         scoreboard.last_uniforms_reset_tick = -10;
         scoreboard.last_thrsw_tick = -10;

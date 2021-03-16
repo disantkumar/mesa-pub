@@ -46,7 +46,7 @@
 
 #include "main/streaming-load-memcpy.h"
 #include "x86/common_x86_asm.h"
-#include "intel_batchbuffer.h"
+#include "brw_batch.h"
 #include "brw_state.h"
 #include "brw_wm.h"
 #include "brw_gs.h"
@@ -436,7 +436,7 @@ brw_clear_cache(struct brw_context *brw, struct brw_cache *cache)
    brw->wm.base.prog_data = NULL;
    brw->cs.base.prog_data = NULL;
 
-   intel_batchbuffer_flush(brw);
+   brw_batch_flush(brw);
 }
 
 void

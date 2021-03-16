@@ -75,7 +75,7 @@ remap_tess_levels(nir_builder *b, nir_intrinsic_instr *intr,
       if (nir_intrinsic_infos[intr->intrinsic].has_dest) {
          b->cursor = nir_before_instr(&intr->instr);
          nir_ssa_def *undef = nir_ssa_undef(b, 1, 32);
-         nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_src_for_ssa(undef));
+         nir_ssa_def_rewrite_uses(&intr->dest.ssa, undef);
       }
       nir_instr_remove(&intr->instr);
    }
@@ -186,11 +186,10 @@ brw_nir_lower_vs_inputs(nir_shader *nir,
     * included here as it lives in its own vec4.
     */
    const bool has_sgvs =
-      nir->info.system_values_read &
-      (BITFIELD64_BIT(SYSTEM_VALUE_FIRST_VERTEX) |
-       BITFIELD64_BIT(SYSTEM_VALUE_BASE_INSTANCE) |
-       BITFIELD64_BIT(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) |
-       BITFIELD64_BIT(SYSTEM_VALUE_INSTANCE_ID));
+      BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FIRST_VERTEX) ||
+      BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_BASE_INSTANCE) ||
+      BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) ||
+      BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
 
    const unsigned num_inputs = util_bitcount64(nir->info.inputs_read);
 
@@ -259,7 +258,7 @@ brw_nir_lower_vs_inputs(nir_shader *nir,
                nir_builder_instr_insert(&b, &load->instr);
 
                nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                        nir_src_for_ssa(&load->dest.ssa));
+                                        &load->dest.ssa);
                nir_instr_remove(&intrin->instr);
                break;
             }
@@ -595,7 +594,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
       if (is_scalar) {
          OPT(nir_lower_alu_to_scalar, NULL, NULL);
       } else {
-         OPT(nir_opt_shrink_vectors);
+         OPT(nir_opt_shrink_vectors, true);
       }
 
       OPT(nir_copy_prop);
@@ -769,6 +768,13 @@ lower_bit_size_callback(const nir_instr *instr, UNUSED void *data)
          return 0;
       }
       break;
+   }
+
+   case nir_instr_type_phi: {
+      nir_phi_instr *phi = nir_instr_as_phi(instr);
+      if (devinfo->gen >= 11 && phi->dest.ssa.bit_size == 8)
+         return 16;
+      return 0;
    }
 
    default:
@@ -1480,42 +1486,6 @@ brw_type_for_nir_type(const struct gen_device_info *devinfo, nir_alu_type type)
    }
 
    return BRW_REGISTER_TYPE_F;
-}
-
-/* Returns the glsl_base_type corresponding to a nir_alu_type.
- * This is used by both brw_vec4_nir and brw_fs_nir.
- */
-enum glsl_base_type
-brw_glsl_base_type_for_nir_type(nir_alu_type type)
-{
-   switch (type) {
-   case nir_type_float:
-   case nir_type_float32:
-      return GLSL_TYPE_FLOAT;
-
-   case nir_type_float16:
-      return GLSL_TYPE_FLOAT16;
-
-   case nir_type_float64:
-      return GLSL_TYPE_DOUBLE;
-
-   case nir_type_int:
-   case nir_type_int32:
-      return GLSL_TYPE_INT;
-
-   case nir_type_uint:
-   case nir_type_uint32:
-      return GLSL_TYPE_UINT;
-
-   case nir_type_int16:
-      return GLSL_TYPE_INT16;
-
-   case nir_type_uint16:
-      return GLSL_TYPE_UINT16;
-
-   default:
-      unreachable("bad type");
-   }
 }
 
 nir_shader *

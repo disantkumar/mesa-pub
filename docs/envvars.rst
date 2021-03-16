@@ -552,8 +552,6 @@ RADV driver environment variables
       enable LLVM compiler backend
    ``allbos``
       force all allocated buffers to be referenced in submissions
-   ``allentrypoints``
-      enable all device/instance entrypoints
    ``checkir``
       validate the LLVM IR before LLVM compiles the shader
    ``errors``
@@ -581,6 +579,8 @@ RADV driver environment variables
       disable compute queue
    ``nodcc``
       disable Delta Color Compression (DCC) on images
+   ``nodisplaydcc``
+      disable Delta Color Compression (DCC) on displayable images
    ``nodynamicbounds``
       do not check OOB access for dynamic descriptors
    ``nofastclears``
@@ -638,6 +638,8 @@ RADV driver environment variables
       disable optimizations that get enabled when all VRAM is CPU visible.
    ``pswave32``
       enable wave32 for pixel shaders (GFX10+)
+   ``sam``
+      enable optimizations to move more driver internal objects to VRAM.
    ``tccompatcmask``
       enable TC-compat cmask for MSAA images
 

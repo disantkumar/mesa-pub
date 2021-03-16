@@ -84,6 +84,9 @@ amd_common_files = files(
   'ac_sqtt.h',
   'ac_rgp.c',
   'ac_rgp.h',
+  'ac_msgpack.c',
+  'ac_msgpack.h',
+  'ac_rgp_elf_object_pack.c',
 )
 
 libamd_common = static_library(
@@ -102,7 +105,7 @@ libamd_common = static_library(
 idep_amdgfxregs_h = declare_dependency(sources : [amdgfxregs_h])
 
 
-if with_tests
+if with_tests and not with_platform_windows
   test(
     'ac_surface_modifier_test',
     executable(

@@ -22,12 +22,12 @@
  */
 
 #include "main/macros.h"
-#include "intel_batchbuffer.h"
+#include "brw_batch.h"
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
 
-#include "common/gen_l3_config.h"
+#include "common/intel_l3_config.h"
 
 /**
  * The following diagram shows how we partition the URB:
@@ -247,9 +247,10 @@ gen7_upload_urb(struct brw_context *brw, unsigned vs_size,
 
    unsigned entries[4];
    unsigned start[4];
-   gen_get_urb_config(devinfo, brw->l3.config,
-                      tess_present, gs_present, entry_size,
-                      entries, start, NULL);
+   bool constrained;
+   intel_get_urb_config(devinfo, brw->l3.config,
+                        tess_present, gs_present, entry_size,
+                        entries, start, NULL, &constrained);
 
    if (devinfo->gen == 7 && !devinfo->is_haswell && !devinfo->is_baytrail)
       gen7_emit_vs_workaround_flush(brw);

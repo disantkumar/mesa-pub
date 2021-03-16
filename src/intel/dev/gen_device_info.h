@@ -39,7 +39,7 @@ struct drm_i915_query_topology_info;
 #define GEN_DEVICE_MAX_SLICES           (6)  /* Maximum on gen10 */
 #define GEN_DEVICE_MAX_SUBSLICES        (8)  /* Maximum on gen11 */
 #define GEN_DEVICE_MAX_EUS_PER_SUBSLICE (16) /* Maximum on gen12 */
-#define GEN_DEVICE_MAX_PIXEL_PIPES      (2)  /* Maximum on gen11 */
+#define GEN_DEVICE_MAX_PIXEL_PIPES      (3)  /* Maximum on gen12 */
 
 /**
  * Intel hardware information and quirks
@@ -47,6 +47,8 @@ struct drm_i915_query_topology_info;
 struct gen_device_info
 {
    int gen; /**< Generation number: 4, 5, 6, 7, ... */
+   /* Driver internal number used to differentiate platforms. */
+   int genx10;
    int revision;
    int gt;
 
@@ -62,7 +64,10 @@ struct gen_device_info
    bool is_geminilake;
    bool is_coffeelake;
    bool is_elkhartlake;
+   bool is_tigerlake;
+   bool is_rocketlake;
    bool is_dg1;
+   bool is_alderlake;
 
    bool has_hiz_and_separate_stencil;
    bool must_use_separate_stencil;
@@ -278,14 +283,10 @@ struct gen_device_info
 #define gen_device_info_is_9lp(devinfo) \
    (GEN_GEN == 9 && ((devinfo)->is_broxton || (devinfo)->is_geminilake))
 
-#define gen_device_info_is_12hp(devinfo) false
-
 #else
 
 #define gen_device_info_is_9lp(devinfo) \
    ((devinfo)->is_broxton || (devinfo)->is_geminilake)
-
-#define gen_device_info_is_12hp(devinfo) false
 
 #endif
 
@@ -307,8 +308,30 @@ gen_device_info_eu_available(const struct gen_device_info *devinfo,
    return (devinfo->eu_masks[subslice_offset + eu / 8] & (1U << eu % 8)) != 0;
 }
 
+static inline uint32_t
+gen_device_info_subslice_total(const struct gen_device_info *devinfo)
+{
+   uint32_t total = 0;
+
+   for (uint32_t i = 0; i < devinfo->num_slices; i++)
+      total += __builtin_popcount(devinfo->subslice_masks[i]);
+
+   return total;
+}
+
+static inline uint32_t
+gen_device_info_eu_total(const struct gen_device_info *devinfo)
+{
+   uint32_t total = 0;
+
+   for (uint32_t i = 0; i < ARRAY_SIZE(devinfo->eu_masks); i++)
+      total += __builtin_popcount(devinfo->eu_masks[i]);
+
+   return total;
+}
+
 static inline unsigned
-gen_device_info_num_dual_subslices(const struct gen_device_info *devinfo)
+gen_device_info_num_dual_subslices(UNUSED const struct gen_device_info *devinfo)
 {
    unreachable("TODO");
 }

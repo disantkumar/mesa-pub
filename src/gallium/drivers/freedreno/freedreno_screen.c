@@ -61,7 +61,7 @@
 #include "common/freedreno_uuid.h"
 
 #include "ir3/ir3_nir.h"
-#include "ir3/ir3_compiler.h"
+#include "ir3/ir3_gallium.h"
 #include "a2xx/ir2.h"
 
 static const struct debug_named_value fd_debug_options[] = {
@@ -72,10 +72,10 @@ static const struct debug_named_value fd_debug_options[] = {
 		{"noscis",    FD_DBG_NOSCIS, "Disable scissor optimization"},
 		{"direct",    FD_DBG_DIRECT, "Force inline (SS_DIRECT) state loads"},
 		{"nobypass",  FD_DBG_NOBYPASS, "Disable GMEM bypass"},
-		/* BIT(7) */
+		{"perf",      FD_DBG_PERF,   "Enable performance warnings"},
 		{"nobin",     FD_DBG_NOBIN,  "Disable hw binning"},
-		{"nogmem",    FD_DBG_NOGMEM,  "Disable GMEM rendering (bypass only)"},
-		/* BIT(10) */
+		{"nogmem",    FD_DBG_NOGMEM, "Disable GMEM rendering (bypass only)"},
+		{"serialc",   FD_DBG_SERIALC,"Disable asynchronous shader compile"},
 		{"shaderdb",  FD_DBG_SHADERDB, "Enable shaderdb output"},
 		{"flush",     FD_DBG_FLUSH,  "Force flush after every draw"},
 		{"deqp",      FD_DBG_DEQP,   "Enable dEQP hacks"},
@@ -153,7 +153,7 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 		fd_device_del(screen->dev);
 
 	if (screen->ro)
-		FREE(screen->ro);
+		screen->ro->destroy(screen->ro);
 
 	fd_bc_fini(&screen->batch_cache);
 	fd_gmem_screen_fini(pscreen);
@@ -165,7 +165,7 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 	u_transfer_helper_destroy(pscreen->transfer_helper);
 
 	if (screen->compiler)
-		ir3_compiler_destroy(screen->compiler);
+		ir3_screen_fini(pscreen);
 
 	ralloc_free(screen->live_batches);
 
@@ -386,9 +386,6 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 	case PIPE_CAP_SHAREABLE_SHADERS:
 	case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-	/* manage the variants for these ourself, to avoid breaking precompile: */
-	case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
-	case PIPE_CAP_VERTEX_COLOR_CLAMPED:
 		if (is_ir3(screen))
 			return 1;
 		return 0;
@@ -400,6 +397,12 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return 2048;
 	case PIPE_CAP_MAX_GS_INVOCATIONS:
 		return 32;
+
+	/* Only a2xx has the half-border clamp mode in HW, just have mesa/st lower
+	 * it for later HW.
+	 */
+	case PIPE_CAP_GL_CLAMP:
+		return is_a2xx(screen);
 
 	/* Stream output. */
 	case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
@@ -475,6 +478,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return is_a6xx(screen);
 	case PIPE_CAP_SHADER_STENCIL_EXPORT:
 		return is_a6xx(screen);
+	case PIPE_CAP_TWO_SIDED_COLOR:
+		return 0;
 	default:
 		return u_pipe_screen_get_param_defaults(pscreen, param);
 	}
@@ -493,7 +498,7 @@ fd_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 		 *
 		 * See: https://code.google.com/p/android/issues/detail?id=206513
 		 */
-		if (fd_mesa_debug & FD_DBG_DEQP)
+		if (FD_DBG(DEQP))
 			return 48.0f;
 		return 127.0f;
 	case PIPE_CAPF_MAX_POINT_WIDTH:
@@ -605,7 +610,7 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 		return ((is_a5xx(screen) || is_a6xx(screen)) &&
 				(shader == PIPE_SHADER_COMPUTE ||
 					shader == PIPE_SHADER_FRAGMENT) &&
-				!(fd_mesa_debug & FD_DBG_NOFP16));
+				!FD_DBG(NOFP16));
 	case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
 	case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
 		return 16;
@@ -889,7 +894,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 
 	fd_mesa_debug = debug_get_option_fd_mesa_debug();
 
-	if (fd_mesa_debug & FD_DBG_NOBIN)
+	if (FD_DBG(NOBIN))
 		fd_binning_enabled = false;
 
 	if (!screen)
@@ -898,15 +903,8 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	pscreen = &screen->base;
 
 	screen->dev = dev;
+	screen->ro = ro;
 	screen->refcnt = 1;
-
-	if (ro) {
-		screen->ro = renderonly_dup(ro);
-		if (!screen->ro) {
-			DBG("could not create renderonly object");
-			goto fail;
-		}
-	}
 
 	// maybe this should be in context?
 	screen->pipe = fd_pipe_new(screen->dev, FD_PIPE_3D);
@@ -1030,7 +1028,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 
 	freedreno_dev_info_init(&screen->info, screen->gpu_id);
 
-	if (fd_mesa_debug & FD_DBG_PERFC) {
+	if (FD_DBG(PERFC)) {
 		screen->perfcntr_groups = fd_perfcntrs(screen->gpu_id,
 				&screen->num_perfcntr_groups);
 	}
@@ -1040,7 +1038,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro)
 	 * buffers would be too much otherwise.
 	 */
 	if (fd_device_version(dev) >= FD_VERSION_UNLIMITED_CMDS)
-		screen->reorder = !(fd_mesa_debug & FD_DBG_INORDER);
+		screen->reorder = !FD_DBG(INORDER);
 
 	if (BATCH_DEBUG)
 		screen->live_batches = _mesa_pointer_set_create(NULL);

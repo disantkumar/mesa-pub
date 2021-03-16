@@ -21,9 +21,9 @@
  * IN THE SOFTWARE.
  */
 
-#include "intel_batchbuffer.h"
-#include "intel_mipmap_tree.h"
-#include "intel_fbo.h"
+#include "brw_batch.h"
+#include "brw_mipmap_tree.h"
+#include "brw_fbo.h"
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
@@ -48,8 +48,8 @@ pma_fix_enable(const struct brw_context *brw)
    const struct brw_wm_prog_data *wm_prog_data =
       brw_wm_prog_data(brw->wm.base.prog_data);
    /* _NEW_BUFFERS */
-   struct intel_renderbuffer *depth_irb =
-      intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
+   struct brw_renderbuffer *depth_irb =
+      brw_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
 
    /* 3DSTATE_WM::ForceThreadDispatch is never used. */
    const bool wm_force_thread_dispatch = false;
@@ -61,7 +61,7 @@ pma_fix_enable(const struct brw_context *brw)
     * 3DSTATE_DEPTH_BUFFER::SURFACE_TYPE != NULL &&
     * 3DSTATE_DEPTH_BUFFER::HIZ Enable
     */
-   const bool hiz_enabled = depth_irb && intel_renderbuffer_has_hiz(depth_irb);
+   const bool hiz_enabled = depth_irb && brw_renderbuffer_has_hiz(depth_irb);
 
    /* 3DSTATE_WM::Early Depth/Stencil Control != EDSC_PREPS (2). */
    const bool edsc_not_preps = !wm_prog_data->early_fragment_tests;

@@ -68,6 +68,7 @@ tu_spirv_to_nir(struct tu_device *dev,
          .multiview = true,
          .shader_viewport_index_layer = true,
          .geometry_streams = true,
+         .device_group = true,
       },
    };
    const nir_shader_compiler_options *nir_options =
@@ -110,11 +111,11 @@ tu_spirv_to_nir(struct tu_device *dev,
       num_spec = spec_info->mapEntryCount;
    }
 
-   struct tu_shader_module *module =
-      tu_shader_module_from_handle(stage_info->module);
-   assert(module->code_size % 4 == 0);
+   struct vk_shader_module *module =
+      vk_shader_module_from_handle(stage_info->module);
+   assert(module->size % 4 == 0);
    nir_shader *nir =
-      spirv_to_nir(module->code, module->code_size / 4,
+      spirv_to_nir((void*)module->data, module->size / 4,
                    spec, num_spec, stage, stage_info->pName,
                    &spirv_options, nir_options);
 
@@ -198,7 +199,7 @@ lower_load_push_constant(nir_builder *b, nir_intrinsic_instr *instr,
                        nir_ushr(b, instr->src[0].ssa, nir_imm_int(b, 2)),
                        .base = base / 4);
 
-   nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(load));
+   nir_ssa_def_rewrite_uses(&instr->dest.ssa, load);
 
    nir_instr_remove(&instr->instr);
 }
@@ -235,7 +236,22 @@ lower_vulkan_resource_index(nir_builder *b, nir_intrinsic_instr *instr,
                                nir_iadd(b, nir_imm_int(b, base), vulkan_idx),
                                nir_imm_int(b, 0));
 
-   nir_ssa_def_rewrite_uses(&instr->dest.ssa, nir_src_for_ssa(def));
+   nir_ssa_def_rewrite_uses(&instr->dest.ssa, def);
+   nir_instr_remove(&instr->instr);
+}
+
+static void
+lower_vulkan_resource_reindex(nir_builder *b, nir_intrinsic_instr *instr)
+{
+   nir_ssa_def *old_index = instr->src[0].ssa;
+   nir_ssa_def *delta = instr->src[1].ssa;
+
+   nir_ssa_def *new_index =
+      nir_vec3(b, nir_channel(b, old_index, 0),
+               nir_iadd(b, nir_channel(b, old_index, 1), delta),
+               nir_channel(b, old_index, 2));
+
+   nir_ssa_def_rewrite_uses(&instr->dest.ssa, new_index);
    nir_instr_remove(&instr->instr);
 }
 
@@ -245,7 +261,7 @@ lower_load_vulkan_descriptor(nir_intrinsic_instr *intrin)
    /* Loading the descriptor happens as part of the load/store instruction so
     * this is a no-op.
     */
-   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, intrin->src[0]);
+   nir_ssa_def_rewrite_uses_src(&intrin->dest.ssa, intrin->src[0]);
    nir_instr_remove(&intrin->instr);
 }
 
@@ -319,7 +335,7 @@ lower_ssbo_ubo_intrinsic(nir_builder *b, nir_intrinsic_instr *intrin)
    }
 
    if (info->has_dest)
-      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, nir_src_for_ssa(result));
+      nir_ssa_def_rewrite_uses(&intrin->dest.ssa, result);
    nir_instr_remove(&intrin->instr);
 }
 
@@ -340,8 +356,7 @@ build_bindless(nir_builder *b, nir_deref_instr *deref, bool is_sampler,
       const struct glsl_type *glsl_type = glsl_without_array(var->type);
       uint32_t idx = var->data.index * 2;
 
-      b->shader->info.textures_used |=
-         ((1ull << (bind_layout->array_size * 2)) - 1) << (idx * 2);
+      BITSET_SET_RANGE(b->shader->info.textures_used, idx * 2, ((idx * 2) + (bind_layout->array_size * 2)) - 1);
 
       /* D24S8 workaround: stencil of D24S8 will be sampled as uint */
       if (glsl_get_sampler_result_type(glsl_type) == GLSL_TYPE_UINT)
@@ -409,6 +424,9 @@ lower_intrinsic(nir_builder *b, nir_intrinsic_instr *instr,
 
    case nir_intrinsic_vulkan_resource_index:
       lower_vulkan_resource_index(b, instr, shader, layout);
+      return true;
+   case nir_intrinsic_vulkan_resource_reindex:
+      lower_vulkan_resource_reindex(b, instr);
       return true;
 
    case nir_intrinsic_load_ubo:
@@ -505,7 +523,7 @@ lower_tex_ycbcr(const struct tu_pipeline_layout *layout,
                                                   ycbcr_sampler->ycbcr_range,
                                                   &tex->dest.ssa,
                                                   bpcs);
-   nir_ssa_def_rewrite_uses_after(&tex->dest.ssa, nir_src_for_ssa(result),
+   nir_ssa_def_rewrite_uses_after(&tex->dest.ssa, result,
                                   result->parent_instr);
 
    builder->cursor = nir_before_instr(&tex->instr);
@@ -838,45 +856,4 @@ tu_shader_destroy(struct tu_device *dev,
    ir3_shader_destroy(shader->ir3_shader);
 
    vk_free2(&dev->vk.alloc, alloc, shader);
-}
-
-VkResult
-tu_CreateShaderModule(VkDevice _device,
-                      const VkShaderModuleCreateInfo *pCreateInfo,
-                      const VkAllocationCallbacks *pAllocator,
-                      VkShaderModule *pShaderModule)
-{
-   TU_FROM_HANDLE(tu_device, device, _device);
-   struct tu_shader_module *module;
-
-   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
-   assert(pCreateInfo->flags == 0);
-   assert(pCreateInfo->codeSize % 4 == 0);
-
-   module = vk_object_alloc(&device->vk, pAllocator,
-                            sizeof(*module) + pCreateInfo->codeSize,
-                            VK_OBJECT_TYPE_SHADER_MODULE);
-   if (module == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   module->code_size = pCreateInfo->codeSize;
-   memcpy(module->code, pCreateInfo->pCode, pCreateInfo->codeSize);
-
-   *pShaderModule = tu_shader_module_to_handle(module);
-
-   return VK_SUCCESS;
-}
-
-void
-tu_DestroyShaderModule(VkDevice _device,
-                       VkShaderModule _module,
-                       const VkAllocationCallbacks *pAllocator)
-{
-   TU_FROM_HANDLE(tu_device, device, _device);
-   TU_FROM_HANDLE(tu_shader_module, module, _module);
-
-   if (!module)
-      return;
-
-   vk_object_free(&device->vk, pAllocator, module);
 }

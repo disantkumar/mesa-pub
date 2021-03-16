@@ -98,7 +98,12 @@ enum radeon_bo_usage
   /* The winsys ensures that the CS submission will be scheduled after
    * previously flushed CSs referencing this BO in a conflicting way.
    */
-  RADEON_USAGE_SYNCHRONIZED = 8
+  RADEON_USAGE_SYNCHRONIZED = 8,
+
+  /* When used, an implicit sync is done to make sure a compute shader
+   * will read the written values from a previous draw.
+   */
+  RADEON_USAGE_NEEDS_IMPLICIT_SYNC = 16,
 };
 
 enum radeon_map_flags
@@ -119,6 +124,8 @@ enum radeon_value_id
    RADEON_REQUESTED_GTT_MEMORY,
    RADEON_MAPPED_VRAM,
    RADEON_MAPPED_GTT,
+   RADEON_SLAB_WASTED_VRAM,
+   RADEON_SLAB_WASTED_GTT,
    RADEON_BUFFER_WAIT_TIME_NS,
    RADEON_NUM_MAPPED_BUFFERS,
    RADEON_TIMESTAMP,
@@ -198,13 +205,13 @@ struct radeon_cmdbuf_chunk {
 struct radeon_cmdbuf {
    struct radeon_cmdbuf_chunk current;
    struct radeon_cmdbuf_chunk *prev;
-   unsigned num_prev; /* Number of previous chunks. */
-   unsigned max_prev; /* Space in array pointed to by prev. */
+   uint16_t num_prev; /* Number of previous chunks. */
+   uint16_t max_prev; /* Space in array pointed to by prev. */
    unsigned prev_dw;  /* Total number of dwords in previous chunks. */
 
    /* Memory usage of the buffer list. These are always 0 for preamble IBs. */
-   uint64_t used_vram;
-   uint64_t used_gart;
+   uint32_t used_vram_kb;
+   uint32_t used_gart_kb;
    uint64_t gpu_address;
 
    /* Private winsys data. */

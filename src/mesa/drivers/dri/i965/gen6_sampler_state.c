@@ -28,17 +28,17 @@
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
-#include "intel_batchbuffer.h"
+#include "brw_batch.h"
 
 static void
 upload_sampler_state_pointers(struct brw_context *brw)
 {
    BEGIN_BATCH(4);
    OUT_BATCH(_3DSTATE_SAMPLER_STATE_POINTERS << 16 |
-	     VS_SAMPLER_STATE_CHANGE |
-	     GS_SAMPLER_STATE_CHANGE |
-	     PS_SAMPLER_STATE_CHANGE |
-	     (4 - 2));
+             VS_SAMPLER_STATE_CHANGE |
+             GS_SAMPLER_STATE_CHANGE |
+             PS_SAMPLER_STATE_CHANGE |
+             (4 - 2));
    OUT_BATCH(brw->vs.base.sampler_offset); /* VS */
    OUT_BATCH(brw->gs.base.sampler_offset); /* GS */
    OUT_BATCH(brw->wm.base.sampler_offset);

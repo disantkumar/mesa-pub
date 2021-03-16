@@ -259,9 +259,6 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
       return 1;
 
-   case PIPE_CAP_SHAREABLE_SHADERS:
-      return 1;
-
 #if 0 /* TODO: Enable me. Enables GL_ARB_shader_storage_buffer_object */
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       return screen->max_feature_level >= D3D_FEATURE_LEVEL_10_0;
@@ -715,11 +712,21 @@ create_device(IUnknown *adapter)
    }
 
 #ifdef _WIN32
-   if (d3d12_debug & D3D12_DEBUG_EXPERIMENTAL)
+   if (!(d3d12_debug & D3D12_DEBUG_EXPERIMENTAL)) {
+      struct d3d12_validation_tools *validation_tools = d3d12_validator_create();
+      if (!validation_tools) {
+         debug_printf("D3D12: failed to initialize validator with experimental shader models disabled\n");
+         return nullptr;
+      }
+      d3d12_validator_destroy(validation_tools);
+   } else
 #endif
    {
       D3D12EnableExperimentalFeatures = (PFN_D3D12ENABLEEXPERIMENTALFEATURES)util_dl_get_proc_address(d3d12_mod, "D3D12EnableExperimentalFeatures");
-      D3D12EnableExperimentalFeatures(1, &D3D12ExperimentalShaderModels, NULL, NULL);
+      if (FAILED(D3D12EnableExperimentalFeatures(1, &D3D12ExperimentalShaderModels, NULL, NULL))) {
+         debug_printf("D3D12: failed to enable experimental shader models\n");
+         return nullptr;
+      }
    }
 
    D3D12CreateDevice = (PFN_D3D12CREATEDEVICE)util_dl_get_proc_address(d3d12_mod, "D3D12CreateDevice");

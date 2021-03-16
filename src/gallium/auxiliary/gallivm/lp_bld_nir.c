@@ -113,14 +113,16 @@ static unsigned glsl_sampler_to_pipe(int sampler_dim, bool is_array)
       pipe_target = is_array ? PIPE_TEXTURE_1D_ARRAY : PIPE_TEXTURE_1D;
       break;
    case GLSL_SAMPLER_DIM_2D:
-   case GLSL_SAMPLER_DIM_SUBPASS:
       pipe_target = is_array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
+      break;
+   case GLSL_SAMPLER_DIM_SUBPASS:
+   case GLSL_SAMPLER_DIM_SUBPASS_MS:
+      pipe_target = PIPE_TEXTURE_2D_ARRAY;
       break;
    case GLSL_SAMPLER_DIM_3D:
       pipe_target = PIPE_TEXTURE_3D;
       break;
    case GLSL_SAMPLER_DIM_MS:
-   case GLSL_SAMPLER_DIM_SUBPASS_MS:
       pipe_target = is_array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
       break;
    case GLSL_SAMPLER_DIM_CUBE:
@@ -1661,6 +1663,7 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_instance_id:
    case nir_intrinsic_load_base_instance:
    case nir_intrinsic_load_base_vertex:
+   case nir_intrinsic_load_first_vertex:
    case nir_intrinsic_load_work_group_id:
    case nir_intrinsic_load_local_invocation_id:
    case nir_intrinsic_load_num_work_groups:
@@ -1676,6 +1679,7 @@ static void visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_load_sample_id:
    case nir_intrinsic_load_sample_pos:
    case nir_intrinsic_load_sample_mask_in:
+   case nir_intrinsic_load_view_index:
       bld_base->sysval_intrin(bld_base, instr, result);
       break;
    case nir_intrinsic_load_helper_invocation:

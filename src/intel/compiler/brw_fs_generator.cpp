@@ -331,7 +331,8 @@ fs_generator::generate_send(fs_inst *inst,
    uint32_t desc_imm = inst->desc |
       brw_message_desc(devinfo, inst->mlen, rlen, inst->header_size);
 
-   uint32_t ex_desc_imm = brw_message_ex_desc(devinfo, inst->ex_mlen);
+   uint32_t ex_desc_imm = inst->ex_desc |
+      brw_message_ex_desc(devinfo, inst->ex_mlen);
 
    if (ex_desc.file != BRW_IMMEDIATE_VALUE || ex_desc.ud || ex_desc_imm) {
       /* If we have any sort of extended descriptor, then we need SENDS.  This
@@ -599,6 +600,9 @@ fs_generator::generate_shuffle(fs_inst *inst,
                                struct brw_reg src,
                                struct brw_reg idx)
 {
+   assert(src.file == BRW_GENERAL_REGISTER_FILE);
+   assert(!src.abs && !src.negate);
+
    /* Ivy bridge has some strange behavior that makes this a real pain to
     * implement for 64-bit values so we just don't bother.
     */
@@ -626,7 +630,17 @@ fs_generator::generate_shuffle(fs_inst *inst,
           * but asserting would be mean.
           */
          const unsigned i = idx.file == BRW_IMMEDIATE_VALUE ? idx.ud : 0;
-         brw_MOV(p, suboffset(dst, group), stride(suboffset(src, i), 0, 1, 0));
+         struct brw_reg group_src = stride(suboffset(src, i), 0, 1, 0);
+         struct brw_reg group_dst = suboffset(dst, group);
+         if (type_sz(src.type) > 4 && !devinfo->has_64bit_float) {
+            brw_MOV(p, subscript(group_dst, BRW_REGISTER_TYPE_UD, 0),
+                       subscript(group_src, BRW_REGISTER_TYPE_UD, 0));
+            brw_set_default_swsb(p, tgl_swsb_null());
+            brw_MOV(p, subscript(group_dst, BRW_REGISTER_TYPE_UD, 1),
+                       subscript(group_src, BRW_REGISTER_TYPE_UD, 1));
+         } else {
+            brw_MOV(p, group_dst, group_src);
+         }
       } else {
          /* We use VxH indirect addressing, clobbering a0.0 through a0.7. */
          struct brw_reg addr = vec8(brw_address_reg(0));
@@ -701,7 +715,8 @@ fs_generator::generate_shuffle(fs_inst *inst,
 
          if (type_sz(src.type) > 4 &&
              ((devinfo->gen == 7 && !devinfo->is_haswell) ||
-              devinfo->is_cherryview || gen_device_info_is_9lp(devinfo))) {
+              devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
+              !devinfo->has_64bit_float)) {
             /* IVB has an issue (which we found empirically) where it reads
              * two address register components per channel for indirectly
              * addressed 64-bit sources.
@@ -2109,11 +2124,22 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
              * type when the destination is the null register is necessary but
              * not sufficient by itself.
              */
-            assert(dst.nr == BRW_ARF_NULL);
             dst.type = BRW_REGISTER_TYPE_D;
          }
          brw_CMP(p, dst, inst->conditional_mod, src[0], src[1]);
 	 break;
+      case BRW_OPCODE_CMPN:
+         if (inst->exec_size >= 16 && devinfo->gen == 7 && !devinfo->is_haswell &&
+             dst.file == BRW_ARCHITECTURE_REGISTER_FILE) {
+            /* For unknown reasons the WaCMPInstFlagDepClearedEarly workaround
+             * implemented in the compiler is not sufficient. Overriding the
+             * type when the destination is the null register is necessary but
+             * not sufficient by itself.
+             */
+            dst.type = BRW_REGISTER_TYPE_D;
+         }
+         brw_CMPN(p, dst, inst->conditional_mod, src[0], src[1]);
+         break;
       case BRW_OPCODE_SEL:
 	 brw_SEL(p, dst, src[0], src[1]);
 	 break;
@@ -2459,11 +2485,25 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
 
       case SHADER_OPCODE_SEL_EXEC:
          assert(inst->force_writemask_all);
-         brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-         brw_MOV(p, dst, src[1]);
-         brw_set_default_mask_control(p, BRW_MASK_ENABLE);
-         brw_set_default_swsb(p, tgl_swsb_null());
-         brw_MOV(p, dst, src[0]);
+         if (type_sz(dst.type) > 4 && !devinfo->has_64bit_float) {
+            brw_set_default_mask_control(p, BRW_MASK_DISABLE);
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 0),
+                       subscript(src[1], BRW_REGISTER_TYPE_UD, 0));
+            brw_set_default_swsb(p, tgl_swsb_null());
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 1),
+                       subscript(src[1], BRW_REGISTER_TYPE_UD, 1));
+            brw_set_default_mask_control(p, BRW_MASK_ENABLE);
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 0),
+                       subscript(src[0], BRW_REGISTER_TYPE_UD, 0));
+            brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_UD, 1),
+                       subscript(src[0], BRW_REGISTER_TYPE_UD, 1));
+         } else {
+            brw_set_default_mask_control(p, BRW_MASK_DISABLE);
+            brw_MOV(p, dst, src[1]);
+            brw_set_default_mask_control(p, BRW_MASK_ENABLE);
+            brw_set_default_swsb(p, tgl_swsb_null());
+            brw_MOV(p, dst, src[0]);
+         }
          break;
 
       case SHADER_OPCODE_QUAD_SWIZZLE:
@@ -2492,7 +2532,8 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          struct brw_reg strided = stride(suboffset(src[0], component),
                                          vstride, width, 0);
          if (type_sz(src[0].type) > 4 &&
-             (devinfo->is_cherryview || gen_device_info_is_9lp(devinfo))) {
+             (devinfo->is_cherryview || gen_device_info_is_9lp(devinfo) ||
+              !devinfo->has_64bit_float)) {
             /* IVB has an issue (which we found empirically) where it reads
              * two address register components per channel for indirectly
              * addressed 64-bit sources.

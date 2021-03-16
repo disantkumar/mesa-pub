@@ -372,21 +372,19 @@ VkResult anv_CreateDescriptorSetLayout(
          immutable_sampler_count += pCreateInfo->pBindings[j].descriptorCount;
    }
 
-   struct anv_descriptor_set_layout *set_layout;
-   struct anv_descriptor_set_binding_layout *bindings;
-   struct anv_sampler **samplers;
-
    /* We need to allocate decriptor set layouts off the device allocator
     * with DEVICE scope because they are reference counted and may not be
     * destroyed when vkDestroyDescriptorSetLayout is called.
     */
-   ANV_MULTIALLOC(ma);
-   anv_multialloc_add(&ma, &set_layout, 1);
-   anv_multialloc_add(&ma, &bindings, max_binding + 1);
-   anv_multialloc_add(&ma, &samplers, immutable_sampler_count);
+   VK_MULTIALLOC(ma);
+   VK_MULTIALLOC_DECL(&ma, struct anv_descriptor_set_layout, set_layout, 1);
+   VK_MULTIALLOC_DECL(&ma, struct anv_descriptor_set_binding_layout,
+                           bindings, max_binding + 1);
+   VK_MULTIALLOC_DECL(&ma, struct anv_sampler *, samplers,
+                           immutable_sampler_count);
 
-   if (!anv_multialloc_alloc(&ma, &device->vk.alloc,
-                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
+   if (!vk_multialloc_alloc(&ma, &device->vk.alloc,
+                            VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    memset(set_layout, 0, sizeof(*set_layout));
@@ -867,6 +865,7 @@ VkResult anv_CreateDescriptorPool(
 
    if (descriptor_bo_size > 0) {
       VkResult result = anv_device_alloc_bo(device,
+                                            "descriptors",
                                             descriptor_bo_size,
                                             ANV_BO_ALLOC_MAPPED |
                                             ANV_BO_ALLOC_SNOOPED,
@@ -1804,6 +1803,9 @@ void anv_DestroyDescriptorUpdateTemplate(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_descriptor_update_template, template,
                    descriptorUpdateTemplate);
+
+   if (!template)
+      return;
 
    vk_object_base_finish(&template->base);
    vk_free2(&device->vk.alloc, pAllocator, template);
