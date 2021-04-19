@@ -70,7 +70,7 @@ intel_get_urb_config(const struct gen_device_info *devinfo,
 {
    unsigned urb_size_kB = intel_get_l3_config_urb_size(devinfo, l3_cfg);
 
-   /* RCU_MODE register for Gen12+ in BSpec says:
+   /* RCU_MODE register for Gfx12+ in BSpec says:
     *
     *    "HW reserves 4KB of URB space per bank for Compute Engine out of the
     *    total storage available in L3. SW must consider that 4KB of storage
@@ -84,11 +84,11 @@ intel_get_urb_config(const struct gen_device_info *devinfo,
     *    only 124KB (per bank). More detailed descripton available in "L3
     *    Cache" section of the B-Spec."
     */
-   if (devinfo->gen >= 12)
+   if (devinfo->ver >= 12)
       urb_size_kB -= 4 * devinfo->l3_banks;
 
    const unsigned push_constant_kB =
-      (devinfo->gen >= 8 || (devinfo->is_haswell && devinfo->gt == 3)) ? 32 : 16;
+      (devinfo->ver >= 8 || (devinfo->is_haswell && devinfo->gt == 3)) ? 32 : 16;
 
    const bool active[4] = { true, tess_present, tess_present, gs_present };
 
@@ -118,7 +118,7 @@ intel_get_urb_config(const struct gen_device_info *devinfo,
        * "When tessellation is enabled, the VS Number of URB Entries must be
        *  greater than or equal to 192."
        */
-      [MESA_SHADER_VERTEX] = tess_present && devinfo->gen == 8 ?
+      [MESA_SHADER_VERTEX] = tess_present && devinfo->ver == 8 ?
          192 : devinfo->urb.min_entries[MESA_SHADER_VERTEX],
 
       /* There are two constraints on the minimum amount of URB space we can
@@ -235,8 +235,8 @@ intel_get_urb_config(const struct gen_device_info *devinfo,
    }
 
    if (deref_block_size) {
-      if (devinfo->gen >= 12) {
-         /* From the Gen12 BSpec:
+      if (devinfo->ver >= 12) {
+         /* From the Gfx12 BSpec:
           *
           *    "Deref Block size depends on the last enabled shader and number
           *    of handles programmed for that shader

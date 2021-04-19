@@ -77,4 +77,6 @@ ir3_point_sprite(const struct ir3_shader_variant *fs, int i,
 	}
 }
 
+void ir3_update_max_tf_vtx(struct fd_context *ctx, const struct ir3_shader_variant *v) assert_dt;
+
 #endif /* IR3_GALLIUM_H_ */

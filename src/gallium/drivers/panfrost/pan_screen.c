@@ -43,12 +43,14 @@
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/panfrost_drm.h"
 
+#include "pan_blitter.h"
 #include "pan_bo.h"
 #include "pan_shader.h"
 #include "pan_screen.h"
 #include "pan_resource.h"
 #include "pan_public.h"
 #include "pan_util.h"
+#include "pan_indirect_draw.h"
 #include "decode.h"
 
 #include "pan_context.h"
@@ -58,7 +60,6 @@ static const struct debug_named_value panfrost_debug_options[] = {
         {"msgs",      PAN_DBG_MSGS,	"Print debug messages"},
         {"trace",     PAN_DBG_TRACE,    "Trace the command stream"},
         {"deqp",      PAN_DBG_DEQP,     "Hacks for dEQP"},
-        {"afbc",      PAN_DBG_AFBC,     "Enable AFBC buffer sharing"},
         {"sync",      PAN_DBG_SYNC,     "Wait for each job's completion and check for any GPU fault"},
         {"precompile", PAN_DBG_PRECOMPILE, "Precompile shaders for shader-db"},
         {"fp16",     PAN_DBG_FP16,     "Enable 16-bit support"},
@@ -300,6 +301,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_SHAREABLE_SHADERS:
                 return 0;
 
+        case PIPE_CAP_DRAW_INDIRECT:
+                return is_deqp;
+
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
         }
@@ -355,7 +359,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return 0;
 
         case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
-                return 0;
+                return pan_is_bifrost(dev);
 
         case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
                 return 1;
@@ -374,6 +378,7 @@ panfrost_get_shader_param(struct pipe_screen *screen,
                 return (!is_nofp16 && !pan_is_bifrost(dev)) || is_fp16;
 
         case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+        case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
         case PIPE_SHADER_CAP_INT16:
         case PIPE_SHADER_CAP_INT64_ATOMICS:
         case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
@@ -555,9 +560,6 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
         /* Don't advertise AFBC before T760 */
         afbc &= !(dev->quirks & MIDGARD_NO_AFBC);
 
-        /* XXX: AFBC scanout is broken on mainline RK3399 with older kernels */
-        afbc &= (dev->debug & PAN_DBG_AFBC);
-
         unsigned count = 0;
 
         for (unsigned i = 0; i < PAN_MODIFIER_COUNT; ++i) {
@@ -684,6 +686,10 @@ static void
 panfrost_destroy_screen(struct pipe_screen *pscreen)
 {
         struct panfrost_device *dev = pan_device(pscreen);
+
+        panfrost_cleanup_indirect_draw_shaders(dev);
+        pan_blitter_cleanup(dev);
+        pan_blend_shaders_cleanup(dev);
 
         if (dev->ro)
                 dev->ro->destroy(dev->ro);
@@ -855,7 +861,9 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.set_damage_region = panfrost_resource_set_damage_region;
 
         panfrost_resource_screen_init(&screen->base);
-        panfrost_init_blit_shaders(dev);
+        pan_blend_shaders_init(dev);
+        panfrost_init_indirect_draw_shaders(dev);
+        pan_blitter_init(dev);
 
         return &screen->base;
 }

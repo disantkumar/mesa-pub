@@ -1361,7 +1361,7 @@ clc_to_dxil(struct clc_context *ctx,
    NIR_PASS_V(nir, dxil_nir_lower_loads_stores_to_dxil);
    NIR_PASS_V(nir, dxil_nir_opt_alu_deref_srcs);
    NIR_PASS_V(nir, dxil_nir_lower_atomics_to_dxil);
-   NIR_PASS_V(nir, dxil_nir_lower_fp16_casts);
+   NIR_PASS_V(nir, nir_lower_fp16_casts);
    NIR_PASS_V(nir, nir_lower_convert_alu_types, NULL);
 
    // Convert pack to pack_split
@@ -1401,12 +1401,12 @@ clc_to_dxil(struct clc_context *ctx,
        */
       unsigned alignment = size < 128 ? (1 << (ffs(size) - 1)) : 128;
 
-      nir->info.cs.shared_size = align(nir->info.cs.shared_size, alignment);
-      metadata->args[i].localptr.sharedmem_offset = nir->info.cs.shared_size;
-      nir->info.cs.shared_size += size;
+      nir->info.shared_size = align(nir->info.shared_size, alignment);
+      metadata->args[i].localptr.sharedmem_offset = nir->info.shared_size;
+      nir->info.shared_size += size;
    }
 
-   metadata->local_mem_size = nir->info.cs.shared_size;
+   metadata->local_mem_size = nir->info.shared_size;
    metadata->priv_mem_size = nir->scratch_size;
 
    /* DXIL double math is too limited compared to what NIR expects. Let's refuse

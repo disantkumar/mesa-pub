@@ -80,6 +80,25 @@
    ((x)[BITSET_BITWORD(b)] &= ~BITSET_RANGE(b, e)) : \
    (assert (!"BITSET_CLEAR_RANGE: bit range crosses word boundary"), 0))
 
+static inline unsigned
+__bitset_prefix_sum(const BITSET_WORD *x, unsigned b, unsigned n)
+{
+   unsigned prefix = 0;
+
+   for (unsigned i = 0; i < n; i++) {
+      if ((i + 1) * BITSET_WORDBITS <= b) {
+         prefix += util_bitcount(x[i]);
+      } else {
+         prefix += util_bitcount(x[i] & BITFIELD_MASK(b - i * BITSET_WORDBITS));
+         break;
+      }
+   }
+   return prefix;
+}
+
+#define BITSET_PREFIX_SUM(x, b) \
+   __bitset_prefix_sum(x, b, ARRAY_SIZE(x))
+
 /* Get first bit set in a bitset.
  */
 static inline int
@@ -165,6 +184,10 @@ __bitset_next_range(unsigned *start, unsigned *end, const BITSET_WORD *set,
     * 0-bit after the range.
     */
    unsigned word = BITSET_BITWORD(*end);
+   if (word >= BITSET_WORDS(size)) {
+      *start = *end = size;
+      return;
+   }
    BITSET_WORD tmp = set[word] & ~(BITSET_BIT(*end) - 1);
    while (!tmp) {
       word++;
@@ -182,6 +205,10 @@ __bitset_next_range(unsigned *start, unsigned *end, const BITSET_WORD *set,
     * 0-bit.
     */
    word = BITSET_BITWORD(*start + 1);
+   if (word >= BITSET_WORDS(size)) {
+      *end = size;
+      return;
+   }
    tmp = set[word] | (BITSET_BIT(*start + 1) - 1);
    while (~tmp == 0) {
       word++;

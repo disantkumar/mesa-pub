@@ -43,12 +43,12 @@ struct fd_ringbuffer;
 struct fd5_emit {
 	struct pipe_debug_callback *debug;
 	const struct fd_vertex_state *vtx;
-	const struct fd_program_stateobj *prog;
+	const struct fd5_program_state *prog;
 	const struct pipe_draw_info *info;
 	const struct pipe_draw_indirect_info *indirect;
 	const struct pipe_draw_start_count *draw;
 	bool binning_pass;
-	struct ir3_shader_key key;
+	struct ir3_cache_key key;
 	enum fd_dirty_3d_state dirty;
 
 	uint32_t sprite_coord_enable;  /* bitmask */
@@ -79,9 +79,13 @@ static inline const struct ir3_shader_variant *
 fd5_emit_get_vp(struct fd5_emit *emit)
 {
 	if (!emit->vs) {
-		struct ir3_shader *shader = ir3_get_shader(emit->prog->vs);
-		emit->vs = ir3_shader_variant(shader, emit->key,
-				emit->binning_pass, emit->debug);
+		/* We use nonbinning VS during binning when TFB is enabled because that
+		 * is what has all the outputs that might be involved in TFB.
+		 */
+		if (emit->binning_pass && !emit->prog->vs->shader->stream_output.num_outputs)
+			emit->vs = emit->prog->bs;
+		else
+			emit->vs = emit->prog->vs;
 	}
 	return emit->vs;
 }
@@ -95,9 +99,7 @@ fd5_emit_get_fp(struct fd5_emit *emit)
 			static const struct ir3_shader_variant binning_fs = {};
 			emit->fs = &binning_fs;
 		} else {
-			struct ir3_shader *shader = ir3_get_shader(emit->prog->fs);
-			emit->fs = ir3_shader_variant(shader, emit->key,
-					false, emit->debug);
+			emit->fs = emit->prog->fs;
 		}
 	}
 	return emit->fs;

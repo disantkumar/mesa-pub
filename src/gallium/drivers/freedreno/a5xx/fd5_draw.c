@@ -78,35 +78,57 @@ fd5_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 	struct fd5_emit emit = {
 		.debug = &ctx->debug,
 		.vtx  = &ctx->vtx,
-		.prog = &ctx->prog,
 		.info = info,
 		.indirect = indirect,
 		.draw = draw,
 		.key = {
-			.rasterflat = ctx->rasterizer->flatshade,
-			.ucp_enables = ctx->rasterizer->clip_plane_enable,
-			.has_per_samp = fd5_ctx->fastc_srgb || fd5_ctx->vastc_srgb,
-			.vastc_srgb = fd5_ctx->vastc_srgb,
-			.fastc_srgb = fd5_ctx->fastc_srgb,
+			.vs = ctx->prog.vs,
+			.fs = ctx->prog.fs,
+			.key = {
+				.rasterflat = ctx->rasterizer->flatshade,
+				.has_per_samp = fd5_ctx->fastc_srgb || fd5_ctx->vastc_srgb,
+				.vastc_srgb = fd5_ctx->vastc_srgb,
+				.fastc_srgb = fd5_ctx->fastc_srgb,
+			},
 		},
 		.rasterflat = ctx->rasterizer->flatshade,
 		.sprite_coord_enable = ctx->rasterizer->sprite_coord_enable,
 		.sprite_coord_mode = ctx->rasterizer->sprite_coord_mode,
 	};
 
-	ir3_fixup_shader_state(&ctx->base, &emit.key);
+	/* Technically a5xx should not require this, but it avoids a crash in
+	 * piglit 'spec@!opengl 1.1@ppgtt_memory_alignment' due to a draw with
+	 * no VBO bound but a VS that expects an input.  The draw is a single
+	 * vertex with PIPE_PRIM_TRIANGLES so the u_trim_pipe_prim() causes it
+	 * to be skipped.
+	 */
+	if (info->mode != PIPE_PRIM_MAX &&
+			!indirect &&
+			!info->primitive_restart &&
+			!u_trim_pipe_prim(info->mode, (unsigned*)&draw->count))
+		return false;
+
+	ir3_fixup_shader_state(&ctx->base, &emit.key.key);
 
 	unsigned dirty = ctx->dirty;
+
+	emit.prog = fd5_program_state(ir3_cache_lookup(ctx->shader_cache, &emit.key, &ctx->debug));
+
+	/* bail if compile failed: */
+	if (!emit.prog)
+		return false;
+
 	const struct ir3_shader_variant *vp = fd5_emit_get_vp(&emit);
 	const struct ir3_shader_variant *fp = fd5_emit_get_fp(&emit);
 
-	/* do regular pass first, since that is more likely to fail compiling: */
+	ir3_update_max_tf_vtx(ctx, vp);
 
-	if (!vp || !fp)
-		return false;
+	/* do regular pass first: */
 
-	ctx->stats.vs_regs += ir3_shader_halfregs(vp);
-	ctx->stats.fs_regs += ir3_shader_halfregs(fp);
+	if (unlikely(ctx->stats_users > 0)) {
+		ctx->stats.vs_regs += ir3_shader_halfregs(vp);
+		ctx->stats.fs_regs += ir3_shader_halfregs(fp);
+	}
 
 	/* figure out whether we need to disable LRZ write for binning
 	 * pass using draw pass's fp:

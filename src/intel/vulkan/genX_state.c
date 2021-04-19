@@ -58,7 +58,7 @@
  *
  * The equations above apply if \p flip is equal to 0, if it is equal to 1 p_0
  * and p_1 will be swapped for the result.  Note that in the context of pixel
- * pipe hashing this can be always 0 on Gen12 platforms, since the hardware
+ * pipe hashing this can be always 0 on Gfx12 platforms, since the hardware
  * transparently remaps logical indices found on the table to physical pixel
  * pipe indices from the highest to lowest EU count.
  */
@@ -81,7 +81,7 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
 {
    device->slice_hash = (struct anv_state) { 0 };
 
-#if GEN_GEN == 11
+#if GFX_VER == 11
    assert(device->info.ppipe_subslices[2] == 0);
 
    if (device->info.ppipe_subslices[0] == device->info.ppipe_subslices[1])
@@ -106,7 +106,7 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
    anv_batch_emit(batch, GENX(3DSTATE_3D_MODE), mode) {
       mode.SliceHashingTableEnable = true;
    }
-#elif GEN_VERSIONx10 == 120
+#elif GFX_VERx10 == 120
    /* For each n calculate ppipes_of[n], equal to the number of pixel pipes
     * present with n active dual subslices.
     */
@@ -117,7 +117,7 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
          ppipes_of[n] += (device->info.ppipe_subslices[p] == n);
    }
 
-   /* Gen12 has three pixel pipes. */
+   /* Gfx12 has three pixel pipes. */
    assert(ppipes_of[0] + ppipes_of[1] + ppipes_of[2] == 3);
 
    if (ppipes_of[2] == 3 || ppipes_of[0] == 2) {
@@ -147,6 +147,7 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
 
    anv_batch_emit(batch, GENX(3DSTATE_3D_MODE), p) {
       p.SubsliceHashingTableEnable = true;
+      p.SubsliceHashingTableEnableMask = true;
    }
 #endif
 }
@@ -162,14 +163,14 @@ init_render_queue_state(struct anv_queue *queue)
    batch.end = (void *) cmds + sizeof(cmds);
 
    anv_batch_emit(&batch, GENX(PIPELINE_SELECT), ps) {
-#if GEN_GEN >= 9
-      ps.MaskBits = GEN_GEN >= 12 ? 0x13 : 3;
-      ps.MediaSamplerDOPClockGateEnable = GEN_GEN >= 12;
+#if GFX_VER >= 9
+      ps.MaskBits = GFX_VER >= 12 ? 0x13 : 3;
+      ps.MediaSamplerDOPClockGateEnable = GFX_VER >= 12;
 #endif
       ps.PipelineSelection = _3D;
    }
 
-#if GEN_GEN == 9
+#if GFX_VER == 9
    anv_batch_write_reg(&batch, GENX(CACHE_MODE_1), cm1) {
       cm1.FloatBlendOptimizationEnable = true;
       cm1.FloatBlendOptimizationEnableMask = true;
@@ -191,7 +192,7 @@ init_render_queue_state(struct anv_queue *queue)
       rect.DrawingRectangleOriginX = 0;
    }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
    anv_batch_emit(&batch, GENX(3DSTATE_WM_CHROMAKEY), ck);
 
    genX(emit_sample_pattern)(&batch, 0, NULL);
@@ -207,7 +208,7 @@ init_render_queue_state(struct anv_queue *queue)
    anv_batch_emit(&batch, GENX(3DSTATE_WM_HZ_OP), hzp);
 #endif
 
-#if GEN_GEN == 11
+#if GFX_VER == 11
    /* The default behavior of bit 5 "Headerless Message for Pre-emptable
     * Contexts" in SAMPLER MODE register is set to 0, which means
     * headerless sampler messages are not allowed for pre-emptable
@@ -235,7 +236,7 @@ init_render_queue_state(struct anv_queue *queue)
 #endif
    genX(emit_slice_hashing_state)(device, &batch);
 
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
    /* hardware specification recommends disabling repacking for
     * the compatibility with decompression mechanism in display controller.
     */
@@ -257,7 +258,7 @@ init_render_queue_state(struct anv_queue *queue)
    }
 #endif
 
-#if GEN_GEN == 12
+#if GFX_VER == 12
    if (device->info.has_aux_map) {
       uint64_t aux_base_addr = intel_aux_map_get_base(device->aux_map_ctx);
       assert(aux_base_addr % (32 * 1024) == 0);
@@ -277,13 +278,13 @@ init_render_queue_state(struct anv_queue *queue)
     *
     * This is only safe on kernels with context isolation support.
     */
-   if (GEN_GEN >= 8 && device->physical->has_context_isolation) {
-#if GEN_GEN >= 9
+   if (GFX_VER >= 8 && device->physical->has_context_isolation) {
+#if GFX_VER >= 9
       anv_batch_write_reg(&batch, GENX(CS_DEBUG_MODE2), csdm2) {
          csdm2.CONSTANT_BUFFERAddressOffsetDisable = true;
          csdm2.CONSTANT_BUFFERAddressOffsetDisableMask = true;
       }
-#elif GEN_GEN == 8
+#elif GFX_VER == 8
       anv_batch_write_reg(&batch, GENX(INSTPM), instpm) {
          instpm.CONSTANT_BUFFERAddressOffsetDisable = true;
          instpm.CONSTANT_BUFFERAddressOffsetDisableMask = true;
@@ -291,7 +292,7 @@ init_render_queue_state(struct anv_queue *queue)
 #endif
    }
 
-#if GEN_GEN >= 11
+#if GFX_VER >= 11
    /* Starting with GFX version 11, SLM is no longer part of the L3$ config
     * so it never changes throughout the lifetime of the VkDevice.
     */
@@ -310,7 +311,7 @@ init_render_queue_state(struct anv_queue *queue)
 void
 genX(init_physical_device_state)(ASSERTED struct anv_physical_device *device)
 {
-   assert(device->info.genx10 == GEN_VERSIONx10);
+   assert(device->info.verx10 == GFX_VERx10);
 }
 
 VkResult
@@ -342,9 +343,9 @@ genX(emit_l3_config)(struct anv_batch *batch,
 {
    UNUSED const struct gen_device_info *devinfo = &device->info;
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
 
-#if GEN_GEN >= 12
+#if GFX_VER >= 12
 #define L3_ALLOCATION_REG GENX(L3ALLOC)
 #define L3_ALLOCATION_REG_num GENX(L3ALLOC_num)
 #else
@@ -354,23 +355,23 @@ genX(emit_l3_config)(struct anv_batch *batch,
 
    anv_batch_write_reg(batch, L3_ALLOCATION_REG, l3cr) {
       if (cfg == NULL) {
-#if GEN_GEN >= 12
+#if GFX_VER >= 12
          l3cr.L3FullWayAllocationEnable = true;
 #else
          unreachable("Invalid L3$ config");
 #endif
       } else {
-#if GEN_GEN < 11
+#if GFX_VER < 11
          l3cr.SLMEnable = cfg->n[INTEL_L3P_SLM];
 #endif
-#if GEN_GEN == 11
-         /* WA_1406697149: Bit 9 "Error Detection Behavior Control" must be
+#if GFX_VER == 11
+         /* Wa_1406697149: Bit 9 "Error Detection Behavior Control" must be
           * set in L3CNTLREG register. The default setting of the bit is not
           * the desirable behavior.
           */
          l3cr.ErrorDetectionBehaviorControl = true;
          l3cr.UseFullWays = true;
-#endif /* GEN_GEN == 11 */
+#endif /* GFX_VER == 11 */
          assert(cfg->n[INTEL_L3P_IS] == 0);
          assert(cfg->n[INTEL_L3P_C] == 0);
          assert(cfg->n[INTEL_L3P_T] == 0);
@@ -381,7 +382,7 @@ genX(emit_l3_config)(struct anv_batch *batch,
       }
    }
 
-#else /* GEN_GEN < 8 */
+#else /* GFX_VER < 8 */
 
    const bool has_dc = cfg->n[INTEL_L3P_DC] || cfg->n[INTEL_L3P_ALL];
    const bool has_is = cfg->n[INTEL_L3P_IS] || cfg->n[INTEL_L3P_RO] ||
@@ -410,7 +411,7 @@ genX(emit_l3_config)(struct anv_batch *batch,
       l3sqc.ConvertIS_UC = !has_is;
       l3sqc.ConvertC_UC = !has_c;
       l3sqc.ConvertT_UC = !has_t;
-#if GEN_IS_HASWELL
+#if GFX_VERx10 == 75
       l3sqc.L3SQGeneralPriorityCreditInitialization = SQGPCI_DEFAULT;
 #else
       l3sqc.L3SQGeneralPriorityCreditInitialization =
@@ -423,7 +424,7 @@ genX(emit_l3_config)(struct anv_batch *batch,
       l3cr2.SLMEnable = cfg->n[INTEL_L3P_SLM];
       l3cr2.URBLowBandwidth = urb_low_bw;
       l3cr2.URBAllocation = cfg->n[INTEL_L3P_URB] - n0_urb;
-#if !GEN_IS_HASWELL
+#if !GFX_VERx10 == 75
       l3cr2.ALLAllocation = cfg->n[INTEL_L3P_ALL];
 #endif
       l3cr2.ROAllocation = cfg->n[INTEL_L3P_RO];
@@ -439,7 +440,7 @@ genX(emit_l3_config)(struct anv_batch *batch,
       l3cr3.TLowBandwidth = 0;
    }
 
-#if GEN_IS_HASWELL
+#if GFX_VERx10 == 75
    if (device->physical->cmd_parser_version >= 4) {
       /* Enable L3 atomics on HSW if we have a DC partition, otherwise keep
        * them disabled to avoid crashing the system hard.
@@ -452,9 +453,9 @@ genX(emit_l3_config)(struct anv_batch *batch,
          c3.L3AtomicDisable = !has_dc;
       }
    }
-#endif /* GEN_IS_HASWELL */
+#endif /* GFX_VERx10 == 75 */
 
-#endif /* GEN_GEN < 8 */
+#endif /* GFX_VER < 8 */
 }
 
 void
@@ -465,7 +466,7 @@ genX(emit_multisample)(struct anv_batch *batch, uint32_t samples,
       ms.NumberofMultisamples       = __builtin_ffs(samples) - 1;
 
       ms.PixelLocation              = CENTER;
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
       /* The PRM says that this bit is valid only for DX9:
        *
        *    SW can choose to set this bit only for DX9 API. DX10/OGL API's
@@ -513,7 +514,7 @@ genX(emit_multisample)(struct anv_batch *batch, uint32_t samples,
    }
 }
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
 void
 genX(emit_sample_pattern)(struct anv_batch *batch, uint32_t samples,
                           const VkSampleLocationEXT *locations)
@@ -554,7 +555,7 @@ genX(emit_sample_pattern)(struct anv_batch *batch, uint32_t samples,
          case 8:
             INTEL_SAMPLE_POS_8X_ARRAY(sp._8xSample, locations);
             break;
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
          case 16:
             INTEL_SAMPLE_POS_16X_ARRAY(sp._16xSample, locations);
             break;
@@ -567,7 +568,7 @@ genX(emit_sample_pattern)(struct anv_batch *batch, uint32_t samples,
          INTEL_SAMPLE_POS_2X(sp._2xSample);
          INTEL_SAMPLE_POS_4X(sp._4xSample);
          INTEL_SAMPLE_POS_8X(sp._8xSample);
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
          INTEL_SAMPLE_POS_16X(sp._16xSample);
 #endif
       }
@@ -629,7 +630,7 @@ static const uint32_t vk_to_gen_shadow_compare_op[] = {
    [VK_COMPARE_OP_ALWAYS]                       = PREFILTEROPNEVER,
 };
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
 static const uint32_t vk_to_gen_sampler_reduction_mode[] = {
    [VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE_EXT] = STD_FILTER,
    [VK_SAMPLER_REDUCTION_MODE_MIN_EXT]              = MINIMUM,
@@ -648,15 +649,14 @@ VkResult genX(CreateSampler)(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
 
-   sampler = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*sampler), 8,
-                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   sampler = vk_object_zalloc(&device->vk, pAllocator, sizeof(*sampler),
+                              VK_OBJECT_TYPE_SAMPLER);
    if (!sampler)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   vk_object_base_init(&device->vk, &sampler->base, VK_OBJECT_TYPE_SAMPLER);
    sampler->n_planes = 1;
 
-   uint32_t border_color_stride = GEN_IS_HASWELL ? 512 : 64;
+   uint32_t border_color_stride = GFX_VERx10 == 75 ? 512 : 64;
    uint32_t border_color_offset;
    ASSERTED bool has_custom_color = false;
    if (pCreateInfo->borderColor <= VK_BORDER_COLOR_INT_OPAQUE_WHITE) {
@@ -664,13 +664,13 @@ VkResult genX(CreateSampler)(
                             pCreateInfo->borderColor *
                             border_color_stride;
    } else {
-      assert(GEN_GEN >= 8);
+      assert(GFX_VER >= 8);
       sampler->custom_border_color =
          anv_state_reserved_pool_alloc(&device->custom_border_colors);
       border_color_offset = sampler->custom_border_color.offset;
    }
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
    unsigned sampler_reduction_mode = STD_FILTER;
    bool enable_sampler_reduction = false;
 #endif
@@ -695,7 +695,7 @@ VkResult genX(CreateSampler)(
          sampler->conversion = conversion;
          break;
       }
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
       case VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO: {
          VkSamplerReductionModeCreateInfo *sampler_reduction =
             (VkSamplerReductionModeCreateInfo *) ext;
@@ -710,7 +710,7 @@ VkResult genX(CreateSampler)(
             (VkSamplerCustomBorderColorCreateInfoEXT *) ext;
          if (sampler->custom_border_color.map == NULL)
             break;
-         struct gen8_border_color *cbc = sampler->custom_border_color.map;
+         struct gfx8_border_color *cbc = sampler->custom_border_color.map;
          if (custom_border_color->format == VK_FORMAT_B4G4R4A4_UNORM_PACK16) {
             /* B4G4R4A4_UNORM_PACK16 is treated as R4G4B4A4_UNORM_PACK16 with
              * a swizzle, but this does not carry over to the sampler for
@@ -771,13 +771,13 @@ VkResult genX(CreateSampler)(
          .SamplerDisable = false,
          .TextureBorderColorMode = DX10OGL,
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
          .LODPreClampMode = CLAMP_MODE_OGL,
 #else
          .LODPreClampEnable = CLAMP_ENABLE_OGL,
 #endif
 
-#if GEN_GEN == 8
+#if GFX_VER == 8
          .BaseMipLevel = 0.0,
 #endif
          .MipModeFilter = mip_filter_mode,
@@ -798,7 +798,7 @@ VkResult genX(CreateSampler)(
 
          .BorderColorPointer = border_color_offset,
 
-#if GEN_GEN >= 8
+#if GFX_VER >= 8
          .LODClampMagnificationMode = MIPNONE,
 #endif
 
@@ -815,7 +815,7 @@ VkResult genX(CreateSampler)(
          .TCYAddressControlMode = vk_to_gen_tex_address[pCreateInfo->addressModeV],
          .TCZAddressControlMode = vk_to_gen_tex_address[pCreateInfo->addressModeW],
 
-#if GEN_GEN >= 9
+#if GFX_VER >= 9
          .ReductionType = sampler_reduction_mode,
          .ReductionTypeEnable = enable_sampler_reduction,
 #endif

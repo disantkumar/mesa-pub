@@ -233,6 +233,14 @@ setup_stages(struct fd5_emit *emit, struct stage *s)
 	s[HS].instroff = s[DS].instroff = s[GS].instroff = s[FS].instroff;
 }
 
+static inline uint32_t
+next_regid(uint32_t reg, uint32_t increment)
+{
+	if (VALIDREG(reg))
+		return reg + increment;
+	else
+		return regid(63,0);
+}
 void
 fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 				 struct fd5_emit *emit)
@@ -240,17 +248,23 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	struct stage s[MAX_STAGES];
 	uint32_t pos_regid, psize_regid, color_regid[8];
 	uint32_t face_regid, coord_regid, zwcoord_regid, samp_id_regid, samp_mask_regid;
-	uint32_t ij_regid[IJ_COUNT], vertex_regid, instance_regid;
+	uint32_t ij_regid[IJ_COUNT], vertex_regid, instance_regid, clip0_regid, clip1_regid;
 	enum a3xx_threadsize fssz;
 	uint8_t psize_loc = ~0;
 	int i, j;
 
 	setup_stages(emit, s);
 
-	fssz = (s[FS].i->max_reg >= 24) ? TWO_QUADS : FOUR_QUADS;
+	bool do_streamout = (s[VS].v->shader->stream_output.num_outputs > 0);
+	uint8_t clip_mask = s[VS].v->clip_mask, cull_mask = s[VS].v->cull_mask;
+	uint8_t clip_cull_mask = clip_mask | cull_mask;
+
+	fssz = (s[FS].i->double_threadsize) ? FOUR_QUADS : TWO_QUADS;
 
 	pos_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_POS);
 	psize_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_PSIZ);
+	clip0_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_CLIP_DIST0);
+	clip1_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_CLIP_DIST1);
 	vertex_regid = ir3_find_sysval_regid(s[VS].v, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE);
 	instance_regid = ir3_find_sysval_regid(s[VS].v, SYSTEM_VALUE_INSTANCE_ID);
 
@@ -273,7 +287,7 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	samp_mask_regid = ir3_find_sysval_regid(s[FS].v, SYSTEM_VALUE_SAMPLE_MASK_IN);
 	face_regid      = ir3_find_sysval_regid(s[FS].v, SYSTEM_VALUE_FRONT_FACE);
 	coord_regid     = ir3_find_sysval_regid(s[FS].v, SYSTEM_VALUE_FRAG_COORD);
-	zwcoord_regid   = (coord_regid == regid(63,0)) ? regid(63,0) : (coord_regid + 2);
+	zwcoord_regid   = next_regid(coord_regid, 2);
 	for (unsigned i = 0; i < ARRAY_SIZE(ij_regid); i++)
 		ij_regid[i] = ir3_find_sysval_regid(s[FS].v, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL + i);
 
@@ -364,8 +378,20 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			A5XX_SP_VS_CTRL_REG0_BRANCHSTACK(s[VS].v->branchstack) |
 			COND(s[VS].v->need_pixlod, A5XX_SP_VS_CTRL_REG0_PIXLODENABLE));
 
+	/* If we have streamout, link against the real FS in the binning program,
+	 * rather than the dummy FS used for binning pass state, to ensure the
+	 * OUTLOC's match.  Depending on whether we end up doing sysmem or gmem, the
+	 * actual streamout could happen with either the binning pass or draw pass
+	 * program, but the same streamout stateobj is used in either case:
+	 */
+	const struct ir3_shader_variant *link_fs = s[FS].v;
+	if (do_streamout && emit->binning_pass)
+		link_fs = emit->prog->fs;
 	struct ir3_shader_linkage l = {0};
-	ir3_link_shaders(&l, s[VS].v, s[FS].v, true);
+	ir3_link_shaders(&l, s[VS].v, link_fs, true);
+
+	uint8_t clip0_loc = l.clip0_loc;
+	uint8_t clip1_loc = l.clip1_loc;
 
 	OUT_PKT4(ring, REG_A5XX_VPC_VAR_DISABLE(0), 4);
 	OUT_RING(ring, ~l.varmask[0]);  /* VPC_VAR[0].DISABLE */
@@ -373,28 +399,40 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	OUT_RING(ring, ~l.varmask[2]);  /* VPC_VAR[2].DISABLE */
 	OUT_RING(ring, ~l.varmask[3]);  /* VPC_VAR[3].DISABLE */
 
-	if (!emit->binning_pass)
-		ir3_link_stream_out(&l, s[VS].v);
+	/* Add stream out outputs after computing the VPC_VAR_DISABLE bitmask. */
+	ir3_link_stream_out(&l, s[VS].v);
 
 	/* a5xx appends pos/psize to end of the linkage map: */
-	if (pos_regid != regid(63,0))
+	if (VALIDREG(pos_regid))
 		ir3_link_add(&l, pos_regid, 0xf, l.max_loc);
 
-	if (psize_regid != regid(63,0)) {
+	if (VALIDREG(psize_regid)) {
 		psize_loc = l.max_loc;
 		ir3_link_add(&l, psize_regid, 0x1, l.max_loc);
 	}
 
-	if ((s[VS].v->shader->stream_output.num_outputs > 0) &&
-			!emit->binning_pass) {
-		emit_stream_out(ring, s[VS].v, &l);
-
-		OUT_PKT4(ring, REG_A5XX_VPC_SO_OVERRIDE, 1);
-		OUT_RING(ring, 0x00000000);
-	} else {
-		OUT_PKT4(ring, REG_A5XX_VPC_SO_OVERRIDE, 1);
-		OUT_RING(ring, A5XX_VPC_SO_OVERRIDE_SO_DISABLE);
+	/* Handle the case where clip/cull distances aren't read by the FS. Make
+	 * sure to avoid adding an output with an empty writemask if the user
+	 * disables all the clip distances in the API so that the slot is unused.
+	 */
+	if (clip0_loc == 0xff && VALIDREG(clip0_regid) && (clip_cull_mask & 0xf) != 0) {
+		clip0_loc = l.max_loc;
+		ir3_link_add(&l, clip0_regid, clip_cull_mask & 0xf, l.max_loc);
 	}
+
+	if (clip1_loc == 0xff && VALIDREG(clip1_regid) && (clip_cull_mask >> 4) != 0) {
+		clip1_loc = l.max_loc;
+		ir3_link_add(&l, clip1_regid, clip_cull_mask >> 4, l.max_loc);
+	}
+
+	/* If we have stream-out, we use the full shader for binning
+	 * pass, rather than the optimized binning pass one, so that we
+	 * have all the varying outputs available for xfb.  So streamout
+	 * state should always be derived from the non-binning pass
+	 * program:
+	 */
+	if (do_streamout && !emit->binning_pass)
+		emit_stream_out(ring, s[VS].v, &l);
 
 	for (i = 0, j = 0; (i < 16) && (j < l.cnt); i++) {
 		uint32_t reg = 0;
@@ -515,11 +553,9 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			COND(s[FS].v->frag_face, A5XX_RB_RENDER_CONTROL0_SIZE) |
 			CONDREG(ij_regid[IJ_LINEAR_PIXEL], A5XX_RB_RENDER_CONTROL0_SIZE));
 	OUT_RING(ring,
-			COND(samp_mask_regid != regid(63, 0),
-				A5XX_RB_RENDER_CONTROL1_SAMPLEMASK) |
+			CONDREG(samp_mask_regid, A5XX_RB_RENDER_CONTROL1_SAMPLEMASK) |
 			COND(s[FS].v->frag_face, A5XX_RB_RENDER_CONTROL1_FACENESS) |
-			COND(samp_id_regid != regid(63, 0),
-				A5XX_RB_RENDER_CONTROL1_SAMPLEID));
+			CONDREG(samp_id_regid, A5XX_RB_RENDER_CONTROL1_SAMPLEID));
 
 	OUT_PKT4(ring, REG_A5XX_SP_FS_OUTPUT_REG(0), 8);
 	for (i = 0; i < 8; i++) {
@@ -615,6 +651,18 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			OUT_RING(ring, vpsrepl[i]);   /* VPC_VARYING_PS_REPL[i] */
 	}
 
+	OUT_PKT4(ring, REG_A5XX_GRAS_VS_CL_CNTL, 1);
+	OUT_RING(ring, A5XX_GRAS_VS_CL_CNTL_CLIP_MASK(clip_mask) |
+				   A5XX_GRAS_VS_CL_CNTL_CULL_MASK(cull_mask));
+
+	OUT_PKT4(ring, REG_A5XX_VPC_CLIP_CNTL, 1);
+	OUT_RING(ring, A5XX_VPC_CLIP_CNTL_CLIP_MASK(clip_cull_mask) |
+				   A5XX_VPC_CLIP_CNTL_CLIP_DIST_03_LOC(clip0_loc) |
+				   A5XX_VPC_CLIP_CNTL_CLIP_DIST_47_LOC(clip1_loc));
+
+	OUT_PKT4(ring, REG_A5XX_PC_CLIP_CNTL, 1);
+	OUT_RING(ring, A5XX_PC_CLIP_CNTL_CLIP_MASK(clip_mask));
+
 	if (!emit->binning_pass)
 		if (s[FS].instrlen)
 			fd5_emit_shader(ring, s[FS].v);
@@ -629,9 +677,46 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	OUT_RING(ring, 0x00000000);   /* VFD_CONTROL_5 */
 }
 
+static struct ir3_program_state *
+fd5_program_create(void *data, struct ir3_shader_variant *bs,
+		struct ir3_shader_variant *vs,
+		struct ir3_shader_variant *hs,
+		struct ir3_shader_variant *ds,
+		struct ir3_shader_variant *gs,
+		struct ir3_shader_variant *fs,
+		const struct ir3_shader_key *key)
+	in_dt
+{
+	struct fd_context *ctx = fd_context(data);
+	struct fd5_program_state *state = CALLOC_STRUCT(fd5_program_state);
+
+	tc_assert_driver_thread(ctx->tc);
+
+	state->bs = bs;
+	state->vs = vs;
+	state->fs = fs;
+
+	return &state->base;
+}
+
+static void
+fd5_program_destroy(void *data, struct ir3_program_state *state)
+{
+	struct fd5_program_state *so = fd5_program_state(state);
+	free(so);
+}
+
+static const struct ir3_cache_funcs cache_funcs = {
+	.create_state = fd5_program_create,
+	.destroy_state = fd5_program_destroy,
+};
+
 void
 fd5_prog_init(struct pipe_context *pctx)
 {
+	struct fd_context *ctx = fd_context(pctx);
+
+	ctx->shader_cache = ir3_cache_create(&cache_funcs, ctx);
 	ir3_prog_init(pctx);
 	fd_prog_init(pctx);
 }

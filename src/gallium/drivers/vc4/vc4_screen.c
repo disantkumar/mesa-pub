@@ -105,7 +105,8 @@ vc4_screen_destroy(struct pipe_screen *pscreen)
         _mesa_hash_table_destroy(screen->bo_handles, NULL);
         vc4_bufmgr_destroy(pscreen);
         slab_destroy_parent(&screen->transfer_pool);
-        screen->ro->destroy(screen->ro);
+        if (screen->ro)
+                screen->ro->destroy(screen->ro);
 
 #ifdef USE_VC4_SIMULATOR
         vc4_simulator_destroy(screen);
@@ -283,6 +284,7 @@ vc4_screen_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_INT64_ATOMICS:
         case PIPE_SHADER_CAP_FP16:
         case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+        case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
         case PIPE_SHADER_CAP_INT16:
         case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
         case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:

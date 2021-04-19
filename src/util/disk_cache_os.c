@@ -57,6 +57,7 @@ struct cache_entry_file_data {
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "util/blob.h"
 #include "util/crc32.h"
 #include "util/debug.h"
 #include "util/disk_cache.h"
@@ -373,55 +374,33 @@ disk_cache_evict_item(struct disk_cache *cache, char *filename)
       p_atomic_add(cache->size, - (uint64_t)sb.st_blocks * 512);
 }
 
-void *
-disk_cache_load_item(struct disk_cache *cache, char *filename, size_t *size)
+static void *
+parse_and_validate_cache_item(struct disk_cache *cache, void *cache_item,
+                              size_t cache_item_size, size_t *size)
 {
-   int fd = -1, ret;
-   struct stat sb;
-   uint8_t *data = NULL;
    uint8_t *uncompressed_data = NULL;
-   uint8_t *file_header = NULL;
 
-   fd = open(filename, O_RDONLY | O_CLOEXEC);
-   if (fd == -1)
-      goto fail;
+   struct blob_reader ci_blob_reader;
+   blob_reader_init(&ci_blob_reader, cache_item, cache_item_size);
 
-   if (fstat(fd, &sb) == -1)
-      goto fail;
-
-   data = malloc(sb.st_size);
-   if (data == NULL)
-      goto fail;
-
-   size_t ck_size = cache->driver_keys_blob_size;
-   file_header = malloc(ck_size);
-   if (!file_header)
-      goto fail;
-
-   if (sb.st_size < ck_size)
-      goto fail;
-
-   ret = read_all(fd, file_header, ck_size);
-   if (ret == -1)
+   size_t header_size = cache->driver_keys_blob_size;
+   const void *keys_blob = blob_read_bytes(&ci_blob_reader, header_size);
+   if (ci_blob_reader.overrun)
       goto fail;
 
    /* Check for extremely unlikely hash collisions */
-   if (memcmp(cache->driver_keys_blob, file_header, ck_size) != 0) {
+   if (memcmp(cache->driver_keys_blob, keys_blob, header_size) != 0) {
       assert(!"Mesa cache keys mismatch!");
       goto fail;
    }
 
-   size_t cache_item_md_size = sizeof(uint32_t);
-   uint32_t md_type;
-   ret = read_all(fd, &md_type, cache_item_md_size);
-   if (ret == -1)
+   uint32_t md_type = blob_read_uint32(&ci_blob_reader);
+   if (ci_blob_reader.overrun)
       goto fail;
 
    if (md_type == CACHE_ITEM_TYPE_GLSL) {
-      uint32_t num_keys;
-      cache_item_md_size += sizeof(uint32_t);
-      ret = read_all(fd, &num_keys, sizeof(uint32_t));
-      if (ret == -1)
+      uint32_t num_keys = blob_read_uint32(&ci_blob_reader);
+      if (ci_blob_reader.overrun)
          goto fail;
 
       /* The cache item metadata is currently just used for distributing
@@ -430,43 +409,74 @@ disk_cache_load_item(struct disk_cache *cache, char *filename, size_t *size)
        * TODO: pass the metadata back to the caller and do some basic
        * validation.
        */
-      cache_item_md_size += num_keys * sizeof(cache_key);
-      ret = lseek(fd, num_keys * sizeof(cache_key), SEEK_CUR);
-      if (ret == -1)
+      const void UNUSED *metadata =
+         blob_read_bytes(&ci_blob_reader, num_keys * sizeof(cache_key));
+      if (ci_blob_reader.overrun)
          goto fail;
    }
 
    /* Load the CRC that was created when the file was written. */
-   struct cache_entry_file_data cf_data;
-   size_t cf_data_size = sizeof(cf_data);
-   ret = read_all(fd, &cf_data, cf_data_size);
-   if (ret == -1)
+   struct cache_entry_file_data *cf_data =
+      (struct cache_entry_file_data *)
+         blob_read_bytes(&ci_blob_reader, sizeof(struct cache_entry_file_data));
+   if (ci_blob_reader.overrun)
       goto fail;
 
-   /* Load the actual cache data. */
-   size_t cache_data_size =
-      sb.st_size - cf_data_size - ck_size - cache_item_md_size;
-   ret = read_all(fd, data, cache_data_size);
-   if (ret == -1)
-      goto fail;
+   size_t cache_data_size = ci_blob_reader.end - ci_blob_reader.current;
+   const uint8_t *data = (uint8_t *) blob_read_bytes(&ci_blob_reader, cache_data_size);
 
    /* Check the data for corruption */
-   if (cf_data.crc32 != util_hash_crc32(data, cache_data_size))
+   if (cf_data->crc32 != util_hash_crc32(data, cache_data_size))
       goto fail;
 
    /* Uncompress the cache data */
-   uncompressed_data = malloc(cf_data.uncompressed_size);
+   uncompressed_data = malloc(cf_data->uncompressed_size);
    if (!util_compress_inflate(data, cache_data_size, uncompressed_data,
-                              cf_data.uncompressed_size))
+                              cf_data->uncompressed_size))
+      goto fail;
+
+   if (size)
+      *size = cf_data->uncompressed_size;
+
+   return uncompressed_data;
+
+ fail:
+   if (uncompressed_data)
+      free(uncompressed_data);
+
+   return NULL;
+}
+
+void *
+disk_cache_load_item(struct disk_cache *cache, char *filename, size_t *size)
+{
+   uint8_t *data = NULL;
+
+   int fd = open(filename, O_RDONLY | O_CLOEXEC);
+   if (fd == -1)
+      goto fail;
+
+   struct stat sb;
+   if (fstat(fd, &sb) == -1)
+      goto fail;
+
+   data = malloc(sb.st_size);
+   if (data == NULL)
+      goto fail;
+
+   /* Read entire file into memory */
+   int ret = read_all(fd, data, sb.st_size);
+   if (ret == -1)
+      goto fail;
+
+    uint8_t *uncompressed_data =
+       parse_and_validate_cache_item(cache, data, sb.st_size, size);
+   if (!uncompressed_data)
       goto fail;
 
    free(data);
    free(filename);
-   free(file_header);
    close(fd);
-
-   if (size)
-      *size = cf_data.uncompressed_size;
 
    return uncompressed_data;
 
@@ -475,10 +485,6 @@ disk_cache_load_item(struct disk_cache *cache, char *filename, size_t *size)
       free(data);
    if (filename)
       free(filename);
-   if (uncompressed_data)
-      free(uncompressed_data);
-   if (file_header)
-      free(file_header);
    if (fd != -1)
       close(fd);
 
@@ -506,12 +512,78 @@ disk_cache_get_cache_filename(struct disk_cache *cache, const cache_key key)
    return filename;
 }
 
+static bool
+create_cache_item_header_and_blob(struct disk_cache_put_job *dc_job,
+                                  struct blob *cache_blob)
+{
+
+   /* Compress the cache item data */
+   size_t max_buf = util_compress_max_compressed_len(dc_job->size);
+   void *compressed_data = malloc(max_buf);
+   if (compressed_data == NULL)
+      return false;
+
+   size_t compressed_size =
+      util_compress_deflate(dc_job->data, dc_job->size,
+                            compressed_data, max_buf);
+   if (compressed_size == 0)
+      goto fail;
+
+   /* Copy the driver_keys_blob, this can be used find information about the
+    * mesa version that produced the entry or deal with hash collisions,
+    * should that ever become a real problem.
+    */
+   if (!blob_write_bytes(cache_blob, dc_job->cache->driver_keys_blob,
+                         dc_job->cache->driver_keys_blob_size))
+      goto fail;
+
+   /* Write the cache item metadata. This data can be used to deal with
+    * hash collisions, as well as providing useful information to 3rd party
+    * tools reading the cache files.
+    */
+   if (!blob_write_uint32(cache_blob, dc_job->cache_item_metadata.type))
+      goto fail;
+
+   if (dc_job->cache_item_metadata.type == CACHE_ITEM_TYPE_GLSL) {
+      if (!blob_write_uint32(cache_blob, dc_job->cache_item_metadata.num_keys))
+         goto fail;
+
+      size_t metadata_keys_size =
+         dc_job->cache_item_metadata.num_keys * sizeof(cache_key);
+      if (!blob_write_bytes(cache_blob, dc_job->cache_item_metadata.keys[0],
+                            metadata_keys_size))
+         goto fail;
+   }
+
+   /* Create CRC of the compressed data. We will read this when restoring the
+    * cache and use it to check for corruption.
+    */
+   struct cache_entry_file_data cf_data;
+   cf_data.crc32 = util_hash_crc32(compressed_data, compressed_size);
+   cf_data.uncompressed_size = dc_job->size;
+
+   if (!blob_write_bytes(cache_blob, &cf_data, sizeof(cf_data)))
+      goto fail;
+
+   /* Finally copy the compressed cache blob */
+   if (!blob_write_bytes(cache_blob, compressed_data, compressed_size))
+      goto fail;
+
+   free(compressed_data);
+   return true;
+
+ fail:
+   free(compressed_data);
+   return false;
+}
+
 void
 disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
                               char *filename)
 {
    int fd = -1, fd_final = -1;
-   void *compressed_data = NULL;
+   struct blob cache_blob;
+   blob_init(&cache_blob);
 
    /* Write to a temporary file to allow for an atomic rename to the
     * final destination filename, (to prevent any readers from seeing
@@ -570,81 +642,16 @@ disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
     * not in the cache, and is also not being written out to the cache
     * by some other process.
     */
-
-   /* Write the driver_keys_blob, this can be used find information about the
-    * mesa version that produced the entry or deal with hash collisions,
-    * should that ever become a real problem.
-    */
-   int ret = write_all(fd, dc_job->cache->driver_keys_blob,
-                       dc_job->cache->driver_keys_blob_size);
-   if (ret == -1) {
+   if (!create_cache_item_header_and_blob(dc_job, &cache_blob)) {
       unlink(filename_tmp);
       goto done;
    }
-
-   /* Write the cache item metadata. This data can be used to deal with
-    * hash collisions, as well as providing useful information to 3rd party
-    * tools reading the cache files.
-    */
-   ret = write_all(fd, &dc_job->cache_item_metadata.type,
-                   sizeof(uint32_t));
-   if (ret == -1) {
-      unlink(filename_tmp);
-      goto done;
-   }
-
-   if (dc_job->cache_item_metadata.type == CACHE_ITEM_TYPE_GLSL) {
-      ret = write_all(fd, &dc_job->cache_item_metadata.num_keys,
-                      sizeof(uint32_t));
-      if (ret == -1) {
-         unlink(filename_tmp);
-         goto done;
-      }
-
-      ret = write_all(fd, dc_job->cache_item_metadata.keys[0],
-                      dc_job->cache_item_metadata.num_keys *
-                      sizeof(cache_key));
-      if (ret == -1) {
-         unlink(filename_tmp);
-         goto done;
-      }
-   }
-
-   /* Compress the cache item data */
-   size_t max_buf = util_compress_max_compressed_len(dc_job->size);
-   compressed_data = malloc(max_buf);
-   if (compressed_data == NULL) {
-      unlink(filename_tmp);
-      goto done;
-   }
-
-   size_t compressed_size =
-      util_compress_deflate(dc_job->data, dc_job->size,
-                            compressed_data, max_buf);
-   if (compressed_size == 0) {
-      unlink(filename_tmp);
-      goto done;
-   }
-
-   /* Create CRC of the compressed data. We will read this when restoring the
-    * cache and use it to check for corruption.
-    */
-   struct cache_entry_file_data cf_data;
-   cf_data.crc32 = util_hash_crc32(compressed_data, compressed_size);
-   cf_data.uncompressed_size = dc_job->size;
 
    /* Now, finally, write out the contents to the temporary file, then
     * rename them atomically to the destination filename, and also
     * perform an atomic increment of the total cache size.
     */
-   size_t cf_data_size = sizeof(cf_data);
-   ret = write_all(fd, &cf_data, cf_data_size);
-   if (ret == -1) {
-      unlink(filename_tmp);
-      goto done;
-   }
-
-   ret = write_all(fd, compressed_data, compressed_size);
+   int ret = write_all(fd, cache_blob.data, cache_blob.size);
    if (ret == -1) {
       unlink(filename_tmp);
       goto done;
@@ -674,7 +681,7 @@ disk_cache_write_item_to_disk(struct disk_cache_put_job *dc_job,
    if (fd != -1)
       close(fd);
    free(filename_tmp);
-   free(compressed_data);
+   blob_finish(&cache_blob);
 }
 
 /* Determine path for cache based on the first defined name as follows:
@@ -785,14 +792,32 @@ void *
 disk_cache_load_item_foz(struct disk_cache *cache, const cache_key key,
                          size_t *size)
 {
-   return foz_read_entry(&cache->foz_db, key, size);
+   size_t cache_tem_size = 0;
+   void *cache_item = foz_read_entry(&cache->foz_db, key, &cache_tem_size);
+   if (!cache_item)
+      return NULL;
+
+   uint8_t *uncompressed_data =
+       parse_and_validate_cache_item(cache, cache_item, cache_tem_size, size);
+   free(cache_item);
+
+   return uncompressed_data;
 }
 
 bool
 disk_cache_write_item_to_disk_foz(struct disk_cache_put_job *dc_job)
 {
-   return foz_write_entry(&dc_job->cache->foz_db, dc_job->key, dc_job->data,
-                          dc_job->size);
+   struct blob cache_blob;
+   blob_init(&cache_blob);
+
+   if (!create_cache_item_header_and_blob(dc_job, &cache_blob))
+      return false;
+
+   bool r = foz_write_entry(&dc_job->cache->foz_db, dc_job->key,
+                            cache_blob.data, cache_blob.size);
+
+   blob_finish(&cache_blob);
+   return r;
 }
 
 bool

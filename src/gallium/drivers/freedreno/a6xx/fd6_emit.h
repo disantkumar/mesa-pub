@@ -60,13 +60,14 @@ enum fd6_state_id {
 	FD6_GROUP_DS_TEX,
 	FD6_GROUP_GS_TEX,
 	FD6_GROUP_FS_TEX,
-	FD6_GROUP_IBO,
 	FD6_GROUP_RASTERIZER,
 	FD6_GROUP_ZSA,
 	FD6_GROUP_BLEND,
 	FD6_GROUP_SCISSOR,
 	FD6_GROUP_BLEND_COLOR,
 	FD6_GROUP_SO,
+	FD6_GROUP_IBO,
+	FD6_GROUP_NON_GROUP,  /* placeholder group for state emit in IB2, keep last */
 };
 
 #define ENABLE_ALL (CP_SET_DRAW_STATE__0_BINNING | CP_SET_DRAW_STATE__0_GMEM | CP_SET_DRAW_STATE__0_SYSMEM)
@@ -90,6 +91,7 @@ struct fd6_emit {
 	const struct pipe_draw_start_count *draw;
 	struct ir3_cache_key key;
 	enum fd_dirty_3d_state dirty;
+	uint32_t dirty_groups;
 
 	uint32_t sprite_coord_enable;  /* bitmask */
 	bool sprite_coord_mode;
@@ -116,9 +118,8 @@ static inline const struct fd6_program_state *
 fd6_emit_get_prog(struct fd6_emit *emit)
 {
 	if (!emit->prog) {
-		struct fd6_context *fd6_ctx = fd6_context(emit->ctx);
 		struct ir3_program_state *s =
-				ir3_cache_lookup(fd6_ctx->shader_cache, &emit->key, &emit->ctx->debug);
+				ir3_cache_lookup(emit->ctx->shader_cache, &emit->key, &emit->ctx->debug);
 		emit->prog = fd6_program_state(s);
 	}
 	return emit->prog;

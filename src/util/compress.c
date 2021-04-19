@@ -21,15 +21,25 @@
  * IN THE SOFTWARE.
  */
 
+#ifdef HAVE_COMPRESSION
+
 #include <assert.h>
 
+/* Ensure that zlib uses 'const' in 'z_const' declarations. */
+#ifndef ZLIB_CONST
+#define ZLIB_CONST
+#endif
+
+#ifdef HAVE_ZLIB
 #include "zlib.h"
+#endif
 
 #ifdef HAVE_ZSTD
 #include "zstd.h"
 #endif
 
 #include "util/compress.h"
+#include "macros.h"
 
 /* 3 is the recomended level, with 22 as the absolute maximum */
 #define ZSTD_COMPRESSION_LEVEL 3
@@ -42,7 +52,7 @@ util_compress_max_compressed_len(size_t in_data_size)
     * compression runs faster if `dstCapacity` >= `ZSTD_compressBound(srcSize)`.
     */
    return ZSTD_compressBound(in_data_size);
-#else
+#elif defined(HAVE_ZLIB)
    /* From https://zlib.net/zlib_tech.html:
     *
     *    "In the worst possible case, where the other block types would expand
@@ -53,13 +63,15 @@ util_compress_max_compressed_len(size_t in_data_size)
     *    entire stream."
     */
    size_t num_blocks = (in_data_size + 16383) / 16384; /* round up blocks */
-   return in_data_size + 6 + (num_blocks * 5);        
+   return in_data_size + 6 + (num_blocks * 5);
+#else
+   STATIC_ASSERT(false);
 #endif
 }
 
 /* Compress data and return the size of the compressed data */
 size_t
-util_compress_deflate(uint8_t *in_data, size_t in_data_size,
+util_compress_deflate(const uint8_t *in_data, size_t in_data_size,
                       uint8_t *out_data, size_t out_buff_size)
 {
 #ifdef HAVE_ZSTD
@@ -69,7 +81,7 @@ util_compress_deflate(uint8_t *in_data, size_t in_data_size,
       return 0;
 
    return ret;
-#else
+#elif defined(HAVE_ZLIB)
    size_t compressed_size = 0;
 
    /* allocate deflate state */
@@ -100,6 +112,8 @@ util_compress_deflate(uint8_t *in_data, size_t in_data_size,
    /* clean up and return */
    (void) deflateEnd(&strm);
    return compressed_size;
+#else
+   STATIC_ASSERT(false);
 # endif
 }
 
@@ -107,13 +121,13 @@ util_compress_deflate(uint8_t *in_data, size_t in_data_size,
  * Decompresses data, returns true if successful.
  */
 bool
-util_compress_inflate(uint8_t *in_data, size_t in_data_size,
+util_compress_inflate(const uint8_t *in_data, size_t in_data_size,
                       uint8_t *out_data, size_t out_data_size)
 {
 #ifdef HAVE_ZSTD
    size_t ret = ZSTD_decompress(out_data, out_data_size, in_data, in_data_size);
    return !ZSTD_isError(ret);
-#else
+#elif defined(HAVE_ZLIB)
    z_stream strm;
 
    /* allocate inflate state */
@@ -144,5 +158,9 @@ util_compress_inflate(uint8_t *in_data, size_t in_data_size,
    /* clean up and return */
    (void)inflateEnd(&strm);
    return true;
+#else
+   STATIC_ASSERT(false);
 #endif
 }
+
+#endif

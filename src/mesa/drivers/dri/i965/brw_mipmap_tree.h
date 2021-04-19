@@ -134,7 +134,7 @@ struct brw_mipmap_level
  * Miptree aux buffer. These buffers are associated with a miptree, but the
  * format is managed by the hardware.
  *
- * For Gen7+, we always give the hardware the start of the buffer, and let it
+ * For Gfx7+, we always give the hardware the start of the buffer, and let it
  * handle all accesses to the buffer. Therefore we don't need the full miptree
  * layout structure for this buffer.
  */
@@ -607,14 +607,14 @@ enum isl_aux_usage
 brw_miptree_texture_aux_usage(struct brw_context *brw,
                                 struct brw_mipmap_tree *mt,
                                 enum isl_format view_format,
-                                enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits);
+                                enum gfx9_astc5x5_wa_tex_type astc5x5_wa_bits);
 void
 brw_miptree_prepare_texture(struct brw_context *brw,
                               struct brw_mipmap_tree *mt,
                               enum isl_format view_format,
                               uint32_t start_level, uint32_t num_levels,
                               uint32_t start_layer, uint32_t num_layers,
-                              enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits);
+                              enum gfx9_astc5x5_wa_tex_type astc5x5_wa_bits);
 void
 brw_miptree_prepare_image(struct brw_context *brw,
                             struct brw_mipmap_tree *mt);
@@ -720,7 +720,7 @@ brw_miptree_needs_fake_etc(struct brw_context *brw,
    bool is_etc = _mesa_is_format_etc2(mt->format) ||
                  (mt->format == MESA_FORMAT_ETC1_RGB8);
 
-   return devinfo->gen < 8 && !devinfo->is_baytrail && is_etc;
+   return devinfo->ver < 8 && !devinfo->is_baytrail && is_etc;
 }
 
 static inline bool

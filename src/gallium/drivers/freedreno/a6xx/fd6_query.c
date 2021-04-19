@@ -300,21 +300,23 @@ log_counters(struct fd6_primitives_sample *ps)
 	};
 
 	printf("  counter\t\tstart\t\t\tstop\t\t\tdiff\n");
-	for (int i = 0; i < counter_count; i++) {
-		printf("  RBBM_PRIMCTR_%d\t0x%016llx\t0x%016llx\t%lld\t%s\n",
-				i + (counter_base - REG_A6XX_RBBM_PRIMCTR_0_LO) / 2,
-				ps->prim_start[i], ps->prim_stop[i], ps->prim_stop[i] - ps->prim_start[i], labels[i]);
+	for (int i = 0; i < ARRAY_SIZE(labels); i++) {
+		int register_idx = i + (counter_base - REG_A6XX_RBBM_PRIMCTR_0_LO) / 2;
+		printf("  RBBM_PRIMCTR_%d\t0x%016"PRIx64"\t0x%016"PRIx64"\t%"PRIi64"\t%s\n",
+				register_idx,
+				ps->prim_start[i], ps->prim_stop[i], ps->prim_stop[i] - ps->prim_start[i],
+				labels[register_idx]);
 	}
 
 	printf("  so counts\n");
 	for (int i = 0; i < ARRAY_SIZE(ps->start); i++) {
-		printf("  CHANNEL %d emitted\t0x%016llx\t0x%016llx\t%lld\n",
+		printf("  CHANNEL %d emitted\t0x%016"PRIx64"\t0x%016"PRIx64"\t%"PRIi64"\n",
 				i, ps->start[i].generated, ps->stop[i].generated, ps->stop[i].generated - ps->start[i].generated);
-		printf("  CHANNEL %d generated\t0x%016llx\t0x%016llx\t%lld\n",
+		printf("  CHANNEL %d generated\t0x%016"PRIx64"\t0x%016"PRIx64"\t%"PRIi64"\n",
 				i, ps->start[i].emitted, ps->stop[i].emitted, ps->stop[i].emitted - ps->start[i].emitted);
 	}
 
-	printf("generated %lld, emitted %lld\n", ps->result.generated, ps->result.emitted);
+	printf("generated %"PRIu64", emitted %"PRIu64"\n", ps->result.generated, ps->result.emitted);
 }
 
 #else
@@ -339,7 +341,7 @@ primitives_generated_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 
 	OUT_PKT7(ring, CP_REG_TO_MEM, 3);
 	OUT_RING(ring, CP_REG_TO_MEM_0_64B |
-			CP_REG_TO_MEM_0_CNT(counter_count) |
+			CP_REG_TO_MEM_0_CNT(counter_count * 2) |
 			CP_REG_TO_MEM_0_REG(counter_base));
 	primitives_relocw(ring, aq, prim_start);
 
@@ -357,7 +359,7 @@ primitives_generated_pause(struct fd_acc_query *aq, struct fd_batch *batch)
 	/* snapshot the end values: */
 	OUT_PKT7(ring, CP_REG_TO_MEM, 3);
 	OUT_RING(ring, CP_REG_TO_MEM_0_64B |
-			CP_REG_TO_MEM_0_CNT(counter_count) |
+			CP_REG_TO_MEM_0_CNT(counter_count * 2) |
 			CP_REG_TO_MEM_0_REG(counter_base));
 	primitives_relocw(ring, aq, prim_stop);
 

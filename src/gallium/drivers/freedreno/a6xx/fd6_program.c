@@ -332,7 +332,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
 	bool sample_shading = fs->per_samp | key->sample_shading;
 
-	fssz = THREAD128;
+	fssz = fs->info.double_threadsize ? THREAD128 : THREAD64;
 
 	pos_regid = ir3_find_output_regid(vs, VARYING_SLOT_POS);
 	psize_regid = ir3_find_output_regid(vs, VARYING_SLOT_PSIZ);
@@ -709,7 +709,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 	OUT_RING(ring, 0xfc);              /* XXX */
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_FS_CNTL_0, 1);
-	OUT_RING(ring, A6XX_HLSQ_FS_CNTL_0_THREADSIZE(THREAD128) |
+	OUT_RING(ring, A6XX_HLSQ_FS_CNTL_0_THREADSIZE(fssz) |
 			       COND(enable_varyings, A6XX_HLSQ_FS_CNTL_0_VARYINGS));
 
 	OUT_PKT4(ring, REG_A6XX_SP_FS_CTRL_REG0, 1);
@@ -1094,6 +1094,11 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
 	setup_stateobj(state->stateobj, ctx, state, key, false);
 	state->interp_stateobj = create_interp_stateobj(ctx, state);
 
+	struct ir3_stream_output_info *stream_output =
+			&fd6_last_shader(state)->shader->stream_output;
+	if (stream_output->num_outputs > 0)
+		state->stream_output = stream_output;
+
 	return &state->base;
 }
 
@@ -1114,44 +1119,14 @@ static const struct ir3_cache_funcs cache_funcs = {
 	.destroy_state = fd6_program_destroy,
 };
 
-static void *
-fd6_shader_state_create(struct pipe_context *pctx, const struct pipe_shader_state *cso)
-{
-	return ir3_shader_state_create(pctx, cso);
-}
-
-static void
-fd6_shader_state_delete(struct pipe_context *pctx, void *hwcso)
-{
-	struct fd_context *ctx = fd_context(pctx);
-	ir3_cache_invalidate(fd6_context(ctx)->shader_cache, hwcso);
-	ir3_shader_state_delete(pctx, hwcso);
-}
-
 void
 fd6_prog_init(struct pipe_context *pctx)
 {
 	struct fd_context *ctx = fd_context(pctx);
 
-	fd6_context(ctx)->shader_cache = ir3_cache_create(&cache_funcs, ctx);
+	ctx->shader_cache = ir3_cache_create(&cache_funcs, ctx);
 
-	pctx->create_vs_state = fd6_shader_state_create;
-	pctx->delete_vs_state = fd6_shader_state_delete;
-
-	pctx->create_tcs_state = fd6_shader_state_create;
-	pctx->delete_tcs_state = fd6_shader_state_delete;
-
-	pctx->create_tes_state = fd6_shader_state_create;
-	pctx->delete_tes_state = fd6_shader_state_delete;
-
-	pctx->create_gs_state = fd6_shader_state_create;
-	pctx->delete_gs_state = fd6_shader_state_delete;
-
-	pctx->create_gs_state = fd6_shader_state_create;
-	pctx->delete_gs_state = fd6_shader_state_delete;
-
-	pctx->create_fs_state = fd6_shader_state_create;
-	pctx->delete_fs_state = fd6_shader_state_delete;
+	ir3_prog_init(pctx);
 
 	fd_prog_init(pctx);
 }

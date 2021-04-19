@@ -115,13 +115,16 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
 	struct ir3_kernel *ir3_kernel = to_ir3_kernel(kernel);
 	struct ir3_shader_variant *v = ir3_kernel->v;
 	const struct ir3_info *i = &v->info;
-	enum a6xx_threadsize thrsz = THREAD128;
+	enum a6xx_threadsize thrsz = i->double_threadsize ? THREAD128 : THREAD64;
 
 	OUT_PKT4(ring, REG_A6XX_SP_MODE_CONTROL, 1);
 	OUT_RING(ring, A6XX_SP_MODE_CONTROL_CONSTANT_DEMOTION_ENABLE | 4);
 
 	OUT_PKT4(ring, REG_A6XX_SP_PERFCTR_ENABLE, 1);
 	OUT_RING(ring, A6XX_SP_PERFCTR_ENABLE_CS);
+
+	OUT_PKT4(ring, REG_A6XX_SP_FLOAT_CNTL, 1);
+	OUT_RING(ring, 0);
 
 	OUT_PKT4(ring, REG_A6XX_HLSQ_INVALIDATE_CMD, 1);
 	OUT_RING(ring, A6XX_HLSQ_INVALIDATE_CMD_VS_STATE |

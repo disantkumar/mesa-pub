@@ -107,9 +107,7 @@ panfrost_launch_grid(struct pipe_context *pipe,
         ctx->compute_grid = info;
 
         struct panfrost_ptr t =
-                panfrost_pool_alloc_aligned(&batch->pool,
-                                            MALI_COMPUTE_JOB_LENGTH,
-                                            64);
+                panfrost_pool_alloc_desc(&batch->pool, COMPUTE_JOB);
 
         /* We implement OpenCL inputs as uniforms (or a UBO -- same thing), so
          * reuse the graphics path for this by lowering to Gallium */
@@ -178,7 +176,21 @@ panfrost_set_global_binding(struct pipe_context *pctx,
                       struct pipe_resource **resources,
                       uint32_t **handles)
 {
-        /* TODO */
+        if (!resources)
+                return;
+
+        struct panfrost_context *ctx = pan_context(pctx);
+        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
+
+        for (unsigned i = first; i < first + count; ++i) {
+                struct panfrost_resource *rsrc = pan_resource(resources[i]);
+
+                panfrost_batch_add_bo(batch, rsrc->image.data.bo,
+                                      PAN_BO_ACCESS_SHARED | PAN_BO_ACCESS_RW);
+
+                /* The handle points to uint32_t, but space is allocated for 64 bits */
+                memcpy(handles[i], &rsrc->image.data.bo->ptr.gpu, sizeof(mali_ptr));
+        }
 }
 
 static void

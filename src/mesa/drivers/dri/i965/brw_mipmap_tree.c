@@ -200,7 +200,7 @@ brw_lower_compressed_format(struct brw_context *brw, mesa_format format)
    /* No need to lower ETC formats on these platforms,
     * they are supported natively.
     */
-   if (devinfo->gen >= 8 || devinfo->is_baytrail)
+   if (devinfo->ver >= 8 || devinfo->is_baytrail)
       return format;
 
    switch (format) {
@@ -247,7 +247,7 @@ get_num_phys_layers(const struct isl_surf *surf, unsigned level)
    if (surf->dim != ISL_SURF_DIM_3D)
       return surf->phys_level0_sa.array_len;
 
-   if (surf->dim_layout == ISL_DIM_LAYOUT_GEN4_2D)
+   if (surf->dim_layout == ISL_DIM_LAYOUT_GFX4_2D)
       return minify(surf->phys_level0_sa.array_len, level);
 
    return minify(surf->phys_level0_sa.depth, level);
@@ -338,7 +338,7 @@ need_to_retile_as_x(const struct brw_context *brw, uint64_t size,
     * BLT engine to support it.  Prior to Sandybridge, the BLT paths can't
     * handle Y-tiling, so we need to fall back to X.
     */
-   if (devinfo->gen < 6 && size >= brw->max_gtt_map_object_size &&
+   if (devinfo->ver < 6 && size >= brw->max_gtt_map_object_size &&
        tiling == ISL_TILING_Y0)
       return true;
 
@@ -394,7 +394,7 @@ make_surface(struct brw_context *brw, GLenum target, mesa_format format,
       goto fail;
 
    /* Depth surfaces are always Y-tiled and stencil is always W-tiled, although
-    * on gen7 platforms we also need to create Y-tiled copies of stencil for
+    * on gfx7 platforms we also need to create Y-tiled copies of stencil for
     * texturing since the hardware can't sample from W-tiled surfaces. For
     * everything else, check for corner cases needing special treatment.
     */
@@ -484,13 +484,13 @@ miptree_create(struct brw_context *brw,
    isl_tiling_flags_t tiling_flags = ISL_TILING_ANY_MASK;
 
    /* TODO: This used to be because there wasn't BLORP to handle Y-tiling. */
-   if (devinfo->gen < 6 && _mesa_is_format_color_format(format))
+   if (devinfo->ver < 6 && _mesa_is_format_color_format(format))
       tiling_flags &= ~ISL_TILING_Y0_BIT;
 
    mesa_format mt_fmt = format;
-   if (!_mesa_is_format_color_format(format) && devinfo->gen >= 6) {
+   if (!_mesa_is_format_color_format(format) && devinfo->ver >= 6) {
       /* Fix up the Z miptree format for how we're splitting out separate
-       * stencil. Gen7 expects there to be no stencil bits in its depth buffer.
+       * stencil. Gfx7 expects there to be no stencil bits in its depth buffer.
        */
       mt_fmt = brw_depth_format_for_depthstencil_format(format);
    }
@@ -592,7 +592,7 @@ brw_miptree_create_for_bo(struct brw_context *brw,
 
    if ((base_format == GL_DEPTH_COMPONENT ||
         base_format == GL_DEPTH_STENCIL)) {
-      const mesa_format mt_fmt = (devinfo->gen < 6) ? format :
+      const mesa_format mt_fmt = (devinfo->ver < 6) ? format :
          brw_depth_format_for_depthstencil_format(format);
       mt = make_surface(brw, target, mt_fmt,
                         0, 0, width, height, depth, 1, ISL_TILING_Y0_BIT,
@@ -746,7 +746,7 @@ create_ccs_buf_for_image(struct brw_context *brw,
       return false;
    }
 
-   /* On gen10+ we start using an extra space in the aux buffer to store the
+   /* On gfx10+ we start using an extra space in the aux buffer to store the
     * indirect clear color. However, if we imported an image from the window
     * system with CCS, we don't have the extra space at the end of the aux
     * buffer. So create a new bo here that will store that clear color.
@@ -845,7 +845,7 @@ brw_miptree_create_for_dri_image(struct brw_context *brw,
    mt->drm_modifier = image->modifier;
 
    /* From "OES_EGL_image" error reporting. We report GL_INVALID_OPERATION
-    * for EGL images from non-tile aligned sufaces in gen4 hw and earlier which has
+    * for EGL images from non-tile aligned sufaces in gfx4 hw and earlier which has
     * trouble resolving back to destination image due to alignment issues.
     */
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
@@ -1302,8 +1302,8 @@ brw_miptree_copy_slice(struct brw_context *brw,
        dst_mt, dst_level, dst_layer,
        width, height);
 
-   if (devinfo->gen >= 6) {
-      /* On gen6 and above, we just use blorp.  It's faster than the blitter
+   if (devinfo->ver >= 6) {
+      /* On gfx6 and above, we just use blorp.  It's faster than the blitter
        * and can handle everything without software fallbacks.
        */
       brw_blorp_copy_miptrees(brw,
@@ -1328,7 +1328,7 @@ brw_miptree_copy_slice(struct brw_context *brw,
       width = ALIGN_NPOT(width, i) / i;
    }
 
-   /* Gen4-5 doesn't support separate stencil */
+   /* Gfx4-5 doesn't support separate stencil */
    assert(!src_mt->stencil_mt);
 
    uint32_t dst_x, dst_y, src_x, src_y;
@@ -1488,7 +1488,7 @@ brw_miptree_level_enable_hiz(struct brw_context *brw,
    assert(mt->aux_buf);
    assert(mt->surf.size_B > 0);
 
-   if (devinfo->gen >= 8 || devinfo->is_haswell) {
+   if (devinfo->ver >= 8 || devinfo->is_haswell) {
       uint32_t width = minify(mt->surf.phys_level0_sa.width, level);
       uint32_t height = minify(mt->surf.phys_level0_sa.height, level);
 
@@ -1567,7 +1567,7 @@ brw_miptree_alloc_aux(struct brw_context *brw, struct brw_mipmap_tree *mt)
        * A CCS value of 0 indicates that the corresponding block is in the
        * pass-through state which is what we want.
        *
-       * For CCS_D, do the same thing. On gen9+, this avoids having any
+       * For CCS_D, do the same thing. On gfx9+, this avoids having any
        * undefined bits in the aux buffer.
        */
       initial_state = ISL_AUX_STATE_PASS_THROUGH;
@@ -1646,7 +1646,7 @@ brw_miptree_sample_with_hiz(struct brw_context *brw,
     */
    return (mt->surf.samples == 1 &&
            mt->target != GL_TEXTURE_3D &&
-           mt->target != GL_TEXTURE_1D /* gen9+ restriction */);
+           mt->target != GL_TEXTURE_1D /* gfx9+ restriction */);
 }
 
 static bool
@@ -1737,16 +1737,16 @@ brw_miptree_check_color_resolve(const struct brw_context *brw,
    if (!mt->aux_buf)
       return;
 
-   /* Fast color clear is supported for mipmapped surfaces only on Gen8+. */
-   assert(brw->screen->devinfo.gen >= 8 ||
+   /* Fast color clear is supported for mipmapped surfaces only on Gfx8+. */
+   assert(brw->screen->devinfo.ver >= 8 ||
           (level == 0 && mt->first_level == 0 && mt->last_level == 0));
 
    /* Compression of arrayed msaa surfaces is supported. */
    if (mt->surf.samples > 1)
       return;
 
-   /* Fast color clear is supported for non-msaa arrays only on Gen8+. */
-   assert(brw->screen->devinfo.gen >= 8 ||
+   /* Fast color clear is supported for non-msaa arrays only on Gfx8+. */
+   assert(brw->screen->devinfo.ver >= 8 ||
           (layer == 0 &&
            mt->surf.logical_level0_px.depth == 1 &&
            mt->surf.logical_level0_px.array_len == 1));
@@ -1807,7 +1807,7 @@ brw_miptree_finish_write(struct brw_context *brw,
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
-   if (mt->format == MESA_FORMAT_S_UINT8 && devinfo->gen <= 7) {
+   if (mt->format == MESA_FORMAT_S_UINT8 && devinfo->ver <= 7) {
       mt->shadow_needs_update = true;
    } else if (brw_miptree_has_etc_shadow(brw, mt)) {
       mt->shadow_needs_update = true;
@@ -1874,7 +1874,7 @@ brw_miptree_set_aux_state(struct brw_context *brw,
    }
 }
 
-/* On Gen9 color buffers may be compressed by the hardware (lossless
+/* On Gfx9 color buffers may be compressed by the hardware (lossless
  * compression). There are, however, format restrictions and care needs to be
  * taken that the sampler engine is capable for re-interpreting a buffer with
  * format different the buffer was originally written with.
@@ -1908,15 +1908,15 @@ enum isl_aux_usage
 brw_miptree_texture_aux_usage(struct brw_context *brw,
                               struct brw_mipmap_tree *mt,
                               enum isl_format view_format,
-                              enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits)
+                              enum gfx9_astc5x5_wa_tex_type astc5x5_wa_bits)
 {
-   assert(brw->screen->devinfo.gen == 9 || astc5x5_wa_bits == 0);
+   assert(brw->screen->devinfo.ver == 9 || astc5x5_wa_bits == 0);
 
-   /* On gen9, ASTC 5x5 textures cannot live in the sampler cache along side
-    * CCS or HiZ compressed textures.  See gen9_apply_astc5x5_wa_flush() for
+   /* On gfx9, ASTC 5x5 textures cannot live in the sampler cache along side
+    * CCS or HiZ compressed textures.  See gfx9_apply_astc5x5_wa_flush() for
     * details.
     */
-   if ((astc5x5_wa_bits & GEN9_ASTC5X5_WA_TEX_TYPE_ASTC5x5) &&
+   if ((astc5x5_wa_bits & GFX9_ASTC5X5_WA_TEX_TYPE_ASTC5x5) &&
        mt->aux_usage != ISL_AUX_USAGE_MCS)
       return ISL_AUX_USAGE_NONE;
 
@@ -1958,11 +1958,11 @@ brw_miptree_texture_aux_usage(struct brw_context *brw,
 static bool
 isl_formats_are_fast_clear_compatible(enum isl_format a, enum isl_format b)
 {
-   /* On gen8 and earlier, the hardware was only capable of handling 0/1 clear
+   /* On gfx8 and earlier, the hardware was only capable of handling 0/1 clear
     * values so sRGB curve application was a no-op for all fast-clearable
     * formats.
     *
-    * On gen9+, the hardware supports arbitrary clear values.  For sRGB clear
+    * On gfx9+, the hardware supports arbitrary clear values.  For sRGB clear
     * values, the hardware interprets the floats, not as what would be
     * returned from the sampler (or written by the shader), but as being
     * between format conversion and sRGB curve application.  This means that
@@ -1978,7 +1978,7 @@ brw_miptree_prepare_texture(struct brw_context *brw,
                             enum isl_format view_format,
                             uint32_t start_level, uint32_t num_levels,
                             uint32_t start_layer, uint32_t num_layers,
-                            enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits)
+                            enum gfx9_astc5x5_wa_tex_type astc5x5_wa_bits)
 {
    enum isl_aux_usage aux_usage =
       brw_miptree_texture_aux_usage(brw, mt, view_format, astc5x5_wa_bits);
@@ -2030,11 +2030,11 @@ brw_miptree_render_aux_usage(struct brw_context *brw,
          return ISL_AUX_USAGE_NONE;
       }
 
-      /* gen9+ hardware technically supports non-0/1 clear colors with sRGB
+      /* gfx9+ hardware technically supports non-0/1 clear colors with sRGB
        * formats.  However, there are issues with blending where it doesn't
        * properly apply the sRGB curve to the clear color when blending.
        */
-      if (devinfo->gen >= 9 && blend_enabled &&
+      if (devinfo->ver >= 9 && blend_enabled &&
           isl_format_is_srgb(render_format) &&
           !isl_color_value_is_zero_one(mt->fast_clear_color, render_format))
          return ISL_AUX_USAGE_NONE;
@@ -2289,16 +2289,16 @@ brw_update_r8stencil(struct brw_context *brw,
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
-   assert(devinfo->gen >= 7);
+   assert(devinfo->ver >= 7);
    struct brw_mipmap_tree *src =
       mt->format == MESA_FORMAT_S_UINT8 ? mt : mt->stencil_mt;
-   if (!src || devinfo->gen >= 8)
+   if (!src || devinfo->ver >= 8)
       return;
 
    assert(src->surf.size_B > 0);
 
    if (!mt->shadow_mt) {
-      assert(devinfo->gen > 6); /* Handle MIPTREE_LAYOUT_GEN6_HIZ_STENCIL */
+      assert(devinfo->ver > 6); /* Handle MIPTREE_LAYOUT_GFX6_HIZ_STENCIL */
       mt->shadow_mt = make_surface(
                             brw,
                             src->target,
@@ -2435,7 +2435,7 @@ brw_miptree_unmap_blit(struct brw_context *brw,
    brw_miptree_unmap_raw(map->linear_mt);
 
    if (map->mode & GL_MAP_WRITE_BIT) {
-      if (devinfo->gen >= 6) {
+      if (devinfo->ver >= 6) {
          brw_blorp_copy_miptrees(brw, map->linear_mt, 0, 0,
                                  mt, level, slice,
                                  0, 0, map->x, map->y, map->w, map->h);
@@ -2627,7 +2627,7 @@ brw_miptree_map_blit(struct brw_context *brw,
     * temporary buffer back out.
     */
    if (!(map->mode & GL_MAP_INVALIDATE_RANGE_BIT)) {
-      if (devinfo->gen >= 6) {
+      if (devinfo->ver >= 6) {
          brw_blorp_copy_miptrees(brw, mt, level, slice,
                                  map->linear_mt, 0, 0,
                                  map->x, map->y, 0, 0, map->w, map->h);
@@ -2822,7 +2822,7 @@ brw_miptree_map_s8(struct brw_context *brw,
  * Mapping functions for packed depth/stencil miptrees backed by real separate
  * miptrees for depth and stencil.
  *
- * On gen7, and to support HiZ pre-gen7, we have to have the stencil buffer
+ * On gfx7, and to support HiZ pre-gfx7, we have to have the stencil buffer
  * separate from the depth buffer.  Yet at the GL API level, we have to expose
  * packed depth/stencil textures and FBO attachments, and Mesa core expects to
  * be able to map that memory for texture storage and glReadPixels-type
@@ -3037,9 +3037,9 @@ use_blitter_to_map(struct brw_context *brw,
        !mt->compressed &&
        (mt->surf.tiling == ISL_TILING_X ||
         /* Prior to Sandybridge, the blitter can't handle Y tiling */
-        (devinfo->gen >= 6 && mt->surf.tiling == ISL_TILING_Y0) ||
+        (devinfo->ver >= 6 && mt->surf.tiling == ISL_TILING_Y0) ||
         /* Fast copy blit on skl+ supports all tiling formats. */
-        devinfo->gen >= 9) &&
+        devinfo->ver >= 9) &&
        can_blit_slice(mt, map))
       return true;
 
@@ -3094,7 +3094,7 @@ brw_miptree_map(struct brw_context *brw,
       brw_miptree_map_depthstencil(brw, mt, map, level, slice);
    } else if (use_blitter_to_map(brw, mt, map)) {
       brw_miptree_map_blit(brw, mt, map, level, slice);
-   } else if (mt->surf.tiling != ISL_TILING_LINEAR && devinfo->gen > 4) {
+   } else if (mt->surf.tiling != ISL_TILING_LINEAR && devinfo->ver > 4) {
       brw_miptree_map_tiled_memcpy(brw, mt, map, level, slice);
 #if defined(USE_SSE41)
    } else if (!(mode & GL_MAP_WRITE_BIT) &&
@@ -3169,8 +3169,8 @@ get_isl_dim_layout(const struct gen_device_info *devinfo,
    switch (target) {
    case GL_TEXTURE_1D:
    case GL_TEXTURE_1D_ARRAY:
-      return (devinfo->gen >= 9 && tiling == ISL_TILING_LINEAR ?
-              ISL_DIM_LAYOUT_GEN9_1D : ISL_DIM_LAYOUT_GEN4_2D);
+      return (devinfo->ver >= 9 && tiling == ISL_TILING_LINEAR ?
+              ISL_DIM_LAYOUT_GFX9_1D : ISL_DIM_LAYOUT_GFX4_2D);
 
    case GL_TEXTURE_2D:
    case GL_TEXTURE_2D_ARRAY:
@@ -3178,16 +3178,16 @@ get_isl_dim_layout(const struct gen_device_info *devinfo,
    case GL_TEXTURE_2D_MULTISAMPLE:
    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
    case GL_TEXTURE_EXTERNAL_OES:
-      return ISL_DIM_LAYOUT_GEN4_2D;
+      return ISL_DIM_LAYOUT_GFX4_2D;
 
    case GL_TEXTURE_CUBE_MAP:
    case GL_TEXTURE_CUBE_MAP_ARRAY:
-      return (devinfo->gen == 4 ? ISL_DIM_LAYOUT_GEN4_3D :
-              ISL_DIM_LAYOUT_GEN4_2D);
+      return (devinfo->ver == 4 ? ISL_DIM_LAYOUT_GFX4_3D :
+              ISL_DIM_LAYOUT_GFX4_2D);
 
    case GL_TEXTURE_3D:
-      return (devinfo->gen >= 9 ?
-              ISL_DIM_LAYOUT_GEN4_2D : ISL_DIM_LAYOUT_GEN4_3D);
+      return (devinfo->ver >= 9 ?
+              ISL_DIM_LAYOUT_GFX4_2D : ISL_DIM_LAYOUT_GFX4_3D);
    }
 
    unreachable("Invalid texture target");

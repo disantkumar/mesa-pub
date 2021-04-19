@@ -345,10 +345,16 @@ nine_context_is_worker( struct NineDevice9 *device )
 static inline DWORD
 check_multisample(struct NineDevice9 *device)
 {
-    DWORD *rs = device->context.rs;
-    DWORD new_value = (rs[D3DRS_ZENABLE] || rs[D3DRS_STENCILENABLE]) &&
-                      device->context.rt[0]->desc.MultiSampleType >= 1 &&
-                      rs[D3DRS_MULTISAMPLEANTIALIAS];
+    struct nine_context *context = &device->context;
+    DWORD *rs = context->rs;
+    struct NineSurface9 *rt0 = context->rt[0];
+    bool multisampled_target;
+    DWORD new_value;
+
+    multisampled_target = rt0 && rt0->desc.MultiSampleType >= 1;
+    if (rt0 && rt0->desc.Format == D3DFMT_NULL && context->ds)
+        multisampled_target = context->ds->desc.MultiSampleType >= 1;
+    new_value = (multisampled_target && rs[D3DRS_MULTISAMPLEANTIALIAS]) ? 1 : 0;
     if (rs[NINED3DRS_MULTISAMPLE] != new_value) {
         rs[NINED3DRS_MULTISAMPLE] = new_value;
         return NINE_STATE_RASTERIZER;
@@ -790,6 +796,10 @@ update_viewport(struct NineDevice9 *device)
     pvport.translate[0] = (float)vport->Width * 0.5f + (float)vport->X;
     pvport.translate[1] = (float)vport->Height * 0.5f + (float)vport->Y;
     pvport.translate[2] = vport->MinZ;
+    pvport.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
+    pvport.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
+    pvport.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
+    pvport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
     /* We found R600 and SI cards have some imprecision
      * on the barycentric coordinates used for interpolation.
@@ -1411,9 +1421,16 @@ CSMT_ITEM_NO_WAIT(nine_context_set_render_state,
             return;
         }
 
+        /* NINED3DRS_ALPHACOVERAGE:
+         * bit 0: NVIDIA alpha to coverage
+         * bit 1: NVIDIA ATOC state active
+         * bit 2: AMD alpha to coverage
+         * These need to be separate else the set of states to
+         * disable NVIDIA alpha to coverage can disable the AMD one */
         if (Value == ALPHA_TO_COVERAGE_ENABLE ||
             Value == ALPHA_TO_COVERAGE_DISABLE) {
-            context->rs[NINED3DRS_ALPHACOVERAGE] = (Value == ALPHA_TO_COVERAGE_ENABLE);
+            context->rs[NINED3DRS_ALPHACOVERAGE] &= 3;
+            context->rs[NINED3DRS_ALPHACOVERAGE] |= (Value == ALPHA_TO_COVERAGE_ENABLE) ? 4 : 0;
             context->changed.group |= NINE_STATE_BLEND;
             return;
         }
@@ -1421,16 +1438,18 @@ CSMT_ITEM_NO_WAIT(nine_context_set_render_state,
 
     /* NV hack */
     if (unlikely(State == D3DRS_ADAPTIVETESS_Y)) {
-        if (Value == D3DFMT_ATOC || (Value == D3DFMT_UNKNOWN && context->rs[NINED3DRS_ALPHACOVERAGE])) {
-            context->rs[NINED3DRS_ALPHACOVERAGE] = (Value == D3DFMT_ATOC) ? 3 : 0;
-            context->rs[NINED3DRS_ALPHACOVERAGE] &= context->rs[D3DRS_ALPHATESTENABLE] ? 3 : 2;
+        if (Value == D3DFMT_ATOC || (Value == D3DFMT_UNKNOWN && context->rs[NINED3DRS_ALPHACOVERAGE] & 3)) {
+            context->rs[NINED3DRS_ALPHACOVERAGE] &= 4;
+            context->rs[NINED3DRS_ALPHACOVERAGE] |=
+                ((Value == D3DFMT_ATOC) ? 3 : 0) & (context->rs[D3DRS_ALPHATESTENABLE] ? 3 : 2);
             context->changed.group |= NINE_STATE_BLEND;
             return;
         }
     }
     if (unlikely(State == D3DRS_ALPHATESTENABLE && (context->rs[NINED3DRS_ALPHACOVERAGE] & 2))) {
         DWORD alphacoverage_prev = context->rs[NINED3DRS_ALPHACOVERAGE];
-        context->rs[NINED3DRS_ALPHACOVERAGE] = (Value ? 3 : 2);
+        context->rs[NINED3DRS_ALPHACOVERAGE] &= 6;
+        context->rs[NINED3DRS_ALPHACOVERAGE] |= (context->rs[D3DRS_ALPHATESTENABLE] ? 1 : 0);
         if (context->rs[NINED3DRS_ALPHACOVERAGE] != alphacoverage_prev)
             context->changed.group |= NINE_STATE_BLEND;
     }
@@ -1832,19 +1851,7 @@ CSMT_ITEM_NO_WAIT(nine_context_set_render_target,
     const unsigned i = RenderTargetIndex;
 
     if (i == 0) {
-        context->viewport.X = 0;
-        context->viewport.Y = 0;
-        context->viewport.Width = rt->desc.Width;
-        context->viewport.Height = rt->desc.Height;
-        context->viewport.MinZ = 0.0f;
-        context->viewport.MaxZ = 1.0f;
-
-        context->scissor.minx = 0;
-        context->scissor.miny = 0;
-        context->scissor.maxx = rt->desc.Width;
-        context->scissor.maxy = rt->desc.Height;
-
-        context->changed.group |= NINE_STATE_VIEWPORT | NINE_STATE_SCISSOR | NINE_STATE_MULTISAMPLE;
+        context->changed.group |= NINE_STATE_MULTISAMPLE;
 
         if (context->rt[0] &&
             (context->rt[0]->desc.MultiSampleType <= D3DMULTISAMPLE_NONMASKABLE) !=
@@ -1873,6 +1880,9 @@ CSMT_ITEM_NO_WAIT(nine_context_set_viewport,
 {
     struct nine_context *context = &device->context;
 
+    if (!memcmp(viewport, &context->viewport, sizeof(context->viewport)))
+        return;
+
     context->viewport = *viewport;
     context->changed.group |= NINE_STATE_VIEWPORT;
 }
@@ -1881,6 +1891,9 @@ CSMT_ITEM_NO_WAIT(nine_context_set_scissor,
                   ARG_COPY_REF(struct pipe_scissor_state, scissor))
 {
     struct nine_context *context = &device->context;
+
+    if (!memcmp(scissor, &context->scissor, sizeof(context->scissor)))
+        return;
 
     context->scissor = *scissor;
     context->changed.group |= NINE_STATE_SCISSOR;
@@ -2372,7 +2385,7 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
     draw.start = StartVertex;
     info.index_bias = 0;
     info.min_index = draw.start;
-    info.max_index = draw.count - 1;
+    info.max_index = draw.start + draw.count - 1;
     info.index.resource = NULL;
 
     context->pipe->draw_vbo(context->pipe, &info, NULL, &draw, 1);
@@ -2545,6 +2558,18 @@ CSMT_ITEM_NO_WAIT_WITH_COUNTER(nine_context_box_upload,
 
     /* Binding src_ref avoids release before upload */
     (void)src_ref;
+
+    if (is_ATI1_ATI2(src_format)) {
+        const unsigned bw = util_format_get_blockwidth(src_format);
+        const unsigned bh = util_format_get_blockheight(src_format);
+        /* For these formats, the allocate surface can be too small to contain
+         * a block. Yet we can be asked to upload such surfaces.
+         * It is ok for these surfaces to have buggy content,
+         * but we should avoid crashing.
+         * Calling util_format_translate_3d would read out of bounds. */
+        if (dst_box->width < bw || dst_box->height < bh)
+            return;
+    }
 
     map = pipe->transfer_map(pipe,
                              res,

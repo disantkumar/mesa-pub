@@ -277,8 +277,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
 		if (is_a3xx(screen)) return 16;
 		if (is_a4xx(screen)) return 32;
-		if (is_a5xx(screen)) return 32;
-		if (is_a6xx(screen)) return 64;
+		if (is_a5xx(screen) || is_a6xx(screen)) return 64;
 		return 0;
 	case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
 		/* We could possibly emulate more by pretending 2d/rect textures and
@@ -286,8 +285,12 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		 */
 		if (is_a3xx(screen)) return 8192;
 		if (is_a4xx(screen)) return 16384;
-		if (is_a5xx(screen)) return 16384;
-		if (is_a6xx(screen)) return 1 << 27;
+
+		/* Note that the Vulkan blob on a540 and 640 report a
+		 * maxTexelBufferElements of just 65536 (the GLES3.2 and Vulkan
+		 * minimum).
+		 */
+		if (is_a5xx(screen) || is_a6xx(screen)) return 1 << 27;
 		return 0;
 
 	case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
@@ -403,6 +406,23 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	 */
 	case PIPE_CAP_GL_CLAMP:
 		return is_a2xx(screen);
+
+	case PIPE_CAP_CLIP_PLANES:
+		/* On a3xx, there is HW support for GL user clip planes that
+		 * occasionally has to fall back to shader key-based lowering to clip
+		 * distances in the VS, and we don't support clip distances so that is
+		 * always shader-based lowering in the FS.
+		 *
+		 * On a4xx, there is no HW support for clip planes, so they are
+		 * always lowered to clip distances.  We also lack SW support for the
+		 * HW's clip distances in HW, so we do shader-based lowering in the FS
+		 * in the driver backend.
+		 *
+		 * On a5xx-a6xx, we have the HW clip distances hooked up, so we just let
+		 * mesa/st lower desktop GL's clip planes to clip distances in the last
+		 * vertex shader stage.
+		 */
+		return !is_a5xx(screen) && !is_a6xx(screen);
 
 	/* Stream output. */
 	case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
@@ -603,6 +623,7 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
 		return is_ir3(screen) ? 1 : 0;
 	case PIPE_SHADER_CAP_INT64_ATOMICS:
 	case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+	case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
 	case PIPE_SHADER_CAP_INT16:
 	case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
 		return 0;

@@ -1252,6 +1252,21 @@ lookup_input(nir_shader *shader, unsigned driver_location)
                                                  driver_location);
 }
 
+/* The config here should be generic enough to be correct on any HW. */
+static const nir_unsigned_upper_bound_config default_ub_config = {
+   .min_subgroup_size = 1u,
+   .max_subgroup_size = UINT16_MAX,
+   .max_work_group_invocations = UINT16_MAX,
+   .max_work_group_count = {UINT16_MAX, UINT16_MAX, UINT16_MAX},
+   .max_work_group_size = {UINT16_MAX, UINT16_MAX, UINT16_MAX},
+   .vertex_attrib_max = {
+      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+      UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+   },
+};
+
 uint32_t
 nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
                          nir_ssa_scalar scalar,
@@ -1259,6 +1274,8 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
 {
    assert(scalar.def->bit_size <= 32);
 
+   if (!config)
+      config = &default_ub_config;
    if (nir_ssa_scalar_is_const(scalar))
       return nir_ssa_scalar_as_uint(scalar);
 
@@ -1275,7 +1292,8 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(scalar.def->parent_instr);
       switch (intrin->intrinsic) {
       case nir_intrinsic_load_local_invocation_index:
-         if (shader->info.cs.local_size_variable) {
+         if (shader->info.stage != MESA_SHADER_COMPUTE ||
+             shader->info.cs.local_size_variable) {
             res = config->max_work_group_invocations - 1;
          } else {
             res = (shader->info.cs.local_size[0] *
@@ -1303,6 +1321,12 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
             res = (shader->info.cs.local_size[scalar.comp] *
                    config->max_work_group_count[scalar.comp]) - 1u;
          }
+         break;
+      case nir_intrinsic_load_invocation_id:
+         if (shader->info.stage == MESA_SHADER_TESS_CTRL)
+            res = shader->info.tess.tcs_vertices_out
+                  ? (shader->info.tess.tcs_vertices_out - 1)
+                  : 511; /* Generous maximum output patch size of 512 */
          break;
       case nir_intrinsic_load_subgroup_invocation:
       case nir_intrinsic_first_invocation:
@@ -1364,6 +1388,11 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
          res = MAX2(src0, src1);
          break;
       }
+      case nir_intrinsic_load_tess_rel_patch_id_amd:
+      case nir_intrinsic_load_tcs_num_patches_amd:
+         /* Very generous maximum: TCS/TES executed by largest possible workgroup */
+         res = config->max_work_group_invocations / MAX2(shader->info.tess.tcs_vertices_out, 1u);
+         break;
       default:
          break;
       }

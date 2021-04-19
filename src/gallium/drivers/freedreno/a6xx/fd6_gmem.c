@@ -471,6 +471,50 @@ check_vsc_overflow(struct fd_context *ctx)
 	}
 }
 
+static void
+emit_common_init(struct fd_batch *batch)
+{
+	struct fd_ringbuffer *ring = batch->gmem;
+	struct fd_autotune *at = &batch->ctx->autotune;
+	struct fd_batch_result *result = batch->autotune_result;
+
+	if (!result)
+		return;
+
+	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_CONTROL, 1);
+	OUT_RING(ring, A6XX_RB_SAMPLE_COUNT_CONTROL_COPY);
+
+	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_ADDR, 2);
+	OUT_RELOC(ring, results_ptr(at, result[result->idx].samples_start));
+
+	fd6_event_write(batch, ring, ZPASS_DONE, false);
+}
+
+static void
+emit_common_fini(struct fd_batch *batch)
+{
+	struct fd_ringbuffer *ring = batch->gmem;
+	struct fd_autotune *at = &batch->ctx->autotune;
+	struct fd_batch_result *result = batch->autotune_result;
+
+	if (!result)
+		return;
+
+	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_CONTROL, 1);
+	OUT_RING(ring, A6XX_RB_SAMPLE_COUNT_CONTROL_COPY);
+
+	OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_ADDR, 2);
+	OUT_RELOC(ring, results_ptr(at, result[result->idx].samples_end));
+
+	fd6_event_write(batch, ring, ZPASS_DONE, false);
+
+	// TODO is there a better event to use.. a single ZPASS_DONE_TS would be nice
+	OUT_PKT7(ring, CP_EVENT_WRITE, 4);
+	OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(CACHE_FLUSH_TS));
+	OUT_RELOC(ring, results_ptr(at, fence));
+	OUT_RING(ring, result->fence);
+}
+
 /*
  * Emit conditional CP_INDIRECT_BRANCH based on VSC_STATE[p], ie. the IB
  * is skipped for tiles that have no visible geometry.
@@ -731,6 +775,8 @@ fd6_emit_tile_init(struct fd_batch *batch)
 	}
 
 	update_render_cntl(batch, pfb, false);
+
+	emit_common_init(batch);
 }
 
 static void
@@ -896,7 +942,7 @@ emit_restore_blit(struct fd_batch *batch,
 	OUT_REG(ring, A6XX_RB_BLIT_INFO(
 		.gmem = true, .unk0 = true,
 		.depth = (buffer == FD_BUFFER_DEPTH),
-		.integer = util_format_is_pure_integer(psurf->format)));
+		.sample_0 = util_format_is_pure_integer(psurf->format)));
 
 	emit_blit(batch, ring, base, psurf, stencil);
 }
@@ -1209,8 +1255,8 @@ emit_resolve_blit(struct fd_batch *batch,
 		break;
 	}
 
-	if (util_format_is_pure_integer(psurf->format))
-		info |= A6XX_RB_BLIT_INFO_INTEGER;
+	if (util_format_is_pure_integer(psurf->format) || util_format_is_depth_or_stencil(psurf->format))
+		info |= A6XX_RB_BLIT_INFO_SAMPLE_0;
 
 	OUT_PKT4(ring, REG_A6XX_RB_BLIT_INFO, 1);
 	OUT_RING(ring, info);
@@ -1316,6 +1362,8 @@ fd6_emit_tile_fini(struct fd_batch *batch)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
 
+	emit_common_fini(batch);
+
 	OUT_PKT4(ring, REG_A6XX_GRAS_LRZ_CNTL, 1);
 	OUT_RING(ring, A6XX_GRAS_LRZ_CNTL_ENABLE);
 
@@ -1344,7 +1392,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 	if (buffers & PIPE_CLEAR_COLOR) {
 		for (int i = 0; i < pfb->nr_cbufs; i++) {
-			union pipe_color_union *color = &batch->clear_color[i];
+			union pipe_color_union color = batch->clear_color[i];
 
 			if (!pfb->cbufs[i])
 				continue;
@@ -1353,7 +1401,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring)
 				continue;
 
 			fd6_clear_surface(ctx, ring,
-					pfb->cbufs[i], pfb->width, pfb->height, color);
+					pfb->cbufs[i], pfb->width, pfb->height, &color);
 		}
 	}
 	if (buffers & (PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL)) {
@@ -1479,12 +1527,16 @@ fd6_emit_sysmem_prep(struct fd_batch *batch)
 	emit_msaa(ring, pfb->samples);
 
 	update_render_cntl(batch, pfb, false);
+
+	emit_common_init(batch);
 }
 
 static void
 fd6_emit_sysmem_fini(struct fd_batch *batch)
 {
 	struct fd_ringbuffer *ring = batch->gmem;
+
+	emit_common_fini(batch);
 
 	if (batch->epilogue)
 		fd6_emit_ib(batch->gmem, batch->epilogue);

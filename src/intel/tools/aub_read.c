@@ -57,8 +57,6 @@
 #define SUBOPCODE_MEM_WRITE 0x06
 #define SUBOPCODE_VERSION   0x0e
 
-#define MAKE_GEN(major, minor) (((major) << 8) | (minor))
-
 static void
 parse_error(struct aub_read *read, const uint32_t *p, const char *fmt, ...)
 {
@@ -139,7 +137,7 @@ handle_trace_block(struct aub_read *read, const uint32_t *p)
    int header_length = p[0] & 0xffff;
    enum drm_i915_gem_engine_class engine = I915_ENGINE_CLASS_RENDER;
    const void *data = p + header_length + 2;
-   uint64_t address = intel_48b_address((read->devinfo.gen >= 8 ? ((uint64_t) p[5] << 32) : 0) |
+   uint64_t address = intel_48b_address((read->devinfo.ver >= 8 ? ((uint64_t) p[5] << 32) : 0) |
                                         ((uint64_t) p[3]));
    uint32_t size = p[4];
 

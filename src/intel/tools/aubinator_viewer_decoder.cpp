@@ -252,9 +252,6 @@ dump_samplers(struct aub_viewer_decode_ctx *ctx, uint32_t offset, int count)
 {
    struct intel_group *strct = intel_spec_find_struct(ctx->spec, "SAMPLER_STATE");
 
-   if (count < 0)
-      count = update_count(ctx, offset, strct->dw_length, 4);
-
    uint64_t state_addr = ctx->dynamic_base + offset;
    struct intel_batch_decode_bo bo = ctx_get_bo(ctx, true, state_addr);
    const uint8_t *state_map = (const uint8_t *) bo.map;
@@ -265,8 +262,15 @@ dump_samplers(struct aub_viewer_decode_ctx *ctx, uint32_t offset, int count)
       return;
    }
 
-   if (offset % 32 != 0 || state_addr - bo.addr >= bo.size) {
+   if (offset % 32 != 0) {
       ImGui::TextColored(ctx->cfg->missing_color, "invalid sampler state pointer");
+      return;
+   }
+
+   const unsigned sampler_state_size = strct->dw_length * 4;
+
+   if (count * sampler_state_size >= bo.size) {
+      ImGui::TextColored(ctx->cfg->missing_color, "sampler state ends after bo ends");
       return;
    }
 
@@ -276,8 +280,8 @@ dump_samplers(struct aub_viewer_decode_ctx *ctx, uint32_t offset, int count)
          aub_viewer_print_group(ctx, strct, state_addr, state_map);
          ImGui::TreePop();
       }
-      state_addr += 16;
-      state_map += 16;
+      state_addr += sampler_state_size;
+      state_map += sampler_state_size;
    }
 }
 
@@ -463,7 +467,7 @@ decode_single_ksp(struct aub_viewer_decode_ctx *ctx,
                   const uint32_t *p)
 {
    uint64_t ksp = 0;
-   bool is_simd8 = false; /* vertex shaders on Gen8+ only */
+   bool is_simd8 = false; /* vertex shaders on Gfx8+ only */
    bool is_enabled = true;
 
    struct intel_field_iterator iter;
@@ -610,17 +614,17 @@ decode_3dstate_sampler_state_pointers(struct aub_viewer_decode_ctx *ctx,
                                       struct intel_group *inst,
                                       const uint32_t *p)
 {
-   dump_samplers(ctx, p[1], -1);
+   dump_samplers(ctx, p[1], 1);
 }
 
 static void
-decode_3dstate_sampler_state_pointers_gen6(struct aub_viewer_decode_ctx *ctx,
+decode_3dstate_sampler_state_pointers_gfx6(struct aub_viewer_decode_ctx *ctx,
                                            struct intel_group *inst,
                                            const uint32_t *p)
 {
-   dump_samplers(ctx, p[1], -1);
-   dump_samplers(ctx, p[2], -1);
-   dump_samplers(ctx, p[3], -1);
+   dump_samplers(ctx, p[1], 1);
+   dump_samplers(ctx, p[2], 1);
+   dump_samplers(ctx, p[3], 1);
 }
 
 static bool
@@ -860,7 +864,7 @@ struct custom_decoder {
    { "3DSTATE_SAMPLER_STATE_POINTERS_DS", decode_3dstate_sampler_state_pointers, AUB_DECODE_STAGE_DS, },
    { "3DSTATE_SAMPLER_STATE_POINTERS_HS", decode_3dstate_sampler_state_pointers, AUB_DECODE_STAGE_HS, },
    { "3DSTATE_SAMPLER_STATE_POINTERS_PS", decode_3dstate_sampler_state_pointers, AUB_DECODE_STAGE_PS, },
-   { "3DSTATE_SAMPLER_STATE_POINTERS", decode_3dstate_sampler_state_pointers_gen6 },
+   { "3DSTATE_SAMPLER_STATE_POINTERS", decode_3dstate_sampler_state_pointers_gfx6 },
 
    { "3DSTATE_VIEWPORT_STATE_POINTERS_CC", decode_3dstate_viewport_state_pointers_cc },
    { "3DSTATE_VIEWPORT_STATE_POINTERS_SF_CLIP", decode_3dstate_viewport_state_pointers_sf_clip },

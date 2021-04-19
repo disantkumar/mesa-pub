@@ -320,7 +320,11 @@ ir3_finalize_nir(struct ir3_compiler *compiler, nir_shader *s)
 	/* do idiv lowering after first opt loop to get a chance to propagate
 	 * constants for divide by immed power-of-two:
 	 */
-	const bool idiv_progress = OPT(s, nir_lower_idiv, nir_lower_idiv_fast);
+	nir_lower_idiv_options idiv_options = {
+		.imprecise_32bit_lowering = true,
+		.allow_fp16 = true,
+	};
+	const bool idiv_progress = OPT(s, nir_lower_idiv, &idiv_options);
 
 	if (idiv_progress)
 		ir3_optimize_loop(s);
@@ -363,7 +367,7 @@ ir3_nir_post_finalize(struct ir3_compiler *compiler, nir_shader *s)
 	if (compiler->gpu_id >= 600 &&
 			s->info.stage == MESA_SHADER_FRAGMENT &&
 			!(ir3_shader_debug & IR3_DBG_NOFP16)) {
-		NIR_PASS_V(s, nir_lower_mediump_outputs);
+		NIR_PASS_V(s, nir_lower_mediump_io, nir_var_shader_out, 0, false);
 	}
 
 	/* we cannot ensure that ir3_finalize_nir() is only called once, so
@@ -630,6 +634,10 @@ ir3_nir_scan_driver_consts(nir_shader *shader,
 				case nir_intrinsic_load_local_group_size:
 					layout->num_driver_params =
 						MAX2(layout->num_driver_params, IR3_DP_LOCAL_GROUP_SIZE_Z + 1);
+					break;
+				case nir_intrinsic_load_base_work_group_id:
+					layout->num_driver_params =
+						MAX2(layout->num_driver_params, IR3_DP_BASE_GROUP_Z + 1);
 					break;
 				default:
 					break;

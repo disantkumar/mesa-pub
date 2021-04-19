@@ -74,11 +74,6 @@ iris_set_debug_callback(struct pipe_context *ctx,
 void
 iris_lost_context_state(struct iris_batch *batch)
 {
-   /* The batch module doesn't have an iris_context, because we want to
-    * avoid introducing lots of layering violations.  Unfortunately, here
-    * we do need to inform the context of batch catastrophe.  We know the
-    * batch is one of our context's, so hackily claw our way back.
-    */
    struct iris_context *ice = batch->ice;
 
    if (batch->name == IRIS_BATCH_RENDER) {
@@ -259,21 +254,21 @@ iris_destroy_context(struct pipe_context *ctx)
 }
 
 #define genX_call(devinfo, func, ...)             \
-   switch ((devinfo)->genx10) {                   \
+   switch ((devinfo)->verx10) {                   \
    case 125:                                      \
-      gen125_##func(__VA_ARGS__);                 \
+      gfx125_##func(__VA_ARGS__);                 \
       break;                                      \
    case 120:                                      \
-      gen12_##func(__VA_ARGS__);                  \
+      gfx12_##func(__VA_ARGS__);                  \
       break;                                      \
    case 110:                                      \
-      gen11_##func(__VA_ARGS__);                  \
+      gfx11_##func(__VA_ARGS__);                  \
       break;                                      \
    case 90:                                       \
-      gen9_##func(__VA_ARGS__);                   \
+      gfx9_##func(__VA_ARGS__);                   \
       break;                                      \
    case 80:                                       \
-      gen8_##func(__VA_ARGS__);                   \
+      gfx8_##func(__VA_ARGS__);                   \
       break;                                      \
    default:                                       \
       unreachable("Unknown hardware generation"); \

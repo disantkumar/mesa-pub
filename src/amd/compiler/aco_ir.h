@@ -56,6 +56,7 @@ enum {
    DEBUG_NO_OPT = 0x20,
    DEBUG_NO_SCHED = 0x40,
    DEBUG_PERF_INFO = 0x80,
+   DEBUG_LIVE_INFO = 0x100,
 };
 
 /**
@@ -1615,6 +1616,8 @@ bool needs_exec_mask(const Instruction* instr);
 
 uint32_t get_reduction_identity(ReduceOp op, unsigned idx);
 
+unsigned get_mimg_nsa_dwords(const Instruction *instr);
+
 enum block_kind {
    /* uniform indicates that leaving this block,
     * all actives lanes stay active */
@@ -1925,6 +1928,9 @@ public:
       return allocationID;
    }
 
+   friend void reindex_ssa(Program* program);
+   friend void reindex_ssa(Program* program, std::vector<IDSet>& live_out);
+
    Block* create_and_insert_block() {
       Block block;
       return insert_block(std::move(block));
@@ -2012,11 +2018,14 @@ void collect_postasm_stats(Program *program, const std::vector<uint32_t>& code);
 enum print_flags {
    print_no_ssa = 0x1,
    print_perf_info = 0x2,
+   print_kill = 0x4,
+   print_live_vars = 0x8,
 };
 
 void aco_print_operand(const Operand *operand, FILE *output, unsigned flags=0);
 void aco_print_instr(const Instruction *instr, FILE *output, unsigned flags=0);
 void aco_print_program(const Program *program, FILE *output, unsigned flags=0);
+void aco_print_program(const Program *program, FILE *output, const live& live_vars, unsigned flags=0);
 
 void _aco_perfwarn(Program *program, const char *file, unsigned line,
                    const char *fmt, ...);

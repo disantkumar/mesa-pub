@@ -938,7 +938,7 @@ anv_queue_submit_add_in_semaphores(struct anv_queue_submit *submit,
                                    const uint64_t *in_values,
                                    uint32_t num_in_semaphores)
 {
-   struct anv_physical_device *pdevice = device->physical;
+   ASSERTED struct anv_physical_device *pdevice = device->physical;
    VkResult result;
 
    for (uint32_t i = 0; i < num_in_semaphores; i++) {
@@ -1035,7 +1035,7 @@ anv_queue_submit_add_out_semaphores(struct anv_queue_submit *submit,
                                     const uint64_t *out_values,
                                     uint32_t num_out_semaphores)
 {
-   struct anv_physical_device *pdevice = device->physical;
+   ASSERTED struct anv_physical_device *pdevice = device->physical;
    VkResult result;
 
    for (uint32_t i = 0; i < num_out_semaphores; i++) {
@@ -1465,12 +1465,10 @@ VkResult anv_CreateFence(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
 
-   fence = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*fence), 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   fence = vk_object_zalloc(&device->vk, pAllocator, sizeof(*fence),
+                            VK_OBJECT_TYPE_FENCE);
    if (fence == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   vk_object_base_init(&device->vk, &fence->base, VK_OBJECT_TYPE_FENCE);
 
    if (device->physical->has_syncobj_wait) {
       fence->permanent.type = ANV_FENCE_TYPE_SYNCOBJ;
@@ -1558,8 +1556,7 @@ void anv_DestroyFence(
    anv_fence_impl_cleanup(device, &fence->temporary);
    anv_fence_impl_cleanup(device, &fence->permanent);
 
-   vk_object_base_finish(&fence->base);
-   vk_free2(&device->vk.alloc, pAllocator, fence);
+   vk_object_free(&device->vk, pAllocator, fence);
 }
 
 VkResult anv_ResetFences(
@@ -2228,12 +2225,10 @@ VkResult anv_CreateSemaphore(
    uint64_t timeline_value = 0;
    VkSemaphoreTypeKHR sem_type = get_semaphore_type(pCreateInfo->pNext, &timeline_value);
 
-   semaphore = vk_alloc(&device->vk.alloc, sizeof(*semaphore), 8,
-                        VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   semaphore = vk_object_alloc(&device->vk, NULL, sizeof(*semaphore),
+                               VK_OBJECT_TYPE_SEMAPHORE);
    if (semaphore == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   vk_object_base_init(&device->vk, &semaphore->base, VK_OBJECT_TYPE_SEMAPHORE);
 
    p_atomic_set(&semaphore->refcount, 1);
 
@@ -2249,7 +2244,7 @@ VkResult anv_CreateSemaphore(
       else
          result = timeline_semaphore_create(device, &semaphore->permanent, timeline_value);
       if (result != VK_SUCCESS) {
-         vk_free2(&device->vk.alloc, pAllocator, semaphore);
+         vk_object_free(&device->vk, pAllocator, semaphore);
          return result;
       }
    } else if (handleTypes & VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT) {
@@ -2259,7 +2254,7 @@ VkResult anv_CreateSemaphore(
       else
          result = timeline_semaphore_create(device, &semaphore->permanent, timeline_value);
       if (result != VK_SUCCESS) {
-         vk_free2(&device->vk.alloc, pAllocator, semaphore);
+         vk_object_free(&device->vk, pAllocator, semaphore);
          return result;
       }
    } else if (handleTypes & VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) {
@@ -2269,7 +2264,7 @@ VkResult anv_CreateSemaphore(
          semaphore->permanent.type = ANV_SEMAPHORE_TYPE_DRM_SYNCOBJ;
          semaphore->permanent.syncobj = anv_gem_syncobj_create(device, 0);
          if (!semaphore->permanent.syncobj) {
-            vk_free2(&device->vk.alloc, pAllocator, semaphore);
+            vk_object_free(&device->vk, pAllocator, semaphore);
             return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
          }
       } else {
@@ -2278,7 +2273,7 @@ VkResult anv_CreateSemaphore(
       }
    } else {
       assert(!"Unknown handle type");
-      vk_free2(&device->vk.alloc, pAllocator, semaphore);
+      vk_object_free(&device->vk, pAllocator, semaphore);
       return vk_error(VK_ERROR_INVALID_EXTERNAL_HANDLE);
    }
 
@@ -2352,8 +2347,7 @@ anv_semaphore_unref(struct anv_device *device, struct anv_semaphore *semaphore)
    anv_semaphore_impl_cleanup(device, &semaphore->temporary);
    anv_semaphore_impl_cleanup(device, &semaphore->permanent);
 
-   vk_object_base_finish(&semaphore->base);
-   vk_free(&device->vk.alloc, semaphore);
+   vk_object_free(&device->vk, NULL, semaphore);
 }
 
 void anv_DestroySemaphore(

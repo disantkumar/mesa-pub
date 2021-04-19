@@ -44,6 +44,7 @@
 
 struct fd_resource;
 struct fd_batch_key;
+struct fd_batch_result;
 
 /* A batch tracks everything about a cmdstream batch/submit, including the
  * ringbuffers used for binning, draw, and gmem cmds, list of associated
@@ -110,20 +111,46 @@ struct fd_batch {
 	 * color_logic_Op (since those functions are disabled when by-
 	 * passing GMEM.
 	 */
-	enum {
-		FD_GMEM_CLEARS_DEPTH_STENCIL = 0x01,
-		FD_GMEM_DEPTH_ENABLED        = 0x02,
-		FD_GMEM_STENCIL_ENABLED      = 0x04,
-
-		FD_GMEM_BLEND_ENABLED        = 0x10,
-		FD_GMEM_LOGICOP_ENABLED      = 0x20,
-		FD_GMEM_FB_READ              = 0x40,
-	} gmem_reason;
+	enum fd_gmem_reason gmem_reason;
 
 	/* At submit time, once we've decided that this batch will use GMEM
 	 * rendering, the appropriate gmem state is looked up:
 	 */
 	const struct fd_gmem_stateobj *gmem_state;
+
+	/* A calculated "draw cost" value for the batch, which tries to
+	 * estimate the bandwidth-per-sample of all the draws according
+	 * to:
+	 *
+	 *    foreach_draw (...) {
+	 *      cost += num_mrt;
+	 *      if (blend_enabled)
+	 *        cost += num_mrt;
+	 *      if (depth_test_enabled)
+	 *        cost++;
+	 *      if (depth_write_enabled)
+	 *        cost++;
+	 *    }
+	 *
+	 * The idea is that each sample-passed minimally does one write
+	 * per MRT.  If blend is enabled, the hw will additionally do
+	 * a framebuffer read per sample-passed (for each MRT with blend
+	 * enabled).  If depth-test is enabled, the hw will additionally
+	 * a depth buffer read.  If depth-write is enable, the hw will
+	 * additionally do a depth buffer write.
+	 *
+	 * This does ignore depth buffer traffic for samples which do not
+	 * pass do to depth-test fail, and some other details.  But it is
+	 * just intended to be a rough estimate that is easy to calculate.
+	 */
+	unsigned cost;
+
+	/* Tells the gen specific backend where to write stats used for
+	 * the autotune module.
+	 *
+	 * Pointer only valid during gmem emit code.
+	 */
+	struct fd_batch_result *autotune_result;
 
 	unsigned num_draws;      /* number of draws in current batch */
 	unsigned num_vertices;   /* number of vertices in current batch */
@@ -255,6 +282,10 @@ void fd_batch_add_dep(struct fd_batch *batch, struct fd_batch *dep) assert_dt;
 void fd_batch_resource_write(struct fd_batch *batch, struct fd_resource *rsc) assert_dt;
 void fd_batch_resource_read_slowpath(struct fd_batch *batch, struct fd_resource *rsc) assert_dt;
 void fd_batch_check_size(struct fd_batch *batch) assert_dt;
+
+uint32_t fd_batch_key_hash(const void *_key);
+bool fd_batch_key_equals(const void *_a, const void *_b);
+struct fd_batch_key * fd_batch_key_clone(void *mem_ctx, const struct fd_batch_key *key);
 
 /* not called directly: */
 void __fd_batch_describe(char* buf, const struct fd_batch *batch) assert_dt;

@@ -396,7 +396,7 @@ modifier_is_supported(const struct gen_device_info *devinfo,
       if (supported_modifiers[i].modifier != modifier)
          continue;
 
-      return supported_modifiers[i].since_gen <= devinfo->gen;
+      return supported_modifiers[i].since_gen <= devinfo->ver;
    }
 
    return false;
@@ -1857,8 +1857,7 @@ brw_create_buffer(__DRIscreen *dri_screen,
                                   false, /* never sw depth */
                                   false, /* never sw stencil */
                                   mesaVis->accumRedBits > 0,
-                                  false, /* never sw alpha */
-                                  false  /* never sw aux */ );
+                                  false /* never sw alpha */);
    driDrawPriv->driverPrivate = fb;
 
    return true;
@@ -1911,16 +1910,16 @@ brw_detect_swizzling(struct brw_screen *screen)
 {
    /* Broadwell PRM says:
     *
-    *   "Before Gen8, there was a historical configuration control field to
+    *   "Before Gfx8, there was a historical configuration control field to
     *    swizzle address bit[6] for in X/Y tiling modes. This was set in three
     *    different places: TILECTL[1:0], ARB_MODE[5:4], and
     *    DISP_ARB_CTL[14:13].
     *
-    *    For Gen8 and subsequent generations, the swizzle fields are all
+    *    For Gfx8 and subsequent generations, the swizzle fields are all
     *    reserved, and the CPU's memory controller performs all address
     *    swizzling modifications."
     */
-   if (screen->devinfo.gen >= 8)
+   if (screen->devinfo.ver >= 8)
       return false;
 
    uint32_t tiling = I915_TILING_X;
@@ -2086,10 +2085,10 @@ brw_detect_pipelined_so(struct brw_screen *screen)
    const struct gen_device_info *devinfo = &screen->devinfo;
 
    /* Supposedly, Broadwell just works. */
-   if (devinfo->gen >= 8)
+   if (devinfo->ver >= 8)
       return true;
 
-   if (devinfo->gen <= 6)
+   if (devinfo->ver <= 6)
       return false;
 
    /* See the big explanation about command parser versions below */
@@ -2100,7 +2099,7 @@ brw_detect_pipelined_so(struct brw_screen *screen)
     * statistics registers), and we already reset it to zero before using it.
     */
    return brw_detect_pipelined_register(screen,
-                                          GEN7_SO_WRITE_OFFSET(0),
+                                          GFX7_SO_WRITE_OFFSET(0),
                                           0x1337d0d0,
                                           false);
 }
@@ -2112,22 +2111,22 @@ brw_detect_pipelined_so(struct brw_screen *screen)
 const int*
 brw_supported_msaa_modes(const struct brw_screen  *screen)
 {
-   static const int gen9_modes[] = {16, 8, 4, 2, 0, -1};
-   static const int gen8_modes[] = {8, 4, 2, 0, -1};
-   static const int gen7_modes[] = {8, 4, 0, -1};
-   static const int gen6_modes[] = {4, 0, -1};
-   static const int gen4_modes[] = {0, -1};
+   static const int gfx9_modes[] = {16, 8, 4, 2, 0, -1};
+   static const int gfx8_modes[] = {8, 4, 2, 0, -1};
+   static const int gfx7_modes[] = {8, 4, 0, -1};
+   static const int gfx6_modes[] = {4, 0, -1};
+   static const int gfx4_modes[] = {0, -1};
 
-   if (screen->devinfo.gen >= 9) {
-      return gen9_modes;
-   } else if (screen->devinfo.gen >= 8) {
-      return gen8_modes;
-   } else if (screen->devinfo.gen >= 7) {
-      return gen7_modes;
-   } else if (screen->devinfo.gen == 6) {
-      return gen6_modes;
+   if (screen->devinfo.ver >= 9) {
+      return gfx9_modes;
+   } else if (screen->devinfo.ver >= 8) {
+      return gfx8_modes;
+   } else if (screen->devinfo.ver >= 7) {
+      return gfx7_modes;
+   } else if (screen->devinfo.ver == 6) {
+      return gfx6_modes;
    } else {
-      return gen4_modes;
+      return gfx4_modes;
    }
 }
 
@@ -2258,12 +2257,12 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
       stencil_bits[0] = 0;
 
       if (formats[i] == MESA_FORMAT_B5G6R5_UNORM) {
-         if (devinfo->gen >= 8) {
+         if (devinfo->ver >= 8) {
             depth_bits[num_depth_stencil_bits] = 16;
             stencil_bits[num_depth_stencil_bits] = 0;
             num_depth_stencil_bits++;
          }
-         if (devinfo->gen >= 6) {
+         if (devinfo->ver >= 6) {
              depth_bits[num_depth_stencil_bits] = 24;
              stencil_bits[num_depth_stencil_bits] = 8;
              num_depth_stencil_bits++;
@@ -2280,8 +2279,7 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
                                      num_depth_stencil_bits,
                                      back_buffer_modes, 2,
                                      singlesample_samples, 1,
-                                     false, false,
-                                     /*mutable_render_buffer*/ true);
+                                     false, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -2295,10 +2293,10 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
          continue;
 
       if (formats[i] == MESA_FORMAT_B5G6R5_UNORM) {
-         if (devinfo->gen >= 8) {
+         if (devinfo->ver >= 8) {
             depth_bits[0] = 16;
             stencil_bits[0] = 0;
-         } else if (devinfo->gen >= 6) {
+         } else if (devinfo->ver >= 6) {
             depth_bits[0] = 24;
             stencil_bits[0] = 8;
          } else {
@@ -2314,7 +2312,7 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
                                      depth_bits, stencil_bits, 1,
                                      back_buffer_modes, 1,
                                      singlesample_samples, 1,
-                                     true, false, false);
+                                     true, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -2332,7 +2330,7 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
     * them.
     */
    for (unsigned i = 0; i < num_formats; i++) {
-      if (devinfo->gen < 6)
+      if (devinfo->ver < 6)
          break;
 
       if (!brw_allowed_format(dri_screen, formats[i]))
@@ -2346,7 +2344,7 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
       depth_bits[0] = 0;
       stencil_bits[0] = 0;
 
-      if (formats[i] == MESA_FORMAT_B5G6R5_UNORM && devinfo->gen >= 8) {
+      if (formats[i] == MESA_FORMAT_B5G6R5_UNORM && devinfo->ver >= 8) {
          depth_bits[1] = 16;
          stencil_bits[1] = 0;
       } else {
@@ -2354,22 +2352,22 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
          stencil_bits[1] = 8;
       }
 
-      if (devinfo->gen >= 9) {
-         static const uint8_t multisample_samples_gen9[] = {2, 4, 8, 16};
-         multisample_samples = multisample_samples_gen9;
-         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen9);
-      } else if (devinfo->gen == 8) {
-         static const uint8_t multisample_samples_gen8[] = {2, 4, 8};
-         multisample_samples = multisample_samples_gen8;
-         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen8);
-      } else if (devinfo->gen == 7) {
-         static const uint8_t multisample_samples_gen7[] = {4, 8};
-         multisample_samples = multisample_samples_gen7;
-         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen7);
-      } else if (devinfo->gen == 6) {
-         static const uint8_t multisample_samples_gen6[] = {4};
-         multisample_samples = multisample_samples_gen6;
-         num_msaa_modes = ARRAY_SIZE(multisample_samples_gen6);
+      if (devinfo->ver >= 9) {
+         static const uint8_t multisample_samples_gfx9[] = {2, 4, 8, 16};
+         multisample_samples = multisample_samples_gfx9;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gfx9);
+      } else if (devinfo->ver == 8) {
+         static const uint8_t multisample_samples_gfx8[] = {2, 4, 8};
+         multisample_samples = multisample_samples_gfx8;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gfx8);
+      } else if (devinfo->ver == 7) {
+         static const uint8_t multisample_samples_gfx7[] = {4, 8};
+         multisample_samples = multisample_samples_gfx7;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gfx7);
+      } else if (devinfo->ver == 6) {
+         static const uint8_t multisample_samples_gfx6[] = {4};
+         multisample_samples = multisample_samples_gfx6;
+         num_msaa_modes = ARRAY_SIZE(multisample_samples_gfx6);
       }
 
       new_configs = driCreateConfigs(formats[i],
@@ -2379,7 +2377,7 @@ brw_screen_make_configs(__DRIscreen *dri_screen)
                                      back_buffer_modes, 1,
                                      multisample_samples,
                                      num_msaa_modes,
-                                     false, false, false);
+                                     false, false);
       configs = driConcatConfigs(configs, new_configs);
    }
 
@@ -2396,9 +2394,9 @@ static void
 set_max_gl_versions(struct brw_screen *screen)
 {
    __DRIscreen *dri_screen = screen->driScrnPriv;
-   const bool has_astc = screen->devinfo.gen >= 9;
+   const bool has_astc = screen->devinfo.ver >= 9;
 
-   switch (screen->devinfo.gen) {
+   switch (screen->devinfo.ver) {
    case 11:
    case 10:
    case 9:
@@ -2547,8 +2545,8 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
    screen->deviceID = devinfo->chipset_id;
    screen->no_hw = devinfo->no_hw;
 
-   if (devinfo->gen >= 12) {
-      fprintf(stderr, "gen12 and newer are not supported on i965\n");
+   if (devinfo->ver >= 12) {
+      fprintf(stderr, "gfx12 and newer are not supported on i965\n");
       return NULL;
    }
 
@@ -2557,9 +2555,9 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
 
    brw_process_intel_debug_variable();
 
-   if ((INTEL_DEBUG & DEBUG_SHADER_TIME) && devinfo->gen < 7) {
+   if ((INTEL_DEBUG & DEBUG_SHADER_TIME) && devinfo->ver < 7) {
       fprintf(stderr,
-              "shader_time debugging requires gen7 (Ivybridge) or better.\n");
+              "shader_time debugging requires gfx7 (Ivybridge) or better.\n");
       intel_debug &= ~DEBUG_SHADER_TIME;
    }
 
@@ -2609,7 +2607,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
    screen->subslice_total = gen_device_info_subslice_total(devinfo);
    screen->eu_total = gen_device_info_eu_total(devinfo);
 
-   /* Gen7-7.5 kernel requirements / command parser saga:
+   /* Gfx7-7.5 kernel requirements / command parser saga:
     *
     * - pre-v3.16:
     *   Haswell and Baytrail cannot use any privileged batchbuffer features.
@@ -2728,7 +2726,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
       screen->kernel_features |= KERNEL_ALLOWS_SOL_OFFSET_WRITES;
    }
 
-   if (devinfo->gen >= 8 || screen->cmd_parser_version >= 2)
+   if (devinfo->ver >= 8 || screen->cmd_parser_version >= 2)
       screen->kernel_features |= KERNEL_ALLOWS_PREDICATE_WRITES;
 
    /* Haswell requires command parser version 4 in order to have L3
@@ -2743,13 +2741,13 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
     * MI_MATH GPR registers, and version 7 in order to use
     * MI_LOAD_REGISTER_REG (which all users of MI_MATH use).
     */
-   if (devinfo->gen >= 8 ||
+   if (devinfo->ver >= 8 ||
        (devinfo->is_haswell && screen->cmd_parser_version >= 7)) {
       screen->kernel_features |= KERNEL_ALLOWS_MI_MATH_AND_LRR;
    }
 
-   /* Gen7 needs at least command parser version 5 to support compute */
-   if (devinfo->gen >= 8 || screen->cmd_parser_version >= 5)
+   /* Gfx7 needs at least command parser version 5 to support compute */
+   if (devinfo->ver >= 8 || screen->cmd_parser_version >= 5)
       screen->kernel_features |= KERNEL_ALLOWS_COMPUTE_DISPATCH;
 
    if (brw_get_boolean(screen, I915_PARAM_HAS_CONTEXT_ISOLATION))
@@ -2774,9 +2772,9 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
     * Use this to determine whether to advertise the __DRI2_ROBUSTNESS
     * extension to the loader.
     *
-    * Don't even try on pre-Gen6, since we don't attempt to use contexts there.
+    * Don't even try on pre-Gfx6, since we don't attempt to use contexts there.
     */
-   if (devinfo->gen >= 6) {
+   if (devinfo->ver >= 6) {
       struct drm_i915_reset_stats stats;
       memset(&stats, 0, sizeof(stats));
 
@@ -2797,7 +2795,7 @@ __DRIconfig **brw_init_screen(__DRIscreen *dri_screen)
     * offset to an absolute address is only safe if the kernel isolates other
     * contexts from our changes.
     */
-   screen->compiler->constant_buffer_0_is_relative = devinfo->gen < 8 ||
+   screen->compiler->constant_buffer_0_is_relative = devinfo->ver < 8 ||
       !(screen->kernel_features & KERNEL_ALLOWS_CONTEXT_ISOLATION);
 
    screen->compiler->glsl_compiler_options[MESA_SHADER_VERTEX].PositionAlwaysInvariant = driQueryOptionb(&screen->optionCache, "vs_position_always_invariant");
@@ -2846,7 +2844,7 @@ brw_allocate_buffer(__DRIscreen *dri_screen,
    if (buffer == NULL)
       return NULL;
 
-   /* The front and back buffers are color buffers, which are X tiled. GEN9+
+   /* The front and back buffers are color buffers, which are X tiled. GFX9+
     * supports Y tiled and compressed buffers, but there is no way to plumb that
     * through to here. */
    uint32_t pitch;

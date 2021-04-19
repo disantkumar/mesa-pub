@@ -1450,23 +1450,23 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
     * According to the other driver team, this applies to compute shaders
     * as well.  This is not currently documented at all.
     *
-    * This hack is no longer necessary on Gen11+.
+    * This hack is no longer necessary on Gfx11+.
     *
-    * For, Gen11+, scratch space allocation is based on the number of threads
+    * For, Gfx11+, scratch space allocation is based on the number of threads
     * in the base configuration.
     */
-   if (devinfo->gen == 12)
+   if (devinfo->ver == 12)
       subslices = (devinfo->is_dg1 || devinfo->gt == 2 ? 6 : 2);
-   else if (devinfo->gen == 11)
+   else if (devinfo->ver == 11)
       subslices = 8;
-   else if (devinfo->gen >= 9)
+   else if (devinfo->ver >= 9)
       subslices = 4 * devinfo->num_slices;
 
    unsigned scratch_ids_per_subslice;
-   if (devinfo->gen >= 12) {
+   if (devinfo->ver >= 12) {
       /* Same as ICL below, but with 16 EUs. */
       scratch_ids_per_subslice = 16 * 8;
-   } else if (devinfo->gen == 11) {
+   } else if (devinfo->ver == 11) {
       /* The MEDIA_VFE_STATE docs say:
        *
        *    "Starting with this configuration, the Maximum Number of
@@ -1610,8 +1610,8 @@ static uint32_t
 anv_device_get_bo_align(struct anv_device *device,
                         enum anv_bo_alloc_flags alloc_flags)
 {
-   /* Gen12 CCS surface addresses need to be 64K aligned. */
-   if (device->info.gen >= 12 && (alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS))
+   /* Gfx12 CCS surface addresses need to be 64K aligned. */
+   if (device->info.ver >= 12 && (alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS))
       return 64 * 1024;
 
    return 4096;
@@ -1645,7 +1645,7 @@ anv_device_alloc_bo(struct anv_device *device,
       size = align_u64(size, 64 * 1024);
 
       /* See anv_bo::_ccs_size */
-      ccs_size = align_u64(DIV_ROUND_UP(size, INTEL_AUX_MAP_GEN12_CCS_SCALE), 4096);
+      ccs_size = align_u64(DIV_ROUND_UP(size, INTEL_AUX_MAP_GFX12_CCS_SCALE), 4096);
    }
 
    uint32_t gem_handle = anv_gem_create(device, size + ccs_size);

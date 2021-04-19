@@ -38,6 +38,7 @@
 #include "util/u_sampler.h"
 #include "util/u_box.h"
 #include "util/u_inlines.h"
+#include "util/u_prim_restart.h"
 #include "util/format/u_format_zs.h"
 
 #include "vk_util.h"
@@ -62,7 +63,6 @@ struct rendering_state {
    bool min_samples_dirty;
    struct pipe_draw_indirect_info indirect_info;
    struct pipe_draw_info info;
-   struct pipe_draw_start_count draw;
 
    struct pipe_grid_info dispatch_info;
    struct pipe_framebuffer_state framebuffer;
@@ -122,6 +122,7 @@ struct rendering_state {
    uint32_t sample_mask;
    unsigned min_samples;
 
+   struct lvp_image_view **imageless_views;
    const struct lvp_attachment_state *attachments;
    VkImageAspectFlags *pending_clear_aspects;
    uint32_t *cleared_views;
@@ -131,6 +132,24 @@ struct rendering_state {
    struct pipe_stream_output_target *so_targets[PIPE_MAX_SO_BUFFERS];
    uint32_t so_offsets[PIPE_MAX_SO_BUFFERS];
 };
+
+ALWAYS_INLINE static void
+assert_subresource_layers(const struct pipe_resource *pres, const VkImageSubresourceLayers *layers, const VkOffset3D *offsets)
+{
+#ifndef NDEBUG
+   if (pres->target == PIPE_TEXTURE_3D) {
+      assert(layers->baseArrayLayer == 0);
+      assert(layers->layerCount == 1);
+      assert(offsets[0].z <= pres->depth0);
+      assert(offsets[1].z <= pres->depth0);
+   } else {
+      assert(layers->baseArrayLayer < pres->array_size);
+      assert(layers->baseArrayLayer + layers->layerCount <= pres->array_size);
+      assert(offsets[0].z == 0);
+      assert(offsets[1].z == 1);
+   }
+#endif
+}
 
 static void emit_compute_state(struct rendering_state *state)
 {
@@ -1160,29 +1179,42 @@ static void handle_descriptor_sets(struct lvp_cmd_buffer_entry *cmd,
    }
 }
 
+static struct pipe_surface *create_img_surface_bo(struct rendering_state *state,
+                                                  VkImageSubresourceRange *range,
+                                                  struct pipe_resource *bo,
+                                                  enum pipe_format pformat,
+                                                  int width,
+                                                  int height,
+                                                  int base_layer, int layer_count,
+                                                  int level)
+{
+   struct pipe_surface template;
+
+   memset(&template, 0, sizeof(struct pipe_surface));
+
+   template.format = pformat;
+   template.width = width;
+   template.height = height;
+   template.u.tex.first_layer = range->baseArrayLayer + base_layer;
+   template.u.tex.last_layer = range->baseArrayLayer + layer_count;
+   template.u.tex.level = range->baseMipLevel + level;
+
+   if (template.format == PIPE_FORMAT_NONE)
+      return NULL;
+   return state->pctx->create_surface(state->pctx,
+                                      bo, &template);
+
+}
 static struct pipe_surface *create_img_surface(struct rendering_state *state,
                                                struct lvp_image_view *imgv,
                                                VkFormat format, int width,
                                                int height,
                                                int base_layer, int layer_count)
 {
-   struct pipe_surface template;
-
-   memset(&template, 0, sizeof(struct pipe_surface));
-
-   template.format = vk_format_to_pipe(format);
-   template.width = width;
-   template.height = height;
-   template.u.tex.first_layer = imgv->subresourceRange.baseArrayLayer + base_layer;
-   template.u.tex.last_layer = imgv->subresourceRange.baseArrayLayer + layer_count;
-   template.u.tex.level = imgv->subresourceRange.baseMipLevel;
-
-   if (template.format == PIPE_FORMAT_NONE)
-      return NULL;
-   return state->pctx->create_surface(state->pctx,
-                                      imgv->image->bo, &template);
-
+   return create_img_surface_bo(state, &imgv->subresourceRange, imgv->image->bo,
+                                vk_format_to_pipe(format), width, height, base_layer, layer_count, 0);
 }
+
 static void add_img_view_surface(struct rendering_state *state,
                                  struct lvp_image_view *imgv, VkFormat format, int width, int height)
 {
@@ -1256,6 +1288,16 @@ static void clear_attachment_layers(struct rendering_state *state,
    state->pctx->surface_destroy(state->pctx, clear_surf);
 }
 
+static struct lvp_image_view *
+get_attachment(struct rendering_state *state,
+               unsigned idx)
+{
+   if (state->imageless_views)
+      return state->imageless_views[idx];
+   else
+      return state->vk_framebuffer->attachments[idx];
+}
+
 static void render_subpass_clear(struct rendering_state *state)
 {
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
@@ -1273,7 +1315,7 @@ static void render_subpass_clear(struct rendering_state *state)
       color_clear_val.ui[2] = value.color.uint32[2];
       color_clear_val.ui[3] = value.color.uint32[3];
 
-      struct lvp_image_view *imgv = state->vk_framebuffer->attachments[a];
+      struct lvp_image_view *imgv = get_attachment(state, a);
 
       assert(imgv->surface);
 
@@ -1300,7 +1342,7 @@ static void render_subpass_clear(struct rendering_state *state)
          return;
 
       struct lvp_render_pass_attachment *att = &state->pass->attachments[ds];
-      struct lvp_image_view *imgv = state->vk_framebuffer->attachments[ds];
+      struct lvp_image_view *imgv = get_attachment(state, ds);
 
       assert (util_format_is_depth_or_stencil(imgv->surface->format));
 
@@ -1398,7 +1440,7 @@ static void render_subpass_clear_fast(struct rendering_state *state)
       uint32_t ds = subpass->depth_stencil_attachment->attachment;
 
       struct lvp_render_pass_attachment *att = &state->pass->attachments[ds];
-      struct lvp_image_view *imgv = state->vk_framebuffer->attachments[ds];
+      struct lvp_image_view *imgv = get_attachment(state, ds);
       const struct util_format_description *desc = util_format_description(imgv->surface->format);
 
       /* also clear stencil for don't care to avoid RMW */
@@ -1437,8 +1479,8 @@ static void render_pass_resolve(struct rendering_state *state)
       if (dst_att.attachment == VK_ATTACHMENT_UNUSED)
          continue;
 
-      struct lvp_image_view *src_imgv = state->vk_framebuffer->attachments[src_att.attachment];
-      struct lvp_image_view *dst_imgv = state->vk_framebuffer->attachments[dst_att.attachment];
+      struct lvp_image_view *src_imgv = get_attachment(state, src_att.attachment);
+      struct lvp_image_view *dst_imgv = get_attachment(state, dst_att.attachment);
 
       struct pipe_blit_info info;
       memset(&info, 0, sizeof(info));
@@ -1472,8 +1514,7 @@ static void begin_render_subpass(struct rendering_state *state,
    for (unsigned i = 0; i < subpass->color_count; i++) {
       struct lvp_subpass_attachment *color_att = &subpass->color_attachments[i];
       if (color_att->attachment != VK_ATTACHMENT_UNUSED) {
-         struct lvp_image_view *imgv = state->vk_framebuffer->attachments[color_att->attachment];
-
+         struct lvp_image_view *imgv = get_attachment(state, color_att->attachment);
          add_img_view_surface(state, imgv, state->pass->attachments[color_att->attachment].format, state->framebuffer.width, state->framebuffer.height);
          state->framebuffer.cbufs[state->framebuffer.nr_cbufs] = imgv->surface;
       } else
@@ -1485,7 +1526,7 @@ static void begin_render_subpass(struct rendering_state *state,
       struct lvp_subpass_attachment *ds_att = subpass->depth_stencil_attachment;
 
       if (ds_att->attachment != VK_ATTACHMENT_UNUSED) {
-         struct lvp_image_view *imgv = state->vk_framebuffer->attachments[ds_att->attachment];
+         struct lvp_image_view *imgv = get_attachment(state, ds_att->attachment);
          add_img_view_surface(state, imgv, state->pass->attachments[ds_att->attachment].format, state->framebuffer.width, state->framebuffer.height);
          state->framebuffer.zsbuf = imgv->surface;
       }
@@ -1507,6 +1548,7 @@ static void handle_begin_render_pass(struct lvp_cmd_buffer_entry *cmd,
 
    state->attachments = cmd->u.begin_render_pass.attachments;
 
+   state->imageless_views = cmd->u.begin_render_pass.imageless_views;
    state->framebuffer.width = state->vk_framebuffer->width;
    state->framebuffer.height = state->vk_framebuffer->height;
    state->framebuffer.layers = state->vk_framebuffer->layers;
@@ -1551,13 +1593,11 @@ static void handle_draw(struct lvp_cmd_buffer_entry *cmd,
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
    state->info.index_size = 0;
    state->info.index.resource = NULL;
-   state->draw.start = cmd->u.draw.first_vertex;
-   state->draw.count = cmd->u.draw.vertex_count;
    state->info.start_instance = cmd->u.draw.first_instance;
    state->info.instance_count = cmd->u.draw.instance_count;
    state->info.view_mask = subpass->view_mask;
 
-   state->pctx->draw_vbo(state->pctx, &state->info, NULL, &state->draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, NULL, cmd->u.draw.draws, cmd->u.draw.draw_count);
 }
 
 static void handle_set_viewport(struct lvp_cmd_buffer_entry *cmd,
@@ -1945,16 +1985,24 @@ static void handle_copy_image(struct lvp_cmd_buffer_entry *cmd,
       struct pipe_box src_box;
       src_box.x = copycmd->regions[i].srcOffset.x;
       src_box.y = copycmd->regions[i].srcOffset.y;
-      src_box.z = copycmd->regions[i].srcOffset.z + copycmd->regions[i].srcSubresource.baseArrayLayer;
       src_box.width = copycmd->regions[i].extent.width;
       src_box.height = copycmd->regions[i].extent.height;
-      src_box.depth = copycmd->regions[i].extent.depth;
+      if (copycmd->src->bo->target == PIPE_TEXTURE_3D) {
+         src_box.depth = copycmd->regions[i].extent.depth;
+         src_box.z = copycmd->regions[i].srcOffset.z;
+      } else {
+         src_box.depth = copycmd->regions[i].srcSubresource.layerCount;
+         src_box.z = copycmd->regions[i].srcSubresource.baseArrayLayer;
+      }
 
+      unsigned dstz = copycmd->dst->bo->target == PIPE_TEXTURE_3D ?
+                      copycmd->regions[i].dstOffset.z :
+                      copycmd->regions[i].dstSubresource.baseArrayLayer;
       state->pctx->resource_copy_region(state->pctx, copycmd->dst->bo,
                                         copycmd->regions[i].dstSubresource.mipLevel,
                                         copycmd->regions[i].dstOffset.x,
                                         copycmd->regions[i].dstOffset.y,
-                                        copycmd->regions[i].dstOffset.z + copycmd->regions[i].dstSubresource.baseArrayLayer,
+                                        dstz,
                                         copycmd->src->bo,
                                         copycmd->regions[i].srcSubresource.mipLevel,
                                         &src_box);
@@ -2034,6 +2082,8 @@ static void handle_blit_image(struct lvp_cmd_buffer_entry *cmd,
          info.src.box.height = srcY0 - srcY1;
       }
 
+      assert_subresource_layers(info.src.resource, &blitcmd->regions[i].srcSubresource, blitcmd->regions[i].srcOffsets);
+      assert_subresource_layers(info.dst.resource, &blitcmd->regions[i].dstSubresource, blitcmd->regions[i].dstOffsets);
       if (blitcmd->src->bo->target == PIPE_TEXTURE_3D) {
          if (dstZ0 < dstZ1) {
             info.dst.box.z = dstZ0;
@@ -2107,26 +2157,27 @@ static void handle_draw_indexed(struct lvp_cmd_buffer_entry *cmd,
    state->info.max_index = ~0;
    state->info.index_size = state->index_size;
    state->info.index.resource = state->index_buffer;
-   state->draw.start = (state->index_offset / state->index_size) + cmd->u.draw_indexed.first_index;
-   state->draw.count = cmd->u.draw_indexed.index_count;
    state->info.start_instance = cmd->u.draw_indexed.first_instance;
    state->info.instance_count = cmd->u.draw_indexed.instance_count;
    state->info.index_bias = cmd->u.draw_indexed.vertex_offset;
    state->info.view_mask = subpass->view_mask;
 
-   if (state->info.primitive_restart) {
-      if (state->info.index_size == 4)
-         state->info.restart_index = 0xffffffff;
-      else
-         state->info.restart_index = 0xffff;
+   if (state->info.primitive_restart)
+      state->info.restart_index = util_prim_restart_index_from_size(state->info.index_size);
+   /* avoid calculating multiple times if cmdbuf is submitted again */
+   if (cmd->u.draw_indexed.calc_start) {
+      for (unsigned i = 0; i < cmd->u.draw_indexed.draw_count; i++)
+         cmd->u.draw_indexed.draws[i].start = (state->index_offset / state->index_size) + cmd->u.draw_indexed.draws[i].start;
+      cmd->u.draw_indexed.calc_start = false;
    }
-   state->pctx->draw_vbo(state->pctx, &state->info, NULL, &state->draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, NULL, cmd->u.draw_indexed.draws, cmd->u.draw_indexed.draw_count);
 }
 
 static void handle_draw_indirect(struct lvp_cmd_buffer_entry *cmd,
                                  struct rendering_state *state, bool indexed)
 {
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
+   struct pipe_draw_start_count draw = {0};
    if (indexed) {
       state->info.index_bounds_valid = false;
       state->info.index_size = state->index_size;
@@ -2140,7 +2191,7 @@ static void handle_draw_indirect(struct lvp_cmd_buffer_entry *cmd,
    state->indirect_info.buffer = cmd->u.draw_indirect.buffer->bo;
    state->info.view_mask = subpass->view_mask;
 
-   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &state->draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &draw, 1);
 }
 
 static void handle_index_buffer(struct lvp_cmd_buffer_entry *cmd,
@@ -2260,6 +2311,18 @@ static void handle_pipeline_barrier(struct lvp_cmd_buffer_entry *cmd,
    state->pctx->flush(state->pctx, NULL, 0);
 }
 
+static void maybe_emit_state_for_begin_query(struct lvp_cmd_buffer_entry *cmd,
+                                             struct rendering_state *state)
+{
+   struct lvp_cmd_query_cmd *qcmd = &cmd->u.query;
+   struct lvp_query_pool *pool = qcmd->pool;
+
+   if (pool->type == VK_QUERY_TYPE_PIPELINE_STATISTICS &&
+       pool->pipeline_stats & VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT)
+      emit_compute_state(state);
+   emit_state(state);
+}
+
 static void handle_begin_query(struct lvp_cmd_buffer_entry *cmd,
                                struct rendering_state *state)
 {
@@ -2323,7 +2386,7 @@ static void handle_copy_query_pool_results(struct lvp_cmd_buffer_entry *cmd,
    struct lvp_query_pool *pool = copycmd->pool;
 
    for (unsigned i = copycmd->first_query; i < copycmd->first_query + copycmd->query_count; i++) {
-      unsigned offset = copycmd->dst->offset + (copycmd->stride * (i - copycmd->first_query));
+      unsigned offset = copycmd->dst_offset + copycmd->dst->offset + (copycmd->stride * (i - copycmd->first_query));
       if (pool->queries[i]) {
          if (copycmd->flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT)
             state->pctx->get_query_result_resource(state->pctx,
@@ -2333,13 +2396,26 @@ static void handle_copy_query_pool_results(struct lvp_cmd_buffer_entry *cmd,
                                                    -1,
                                                    copycmd->dst->bo,
                                                    offset + (copycmd->flags & VK_QUERY_RESULT_64_BIT ? 8 : 4));
-         state->pctx->get_query_result_resource(state->pctx,
-                                                pool->queries[i],
-                                                copycmd->flags & VK_QUERY_RESULT_WAIT_BIT,
-                                                copycmd->flags & VK_QUERY_RESULT_64_BIT ? PIPE_QUERY_TYPE_U64 : PIPE_QUERY_TYPE_U32,
-                                                0,
-                                                copycmd->dst->bo,
-                                                offset);
+         if (pool->type == VK_QUERY_TYPE_PIPELINE_STATISTICS) {
+            unsigned num_results = 0;
+            unsigned result_size = copycmd->flags & VK_QUERY_RESULT_64_BIT ? 8 : 4;
+            u_foreach_bit(bit, pool->pipeline_stats)
+               state->pctx->get_query_result_resource(state->pctx,
+                                                      pool->queries[i],
+                                                      copycmd->flags & VK_QUERY_RESULT_WAIT_BIT,
+                                                      copycmd->flags & VK_QUERY_RESULT_64_BIT ? PIPE_QUERY_TYPE_U64 : PIPE_QUERY_TYPE_U32,
+                                                      bit,
+                                                      copycmd->dst->bo,
+                                                      offset + num_results++ * result_size);
+         } else {
+            state->pctx->get_query_result_resource(state->pctx,
+                                                   pool->queries[i],
+                                                   copycmd->flags & VK_QUERY_RESULT_WAIT_BIT,
+                                                   copycmd->flags & VK_QUERY_RESULT_64_BIT ? PIPE_QUERY_TYPE_U64 : PIPE_QUERY_TYPE_U32,
+                                                   0,
+                                                   copycmd->dst->bo,
+                                                   offset);
+         }
       } else {
          /* if no queries emitted yet, just reset the buffer to 0 so avail is reported correctly */
          if (copycmd->flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) {
@@ -2347,7 +2423,8 @@ static void handle_copy_query_pool_results(struct lvp_cmd_buffer_entry *cmd,
             uint32_t *map;
 
             struct pipe_box box = {0};
-            box.width = copycmd->stride * copycmd->query_count;
+            box.x = offset;
+            box.width = copycmd->stride;
             box.height = 1;
             box.depth = 1;
             map = state->pctx->transfer_map(state->pctx,
@@ -2431,33 +2508,35 @@ static void handle_clear_ds_image(struct lvp_cmd_buffer_entry *cmd,
                                   struct rendering_state *state)
 {
    struct lvp_image *image = cmd->u.clear_ds_image.image;
-   uint64_t col_val;
-   col_val = util_pack64_z_stencil(image->bo->format, cmd->u.clear_ds_image.clear_val.depth, cmd->u.clear_ds_image.clear_val.stencil);
    for (unsigned i = 0; i < cmd->u.clear_ds_image.range_count; i++) {
       VkImageSubresourceRange *range = &cmd->u.clear_ds_image.ranges[i];
-      struct pipe_box box;
-      box.x = 0;
-      box.y = 0;
-      box.z = 0;
+      uint32_t ds_clear_flags = 0;
+      if (range->aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT)
+         ds_clear_flags |= PIPE_CLEAR_DEPTH;
+      if (range->aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT)
+         ds_clear_flags |= PIPE_CLEAR_STENCIL;
 
       uint32_t level_count = lvp_get_levelCount(image, range);
-      for (unsigned j = range->baseMipLevel; j < range->baseMipLevel + level_count; j++) {
-         box.width = u_minify(image->bo->width0, j);
-         box.height = u_minify(image->bo->height0, j);
-         box.depth = 1;
-         if (image->bo->target == PIPE_TEXTURE_3D)
-            box.depth = u_minify(image->bo->depth0, j);
-         else if (image->bo->target == PIPE_TEXTURE_1D_ARRAY) {
-            box.y = range->baseArrayLayer;
-            box.height = lvp_get_layerCount(image, range);
-            box.depth = 1;
-         } else {
-            box.z = range->baseArrayLayer;
-            box.depth = lvp_get_layerCount(image, range);
-         }
+      for (unsigned j = 0; j < level_count; j++) {
+         struct pipe_surface *surf;
+         unsigned width, height;
 
-         state->pctx->clear_texture(state->pctx, image->bo,
-                                    j, &box, (void *)&col_val);
+         width = u_minify(image->bo->width0, range->baseMipLevel + j);
+         height = u_minify(image->bo->height0, range->baseMipLevel + j);
+
+         surf = create_img_surface_bo(state, range,
+                                      image->bo, image->bo->format,
+                                      width, height,
+                                      0, lvp_get_layerCount(image, range) - 1, j);
+
+         state->pctx->clear_depth_stencil(state->pctx,
+                                          surf,
+                                          ds_clear_flags,
+                                          cmd->u.clear_ds_image.clear_val.depth,
+                                          cmd->u.clear_ds_image.clear_val.stencil,
+                                          0, 0,
+                                          width, height, true);
+         state->pctx->surface_destroy(state->pctx, surf);
       }
    }
 }
@@ -2474,12 +2553,12 @@ static void handle_clear_attachments(struct lvp_cmd_buffer_entry *cmd,
          struct lvp_subpass_attachment *color_att = &subpass->color_attachments[att->colorAttachment];
          if (!color_att || color_att->attachment == VK_ATTACHMENT_UNUSED)
             continue;
-         imgv = state->vk_framebuffer->attachments[color_att->attachment];
+         imgv = get_attachment(state, color_att->attachment);
       } else {
          struct lvp_subpass_attachment *ds_att = subpass->depth_stencil_attachment;
          if (!ds_att || ds_att->attachment == VK_ATTACHMENT_UNUSED)
             continue;
-         imgv = state->vk_framebuffer->attachments[ds_att->attachment];
+         imgv = get_attachment(state, ds_att->attachment);
       }
       union pipe_color_union col_val;
       double dclear_val = 0;
@@ -2569,6 +2648,7 @@ static void handle_draw_indirect_count(struct lvp_cmd_buffer_entry *cmd,
                                        struct rendering_state *state, bool indexed)
 {
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
+   struct pipe_draw_start_count draw = {0};
    if (indexed) {
       state->info.index_bounds_valid = false;
       state->info.index_size = state->index_size;
@@ -2584,7 +2664,7 @@ static void handle_draw_indirect_count(struct lvp_cmd_buffer_entry *cmd,
    state->indirect_info.indirect_draw_count = cmd->u.draw_indirect_count.count_buffer->bo;
    state->info.view_mask = subpass->view_mask;
 
-   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &state->draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &draw, 1);
 }
 
 static void handle_compute_push_descriptor_set(struct lvp_cmd_buffer_entry *cmd,
@@ -2745,19 +2825,20 @@ static void handle_draw_indirect_byte_count(struct lvp_cmd_buffer_entry *cmd,
 {
    struct lvp_cmd_draw_indirect_byte_count *dibc = &cmd->u.draw_indirect_byte_count;
    const struct lvp_subpass *subpass = &state->pass->subpasses[state->subpass];
+   struct pipe_draw_start_count draw = {0};
 
    pipe_buffer_read(state->pctx,
                     dibc->counter_buffer->bo,
                     dibc->counter_buffer->offset + dibc->counter_buffer_offset,
-                    4, &state->draw.count);
+                    4, &draw.count);
 
    state->info.start_instance = cmd->u.draw_indirect_byte_count.first_instance;
    state->info.instance_count = cmd->u.draw_indirect_byte_count.instance_count;
    state->info.index_size = 0;
 
-   state->draw.count /= cmd->u.draw_indirect_byte_count.vertex_stride;
+   draw.count /= cmd->u.draw_indirect_byte_count.vertex_stride;
    state->info.view_mask = subpass->view_mask;
-   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &state->draw, 1);
+   state->pctx->draw_vbo(state->pctx, &state->info, &state->indirect_info, &draw, 1);
 }
 
 static void handle_begin_conditional_rendering(struct lvp_cmd_buffer_entry *cmd,
@@ -2965,6 +3046,7 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
          handle_pipeline_barrier(cmd, state);
          break;
       case LVP_CMD_BEGIN_QUERY:
+         maybe_emit_state_for_begin_query(cmd, state);
          handle_begin_query(cmd, state);
          break;
       case LVP_CMD_END_QUERY:

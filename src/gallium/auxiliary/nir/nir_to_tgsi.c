@@ -1012,7 +1012,7 @@ ntt_emit_alu(struct ntt_compile *c, nir_alu_instr *instr)
           * However, fcsel so far as I can find only appears on
           * bools-as-floats (1.0 or 0.0), so we can negate it for the TGSI op.
           */
-         ureg_CMP(c->ureg, dst, ureg_negate(src[0]), src[2], src[1]);
+         ureg_CMP(c->ureg, dst, ureg_negate(ureg_abs(src[0])), src[1], src[2]);
          break;
 
          /* It would be nice if we could get this left as scalar in NIR, since
@@ -2411,6 +2411,7 @@ ntt_optimize_nir(struct nir_shader *s, struct pipe_screen *screen)
 
       NIR_PASS(progress, s, nir_copy_prop);
       NIR_PASS(progress, s, nir_opt_algebraic);
+      NIR_PASS(progress, s, nir_opt_constant_folding);
       NIR_PASS(progress, s, nir_opt_remove_phis);
       NIR_PASS(progress, s, nir_opt_conditional_discard);
       NIR_PASS(progress, s, nir_opt_dce);
@@ -2646,9 +2647,12 @@ nir_to_tgsi_lower_64bit_to_vec2(nir_shader *s)
 }
 
 static void
-ntt_fix_nir_options(struct nir_shader *s)
+ntt_fix_nir_options(struct pipe_screen *screen, struct nir_shader *s)
 {
    const struct nir_shader_compiler_options *options = s->options;
+   bool lower_fsqrt =
+      !screen->get_shader_param(screen, pipe_shader_type_from_mesa(s->info.stage),
+                                PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED);
 
    if (!options->lower_extract_byte ||
        !options->lower_extract_word ||
@@ -2657,7 +2661,8 @@ ntt_fix_nir_options(struct nir_shader *s)
        !options->lower_fmod ||
        !options->lower_rotate ||
        !options->lower_uniforms_to_ubo ||
-       !options->lower_vector_cmp) {
+       !options->lower_vector_cmp ||
+       options->lower_fsqrt != lower_fsqrt) {
       nir_shader_compiler_options *new_options = ralloc(s, nir_shader_compiler_options);
       *new_options = *s->options;
 
@@ -2669,6 +2674,7 @@ ntt_fix_nir_options(struct nir_shader *s)
       new_options->lower_rotate = true;
       new_options->lower_uniforms_to_ubo = true,
       new_options->lower_vector_cmp = true;
+      new_options->lower_fsqrt = lower_fsqrt;
 
       s->options = new_options;
    }
@@ -2694,7 +2700,7 @@ nir_to_tgsi(struct nir_shader *s,
                                                    PIPE_SHADER_CAP_INTEGERS);
    const struct nir_shader_compiler_options *original_options = s->options;
 
-   ntt_fix_nir_options(s);
+   ntt_fix_nir_options(screen, s);
 
    NIR_PASS_V(s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
               type_size, (nir_lower_io_options)0);

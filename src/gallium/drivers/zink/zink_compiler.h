@@ -99,9 +99,21 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
                  const struct pipe_stream_output_info *so_info);
 
 void
+zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr, bool optimize);
+
+void
 zink_shader_free(struct zink_context *ctx, struct zink_shader *shader);
 
 struct zink_shader *
 zink_shader_tcs_create(struct zink_context *ctx, struct zink_shader *vs);
 
+static inline bool
+zink_shader_descriptor_is_buffer(struct zink_shader *zs, enum zink_descriptor_type type, unsigned i)
+{
+   return zs->bindings[type][i].type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER ||
+          zs->bindings[type][i].type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+}
+
+uint32_t
+zink_binding(gl_shader_stage stage, VkDescriptorType type, int index);;
 #endif

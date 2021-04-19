@@ -113,7 +113,7 @@ brw_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
 }
 
 static void
-gen6_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
+gfx6_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
 {
    const struct gl_context *ctx = &brw->ctx;
    uint32_t hw_prim;
@@ -137,8 +137,8 @@ gen6_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
 
 /**
  * The hardware is capable of removing dangling vertices on its own; however,
- * prior to Gen6, we sometimes convert quads into trifans (and quad strips
- * into tristrips), since pre-Gen6 hardware requires a GS to render quads.
+ * prior to Gfx6, we sometimes convert quads into trifans (and quad strips
+ * into tristrips), since pre-Gfx6 hardware requires a GS to render quads.
  * This function manually trims dangling vertices from a draw call involving
  * quads so that those dangling vertices won't get drawn when we convert to
  * trifans/tristrips.
@@ -178,20 +178,20 @@ brw_emit_prim(struct brw_context *brw,
    int base_vertex_location = prim->basevertex;
 
    if (is_indexed) {
-      vertex_access_type = devinfo->gen >= 7 ?
-         GEN7_3DPRIM_VERTEXBUFFER_ACCESS_RANDOM :
-         GEN4_3DPRIM_VERTEXBUFFER_ACCESS_RANDOM;
+      vertex_access_type = devinfo->ver >= 7 ?
+         GFX7_3DPRIM_VERTEXBUFFER_ACCESS_RANDOM :
+         GFX4_3DPRIM_VERTEXBUFFER_ACCESS_RANDOM;
       start_vertex_location += brw->ib.start_vertex_offset;
       base_vertex_location += brw->vb.start_vertex_bias;
    } else {
-      vertex_access_type = devinfo->gen >= 7 ?
-         GEN7_3DPRIM_VERTEXBUFFER_ACCESS_SEQUENTIAL :
-         GEN4_3DPRIM_VERTEXBUFFER_ACCESS_SEQUENTIAL;
+      vertex_access_type = devinfo->ver >= 7 ?
+         GFX7_3DPRIM_VERTEXBUFFER_ACCESS_SEQUENTIAL :
+         GFX4_3DPRIM_VERTEXBUFFER_ACCESS_SEQUENTIAL;
       start_vertex_location += brw->vb.start_vertex_bias;
    }
 
-   /* We only need to trim the primitive count on pre-Gen6. */
-   if (devinfo->gen < 6)
+   /* We only need to trim the primitive count on pre-Gfx6. */
+   if (devinfo->ver < 6)
       verts_per_instance = trim(prim->mode, prim->count);
    else
       verts_per_instance = prim->count;
@@ -210,20 +210,20 @@ brw_emit_prim(struct brw_context *brw,
 
    /* If indirect, emit a bunch of loads from the indirect BO. */
    if (xfb_obj) {
-      indirect_flag = GEN7_3DPRIM_INDIRECT_PARAMETER_ENABLE;
+      indirect_flag = GFX7_3DPRIM_INDIRECT_PARAMETER_ENABLE;
 
-      brw_load_register_mem(brw, GEN7_3DPRIM_VERTEX_COUNT,
+      brw_load_register_mem(brw, GFX7_3DPRIM_VERTEX_COUNT,
                             xfb_obj->prim_count_bo,
                             stream * sizeof(uint32_t));
       BEGIN_BATCH(9);
       OUT_BATCH(MI_LOAD_REGISTER_IMM | (9 - 2));
-      OUT_BATCH(GEN7_3DPRIM_INSTANCE_COUNT);
+      OUT_BATCH(GFX7_3DPRIM_INSTANCE_COUNT);
       OUT_BATCH(num_instances);
-      OUT_BATCH(GEN7_3DPRIM_START_VERTEX);
+      OUT_BATCH(GFX7_3DPRIM_START_VERTEX);
       OUT_BATCH(0);
-      OUT_BATCH(GEN7_3DPRIM_BASE_VERTEX);
+      OUT_BATCH(GFX7_3DPRIM_BASE_VERTEX);
       OUT_BATCH(0);
-      OUT_BATCH(GEN7_3DPRIM_START_INSTANCE);
+      OUT_BATCH(GFX7_3DPRIM_START_INSTANCE);
       OUT_BATCH(0);
       ADVANCE_BATCH();
    } else if (is_indirect) {
@@ -232,41 +232,41 @@ brw_emit_prim(struct brw_context *brw,
             brw_buffer_object(indirect_buffer),
             indirect_offset, 5 * sizeof(GLuint), false);
 
-      indirect_flag = GEN7_3DPRIM_INDIRECT_PARAMETER_ENABLE;
+      indirect_flag = GFX7_3DPRIM_INDIRECT_PARAMETER_ENABLE;
 
-      brw_load_register_mem(brw, GEN7_3DPRIM_VERTEX_COUNT, bo,
+      brw_load_register_mem(brw, GFX7_3DPRIM_VERTEX_COUNT, bo,
                             indirect_offset + 0);
-      brw_load_register_mem(brw, GEN7_3DPRIM_INSTANCE_COUNT, bo,
+      brw_load_register_mem(brw, GFX7_3DPRIM_INSTANCE_COUNT, bo,
                             indirect_offset + 4);
 
-      brw_load_register_mem(brw, GEN7_3DPRIM_START_VERTEX, bo,
+      brw_load_register_mem(brw, GFX7_3DPRIM_START_VERTEX, bo,
                             indirect_offset + 8);
       if (is_indexed) {
-         brw_load_register_mem(brw, GEN7_3DPRIM_BASE_VERTEX, bo,
+         brw_load_register_mem(brw, GFX7_3DPRIM_BASE_VERTEX, bo,
                                indirect_offset + 12);
-         brw_load_register_mem(brw, GEN7_3DPRIM_START_INSTANCE, bo,
+         brw_load_register_mem(brw, GFX7_3DPRIM_START_INSTANCE, bo,
                                indirect_offset + 16);
       } else {
-         brw_load_register_mem(brw, GEN7_3DPRIM_START_INSTANCE, bo,
+         brw_load_register_mem(brw, GFX7_3DPRIM_START_INSTANCE, bo,
                                indirect_offset + 12);
-         brw_load_register_imm32(brw, GEN7_3DPRIM_BASE_VERTEX, 0);
+         brw_load_register_imm32(brw, GFX7_3DPRIM_BASE_VERTEX, 0);
       }
    } else {
       indirect_flag = 0;
    }
 
-   BEGIN_BATCH(devinfo->gen >= 7 ? 7 : 6);
+   BEGIN_BATCH(devinfo->ver >= 7 ? 7 : 6);
 
-   if (devinfo->gen >= 7) {
+   if (devinfo->ver >= 7) {
       const int predicate_enable =
          (brw->predicate.state == BRW_PREDICATE_STATE_USE_BIT)
-         ? GEN7_3DPRIM_PREDICATE_ENABLE : 0;
+         ? GFX7_3DPRIM_PREDICATE_ENABLE : 0;
 
       OUT_BATCH(CMD_3D_PRIM << 16 | (7 - 2) | indirect_flag | predicate_enable);
       OUT_BATCH(hw_prim | vertex_access_type);
    } else {
       OUT_BATCH(CMD_3D_PRIM << 16 | (6 - 2) |
-                hw_prim << GEN4_3DPRIM_TOPOLOGY_TYPE_SHIFT |
+                hw_prim << GFX4_3DPRIM_TOPOLOGY_TYPE_SHIFT |
                 vertex_access_type);
    }
    OUT_BATCH(verts_per_instance);
@@ -336,7 +336,7 @@ brw_merge_inputs(struct brw_context *brw)
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
    const struct gl_context *ctx = &brw->ctx;
 
-   if (devinfo->gen < 8 && !devinfo->is_haswell) {
+   if (devinfo->ver < 8 && !devinfo->is_haswell) {
       /* Prior to Haswell, the hardware can't natively support GL_FIXED or
        * 2_10_10_10_REV vertex formats.  Set appropriate workaround flags.
        */
@@ -411,7 +411,7 @@ brw_disable_rb_aux_buffer(struct brw_context *brw,
 
 /** Implement the ASTC 5x5 sampler workaround
  *
- * Gen9 sampling hardware has a bug where an ASTC 5x5 compressed surface
+ * Gfx9 sampling hardware has a bug where an ASTC 5x5 compressed surface
  * cannot live in the sampler cache at the same time as an aux compressed
  * surface.  In order to work around the bug we have to stall rendering with a
  * CS and pixel scoreboard stall (implicit in the CS stall) and invalidate the
@@ -430,45 +430,45 @@ brw_disable_rb_aux_buffer(struct brw_context *brw,
  * ignore the possibility and hope for the best.
  */
 static void
-gen9_apply_astc5x5_wa_flush(struct brw_context *brw,
-                            enum gen9_astc5x5_wa_tex_type curr_mask)
+gfx9_apply_astc5x5_wa_flush(struct brw_context *brw,
+                            enum gfx9_astc5x5_wa_tex_type curr_mask)
 {
-   assert(brw->screen->devinfo.gen == 9);
+   assert(brw->screen->devinfo.ver == 9);
 
-   if (((brw->gen9_astc5x5_wa_tex_mask & GEN9_ASTC5X5_WA_TEX_TYPE_ASTC5x5) &&
-        (curr_mask & GEN9_ASTC5X5_WA_TEX_TYPE_AUX)) ||
-       ((brw->gen9_astc5x5_wa_tex_mask & GEN9_ASTC5X5_WA_TEX_TYPE_AUX) &&
-        (curr_mask & GEN9_ASTC5X5_WA_TEX_TYPE_ASTC5x5))) {
+   if (((brw->gfx9_astc5x5_wa_tex_mask & GFX9_ASTC5X5_WA_TEX_TYPE_ASTC5x5) &&
+        (curr_mask & GFX9_ASTC5X5_WA_TEX_TYPE_AUX)) ||
+       ((brw->gfx9_astc5x5_wa_tex_mask & GFX9_ASTC5X5_WA_TEX_TYPE_AUX) &&
+        (curr_mask & GFX9_ASTC5X5_WA_TEX_TYPE_ASTC5x5))) {
       brw_emit_pipe_control_flush(brw, PIPE_CONTROL_CS_STALL);
       brw_emit_pipe_control_flush(brw, PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE);
    }
 
-   brw->gen9_astc5x5_wa_tex_mask = curr_mask;
+   brw->gfx9_astc5x5_wa_tex_mask = curr_mask;
 }
 
-static enum gen9_astc5x5_wa_tex_type
-gen9_astc5x5_wa_bits(mesa_format format, enum isl_aux_usage aux_usage)
+static enum gfx9_astc5x5_wa_tex_type
+gfx9_astc5x5_wa_bits(mesa_format format, enum isl_aux_usage aux_usage)
 {
    if (aux_usage != ISL_AUX_USAGE_NONE &&
        aux_usage != ISL_AUX_USAGE_MCS)
-      return GEN9_ASTC5X5_WA_TEX_TYPE_AUX;
+      return GFX9_ASTC5X5_WA_TEX_TYPE_AUX;
 
    if (format == MESA_FORMAT_RGBA_ASTC_5x5 ||
        format == MESA_FORMAT_SRGB8_ALPHA8_ASTC_5x5)
-      return GEN9_ASTC5X5_WA_TEX_TYPE_ASTC5x5;
+      return GFX9_ASTC5X5_WA_TEX_TYPE_ASTC5x5;
 
    return 0;
 }
 
-/* Helper for the gen9 ASTC 5x5 workaround.  This version exists for BLORP's
+/* Helper for the gfx9 ASTC 5x5 workaround.  This version exists for BLORP's
  * use-cases where only a single texture is bound.
  */
 void
-gen9_apply_single_tex_astc5x5_wa(struct brw_context *brw,
+gfx9_apply_single_tex_astc5x5_wa(struct brw_context *brw,
                                  mesa_format format,
                                  enum isl_aux_usage aux_usage)
 {
-   gen9_apply_astc5x5_wa_flush(brw, gen9_astc5x5_wa_bits(format, aux_usage));
+   gfx9_apply_astc5x5_wa_flush(brw, gfx9_astc5x5_wa_bits(format, aux_usage));
 }
 
 static void
@@ -510,8 +510,8 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
 
    int maxEnabledUnit = ctx->Texture._MaxEnabledTexImageUnit;
 
-   enum gen9_astc5x5_wa_tex_type astc5x5_wa_bits = 0;
-   if (brw->screen->devinfo.gen == 9) {
+   enum gfx9_astc5x5_wa_tex_type astc5x5_wa_bits = 0;
+   if (brw->screen->devinfo.ver == 9) {
       /* In order to properly implement the ASTC 5x5 workaround for an
        * arbitrary draw or dispatch call, we have to walk the entire list of
        * textures looking for ASTC 5x5.  If there is any ASTC 5x5 in this draw
@@ -525,10 +525,10 @@ brw_predraw_resolve_inputs(struct brw_context *brw, bool rendering,
          if (!tex_obj || !tex_obj->mt)
             continue;
 
-         astc5x5_wa_bits |= gen9_astc5x5_wa_bits(tex_obj->_Format,
+         astc5x5_wa_bits |= gfx9_astc5x5_wa_bits(tex_obj->_Format,
                                                  tex_obj->mt->aux_usage);
       }
-      gen9_apply_astc5x5_wa_flush(brw, astc5x5_wa_bits);
+      gfx9_apply_astc5x5_wa_flush(brw, astc5x5_wa_bits);
    }
 
    /* Resolve depth buffer and render cache of each enabled texture. */
@@ -646,7 +646,7 @@ brw_predraw_resolve_framebuffer(struct brw_context *brw,
       /* This is only used for non-coherent framebuffer fetch, so we don't
        * need to worry about CCS_E and can simply pass 'false' below.
        */
-      assert(brw->screen->devinfo.gen < 9);
+      assert(brw->screen->devinfo.ver < 9);
 
       for (unsigned i = 0; i < fb->_NumColorDrawBuffers; i++) {
          const struct brw_renderbuffer *irb =
@@ -656,7 +656,7 @@ brw_predraw_resolve_framebuffer(struct brw_context *brw,
             brw_miptree_prepare_texture(brw, irb->mt, irb->mt->surf.format,
                                         irb->mt_level, 1,
                                         irb->mt_layer, irb->layer_count,
-                                        brw->gen9_astc5x5_wa_tex_mask);
+                                        brw->gfx9_astc5x5_wa_tex_mask);
          }
       }
    }
@@ -925,14 +925,14 @@ brw_finish_drawing(struct gl_context *ctx)
  *    - WA#0798
  */
 static void
-gen9_emit_preempt_wa(struct brw_context *brw,
+gfx9_emit_preempt_wa(struct brw_context *brw,
                      const struct _mesa_prim *prim, GLuint num_instances)
 {
    bool object_preemption = true;
    ASSERTED const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
-   /* Only apply these workarounds for gen9 */
-   assert(devinfo->gen == 9);
+   /* Only apply these workarounds for gfx9 */
+   assert(devinfo->ver == 9);
 
    /* WaDisableMidObjectPreemptionForGSLineStripAdj
     *
@@ -1078,10 +1078,10 @@ brw_draw_single_prim(struct gl_context *ctx,
    brw->draw.derived_draw_params_bo = NULL;
    brw->draw.derived_draw_params_offset = 0;
 
-   if (devinfo->gen < 6)
+   if (devinfo->ver < 6)
       brw_set_prim(brw, prim);
    else
-      gen6_set_prim(brw, prim);
+      gfx6_set_prim(brw, prim);
 
 retry:
 
@@ -1095,8 +1095,8 @@ retry:
       brw_upload_render_state(brw);
    }
 
-   if (devinfo->gen == 9)
-      gen9_emit_preempt_wa(brw, prim, num_instances);
+   if (devinfo->ver == 9)
+      gfx9_emit_preempt_wa(brw, prim, num_instances);
 
    brw_emit_prim(brw, prim, brw->primitive, is_indexed, num_instances,
                  base_instance, xfb_obj, stream, is_indirect,
@@ -1207,11 +1207,11 @@ brw_draw_prims(struct gl_context *ctx,
 
          BEGIN_BATCH(1);
          if (i == 0 && brw->predicate.state != BRW_PREDICATE_STATE_USE_BIT) {
-            OUT_BATCH(GEN7_MI_PREDICATE | MI_PREDICATE_LOADOP_LOADINV |
+            OUT_BATCH(GFX7_MI_PREDICATE | MI_PREDICATE_LOADOP_LOADINV |
                       MI_PREDICATE_COMBINEOP_SET |
                       MI_PREDICATE_COMPAREOP_SRCS_EQUAL);
          } else {
-            OUT_BATCH(GEN7_MI_PREDICATE |
+            OUT_BATCH(GFX7_MI_PREDICATE |
                       MI_PREDICATE_LOADOP_LOAD | MI_PREDICATE_COMBINEOP_XOR |
                       MI_PREDICATE_COMPAREOP_SRCS_EQUAL);
          }

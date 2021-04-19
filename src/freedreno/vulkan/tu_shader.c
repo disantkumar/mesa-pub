@@ -69,8 +69,20 @@ tu_spirv_to_nir(struct tu_device *dev,
          .shader_viewport_index_layer = true,
          .geometry_streams = true,
          .device_group = true,
+         .descriptor_indexing = true,
+         .descriptor_array_dynamic_indexing = true,
+         .descriptor_array_non_uniform_indexing = true,
+         .runtime_descriptor_array = true,
+         .float_controls = true,
+         .float16 = true,
+         .storage_16bit = dev->physical_device->gpu_id >= 650,
       },
    };
+
+   const struct nir_lower_compute_system_values_options compute_sysval_options = {
+      .has_base_work_group_id = true,
+   };
+
    const nir_shader_compiler_options *nir_options =
       ir3_get_compiler_options(dev->compiler);
 
@@ -174,7 +186,7 @@ tu_spirv_to_nir(struct tu_device *dev,
    NIR_PASS_V(nir, nir_lower_io_arrays_to_elements_no_indirects, false);
 
    NIR_PASS_V(nir, nir_lower_system_values);
-   NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
+   NIR_PASS_V(nir, nir_lower_compute_system_values, &compute_sysval_options);
 
    NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
 
@@ -720,7 +732,7 @@ shared_type_info(const struct glsl_type *type, unsigned *size, unsigned *align)
       glsl_type_is_boolean(type) ? 4 : glsl_get_bit_size(type) / 8;
    unsigned length = glsl_get_vector_elements(type);
    *size = comp_size * length;
-   *align = 4;
+   *align = comp_size;
 }
 
 static void

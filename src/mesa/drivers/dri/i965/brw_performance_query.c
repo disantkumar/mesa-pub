@@ -28,10 +28,10 @@
  *
  * Currently there are two possible counter sources exposed here:
  *
- * On Gen6+ hardware we have numerous 64bit Pipeline Statistics Registers
+ * On Gfx6+ hardware we have numerous 64bit Pipeline Statistics Registers
  * that we can snapshot at the beginning and end of a query.
  *
- * On Gen7.5+ we have Observability Architecture counters which are
+ * On Gfx7.5+ we have Observability Architecture counters which are
  * covered in separate document from the rest of the PRMs.  It is available at:
  * https://01.org/linuxgraphics/documentation/driver-documentation-prms
  * => 2013 Intel Core Processor Family => Observability Performance Counters
@@ -378,7 +378,7 @@ brw_delete_perf_query(struct gl_context *ctx,
 static bool
 oa_metrics_kernel_support(int fd, const struct gen_device_info *devinfo)
 {
-   if (devinfo->gen >= 10) {
+   if (devinfo->ver >= 10) {
       /* topology uAPI required for CNL+ (kernel 4.17+) make a call to the api
        * to verify support
        */
@@ -394,8 +394,8 @@ oa_metrics_kernel_support(int fd, const struct gen_device_info *devinfo)
       return drmIoctl(fd, DRM_IOCTL_I915_QUERY, &query) == 0;
    }
 
-   if (devinfo->gen >= 8) {
-      /* 4.13+ api required for gen8 - gen9 */
+   if (devinfo->ver >= 8) {
+      /* 4.13+ api required for gfx8 - gfx9 */
       int mask;
       struct drm_i915_getparam gp = {
          .param = I915_PARAM_SLICE_MASK,
@@ -405,7 +405,7 @@ oa_metrics_kernel_support(int fd, const struct gen_device_info *devinfo)
       return drmIoctl(fd, DRM_IOCTL_I915_GETPARAM, &gp) == 0;
    }
 
-   if (devinfo->gen == 7)
+   if (devinfo->ver == 7)
       /* default topology values are correct for HSW */
       return true;
 

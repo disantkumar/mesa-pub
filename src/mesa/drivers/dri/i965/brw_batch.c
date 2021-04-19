@@ -93,9 +93,9 @@ decode_get_bo(void *v_brw, bool ppgtt, uint64_t address)
 
       if (address >= bo_address && address < bo_address + bo->size) {
          return (struct intel_batch_decode_bo) {
-            .addr = address,
+            .addr = bo_address,
             .size = bo->size,
-            .map = brw_bo_map(brw, bo, MAP_READ) + (address - bo_address),
+            .map = brw_bo_map(brw, bo, MAP_READ),
          };
       }
    }
@@ -167,9 +167,9 @@ brw_batch_init(struct brw_context *brw)
    batch->use_batch_first =
       screen->kernel_features & KERNEL_ALLOWS_EXEC_BATCH_FIRST;
 
-   /* PIPE_CONTROL needs a w/a but only on gen6 */
+   /* PIPE_CONTROL needs a w/a but only on gfx6 */
    batch->valid_reloc_flags = EXEC_OBJECT_WRITE;
-   if (devinfo->gen == 6)
+   if (devinfo->ver == 6)
       batch->valid_reloc_flags |= EXEC_OBJECT_NEEDS_GTT;
 
    brw_batch_reset(brw);
@@ -617,9 +617,9 @@ brw_finish_batch(struct brw_context *brw)
     * assume that the L3 cache is configured according to the hardware
     * defaults.  On Kernel 4.16+, we no longer need to do this.
     */
-   if (devinfo->gen >= 7 &&
+   if (devinfo->ver >= 7 &&
        !(brw->screen->kernel_features & KERNEL_ALLOWS_CONTEXT_ISOLATION))
-      gen7_restore_default_l3_config(brw);
+      gfx7_restore_default_l3_config(brw);
 
    if (devinfo->is_haswell) {
       /* From the Haswell PRM, Volume 2b, Command Reference: Instructions,
@@ -643,8 +643,8 @@ brw_finish_batch(struct brw_context *brw)
    }
 
    /* Do not restore push constant packets during context restore. */
-   if (devinfo->gen >= 7)
-      gen7_emit_isp_disable(brw);
+   if (devinfo->ver >= 7)
+      gfx7_emit_isp_disable(brw);
 
    /* Emit MI_BATCH_BUFFER_END to finish our batch.  Note that execbuf2
     * requires our batch size to be QWord aligned, so we pad it out if
@@ -1098,13 +1098,13 @@ load_sized_register_mem(struct brw_context *brw,
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
    int i;
 
-   /* MI_LOAD_REGISTER_MEM only exists on Gen7+. */
-   assert(devinfo->gen >= 7);
+   /* MI_LOAD_REGISTER_MEM only exists on Gfx7+. */
+   assert(devinfo->ver >= 7);
 
-   if (devinfo->gen >= 8) {
+   if (devinfo->ver >= 8) {
       BEGIN_BATCH(4 * size);
       for (i = 0; i < size; i++) {
-         OUT_BATCH(GEN7_MI_LOAD_REGISTER_MEM | (4 - 2));
+         OUT_BATCH(GFX7_MI_LOAD_REGISTER_MEM | (4 - 2));
          OUT_BATCH(reg + i * 4);
          OUT_RELOC64(bo, 0, offset + i * 4);
       }
@@ -1112,7 +1112,7 @@ load_sized_register_mem(struct brw_context *brw,
    } else {
       BEGIN_BATCH(3 * size);
       for (i = 0; i < size; i++) {
-         OUT_BATCH(GEN7_MI_LOAD_REGISTER_MEM | (3 - 2));
+         OUT_BATCH(GFX7_MI_LOAD_REGISTER_MEM | (3 - 2));
          OUT_BATCH(reg + i * 4);
          OUT_RELOC(bo, 0, offset + i * 4);
       }
@@ -1147,9 +1147,9 @@ brw_store_register_mem32(struct brw_context *brw,
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
-   assert(devinfo->gen >= 6);
+   assert(devinfo->ver >= 6);
 
-   if (devinfo->gen >= 8) {
+   if (devinfo->ver >= 8) {
       BEGIN_BATCH(4);
       OUT_BATCH(MI_STORE_REGISTER_MEM | (4 - 2));
       OUT_BATCH(reg);
@@ -1173,12 +1173,12 @@ brw_store_register_mem64(struct brw_context *brw,
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
-   assert(devinfo->gen >= 6);
+   assert(devinfo->ver >= 6);
 
    /* MI_STORE_REGISTER_MEM only stores a single 32-bit value, so to
     * read a full 64-bit register, we need to do two of them.
     */
-   if (devinfo->gen >= 8) {
+   if (devinfo->ver >= 8) {
       BEGIN_BATCH(8);
       OUT_BATCH(MI_STORE_REGISTER_MEM | (4 - 2));
       OUT_BATCH(reg);
@@ -1205,7 +1205,7 @@ brw_store_register_mem64(struct brw_context *brw,
 void
 brw_load_register_imm32(struct brw_context *brw, uint32_t reg, uint32_t imm)
 {
-   assert(brw->screen->devinfo.gen >= 6);
+   assert(brw->screen->devinfo.ver >= 6);
 
    BEGIN_BATCH(3);
    OUT_BATCH(MI_LOAD_REGISTER_IMM | (3 - 2));
@@ -1220,7 +1220,7 @@ brw_load_register_imm32(struct brw_context *brw, uint32_t reg, uint32_t imm)
 void
 brw_load_register_imm64(struct brw_context *brw, uint32_t reg, uint64_t imm)
 {
-   assert(brw->screen->devinfo.gen >= 6);
+   assert(brw->screen->devinfo.ver >= 6);
 
    BEGIN_BATCH(5);
    OUT_BATCH(MI_LOAD_REGISTER_IMM | (5 - 2));
@@ -1237,7 +1237,7 @@ brw_load_register_imm64(struct brw_context *brw, uint32_t reg, uint64_t imm)
 void
 brw_load_register_reg(struct brw_context *brw, uint32_t dest, uint32_t src)
 {
-   assert(brw->screen->devinfo.gen >= 8 || brw->screen->devinfo.is_haswell);
+   assert(brw->screen->devinfo.ver >= 8 || brw->screen->devinfo.is_haswell);
 
    BEGIN_BATCH(3);
    OUT_BATCH(MI_LOAD_REGISTER_REG | (3 - 2));
@@ -1252,7 +1252,7 @@ brw_load_register_reg(struct brw_context *brw, uint32_t dest, uint32_t src)
 void
 brw_load_register_reg64(struct brw_context *brw, uint32_t dest, uint32_t src)
 {
-   assert(brw->screen->devinfo.gen >= 8 || brw->screen->devinfo.is_haswell);
+   assert(brw->screen->devinfo.ver >= 8 || brw->screen->devinfo.is_haswell);
 
    BEGIN_BATCH(6);
    OUT_BATCH(MI_LOAD_REGISTER_REG | (3 - 2));
@@ -1273,11 +1273,11 @@ brw_store_data_imm32(struct brw_context *brw, struct brw_bo *bo,
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
-   assert(devinfo->gen >= 6);
+   assert(devinfo->ver >= 6);
 
    BEGIN_BATCH(4);
    OUT_BATCH(MI_STORE_DATA_IMM | (4 - 2));
-   if (devinfo->gen >= 8)
+   if (devinfo->ver >= 8)
       OUT_RELOC64(bo, RELOC_WRITE, offset);
    else {
       OUT_BATCH(0); /* MBZ */
@@ -1296,11 +1296,11 @@ brw_store_data_imm64(struct brw_context *brw, struct brw_bo *bo,
 {
    const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
-   assert(devinfo->gen >= 6);
+   assert(devinfo->ver >= 6);
 
    BEGIN_BATCH(5);
    OUT_BATCH(MI_STORE_DATA_IMM | (5 - 2));
-   if (devinfo->gen >= 8)
+   if (devinfo->ver >= 8)
       OUT_RELOC64(bo, RELOC_WRITE, offset);
    else {
       OUT_BATCH(0); /* MBZ */

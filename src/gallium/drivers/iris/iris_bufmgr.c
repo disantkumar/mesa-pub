@@ -798,14 +798,17 @@ bo_free(struct iris_bo *bo)
    if (bo->map_cpu && !bo->userptr) {
       VG_NOACCESS(bo->map_cpu, bo->size);
       os_munmap(bo->map_cpu, bo->size);
+      bo->map_cpu = NULL;
    }
    if (bo->map_wc) {
       VG_NOACCESS(bo->map_wc, bo->size);
       os_munmap(bo->map_wc, bo->size);
+      bo->map_wc = NULL;
    }
    if (bo->map_gtt) {
       VG_NOACCESS(bo->map_gtt, bo->size);
       os_munmap(bo->map_gtt, bo->size);
+      bo->map_gtt = NULL;
    }
 
    if (bo->idle) {
@@ -1425,7 +1428,7 @@ iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd,
    bo->external = true;
    bo->kflags = EXEC_OBJECT_SUPPORTS_48B_ADDRESS | EXEC_OBJECT_PINNED;
 
-   /* From the Bspec, Memory Compression - Gen12:
+   /* From the Bspec, Memory Compression - Gfx12:
     *
     *    The base address for the surface has to be 64K page aligned and the
     *    surface is expected to be padded in the virtual domain to be 4 4K
@@ -1860,13 +1863,13 @@ iris_bufmgr_create(struct gen_device_info *devinfo, int fd, bool bo_reuse)
    util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_SURFACE],
                       IRIS_MEMZONE_SURFACE_START,
                       _4GB_minus_1 - IRIS_MAX_BINDERS * IRIS_BINDER_SIZE);
-   /* TODO: Why does limiting to 2GB help some state items on gen12?
+   /* TODO: Why does limiting to 2GB help some state items on gfx12?
     *  - CC Viewport Pointer
     *  - Blend State Pointer
     *  - Color Calc State Pointer
     */
    const uint64_t dynamic_pool_size =
-      (devinfo->gen >= 12 ? _2GB : _4GB_minus_1) - IRIS_BORDER_COLOR_POOL_SIZE;
+      (devinfo->ver >= 12 ? _2GB : _4GB_minus_1) - IRIS_BORDER_COLOR_POOL_SIZE;
    util_vma_heap_init(&bufmgr->vma_allocator[IRIS_MEMZONE_DYNAMIC],
                       IRIS_MEMZONE_DYNAMIC_START + IRIS_BORDER_COLOR_POOL_SIZE,
                       dynamic_pool_size);

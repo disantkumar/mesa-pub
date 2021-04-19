@@ -36,6 +36,7 @@
 #include "freedreno_query.h"
 #include "freedreno_query_hw.h"
 #include "freedreno_util.h"
+#include "ir3/ir3_cache.h"
 #include "util/u_upload_mgr.h"
 
 static void
@@ -371,6 +372,10 @@ fd_context_destroy(struct pipe_context *pctx)
 
 	u_trace_context_fini(&ctx->trace_context);
 
+	fd_autotune_fini(&ctx->autotune);
+
+	ir3_cache_destroy(ctx->shader_cache);
+
 	if (FD_DBG(BSTAT) || FD_DBG(MSGS)) {
 		mesa_logi("batch_total=%u, batch_sysmem=%u, batch_gmem=%u, batch_nondraw=%u, batch_restore=%u\n",
 			(uint32_t)ctx->stats.batch_total, (uint32_t)ctx->stats.batch_sysmem,
@@ -566,6 +571,12 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	else if (flags & PIPE_CONTEXT_LOW_PRIORITY)
 		prio = 2;
 
+	/* Some of the stats will get printed out at context destroy, so
+	 * make sure they are collected:
+	 */
+	if (FD_DBG(BSTAT) || FD_DBG(MSGS))
+		ctx->stats_users++;
+
 	ctx->screen = screen;
 	ctx->pipe = fd_pipe_new2(screen->dev, FD_PIPE_3D, prio);
 
@@ -637,6 +648,8 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 
 	u_trace_context_init(&ctx->trace_context, pctx,
 			fd_trace_record_ts, fd_trace_read_ts);
+
+	fd_autotune_init(&ctx->autotune, screen->dev);
 
 	return pctx;
 

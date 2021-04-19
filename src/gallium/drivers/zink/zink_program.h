@@ -45,11 +45,15 @@ struct util_dynarray;
 
 struct zink_program;
 
-struct zink_push_constant {
+struct zink_gfx_push_constant {
    unsigned draw_mode_is_indexed;
    unsigned draw_id;
    float default_inner_level[2];
    float default_outer_level[4];
+};
+
+struct zink_cs_push_constant {
+   unsigned work_dim;
 };
 
 /* a shader module is used for directly reusing a shader module between programs,
@@ -69,6 +73,8 @@ struct zink_shader_cache {
 
 struct zink_program {
    struct pipe_reference reference;
+   struct zink_batch_usage batch_uses;
+   bool is_compute;
 
    struct zink_descriptor_pool *pool[ZINK_DESCRIPTOR_TYPES];
    struct zink_descriptor_set *last_set[ZINK_DESCRIPTOR_TYPES];
@@ -136,6 +142,9 @@ zink_program_num_bindings_typed(const struct zink_program *pg, enum zink_descrip
 
 unsigned
 zink_program_num_bindings(const struct zink_program *pg, bool is_compute);
+
+bool
+zink_program_descriptor_is_buffer(struct zink_context *ctx, enum pipe_shader_type stage, enum zink_descriptor_type type, unsigned i);
 
 void
 zink_update_gfx_program(struct zink_context *ctx, struct zink_gfx_program *prog);

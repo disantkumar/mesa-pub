@@ -135,7 +135,7 @@ fixup_draw_state(struct fd_context *ctx, struct fd6_emit *emit)
 	if (ctx->last.dirty ||
 			(ctx->last.primitive_restart != emit->primitive_restart)) {
 		/* rasterizer state is effected by primitive-restart: */
-		ctx->dirty |= FD_DIRTY_RASTERIZER;
+		fd_context_dirty(ctx, FD_DIRTY_RASTERIZER);
 		ctx->last.primitive_restart = emit->primitive_restart;
 	}
 }
@@ -161,7 +161,6 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 			.fs = ctx->prog.fs,
 			.key = {
 				.rasterflat = ctx->rasterizer->flatshade,
-				.ucp_enables = ctx->rasterizer->clip_plane_enable,
 				.layer_zero = !gs_info || !(gs_info->outputs_written & VARYING_BIT_LAYER),
 				.sample_shading = (ctx->min_samples > 1),
 				.msaa = (ctx->framebuffer.samples > 1),
@@ -185,10 +184,13 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 		struct shader_info *ds_info = ir3_get_shader_info(emit.key.ds);
 		emit.key.key.tessellation = ir3_tess_mode(ds_info->tess.primitive_mode);
+		ctx->gen_dirty |= BIT(FD6_GROUP_PRIMITIVE_PARAMS);
 	}
 
-	if (emit.key.gs)
+	if (emit.key.gs) {
 		emit.key.key.has_gs = true;
+		ctx->gen_dirty |= BIT(FD6_GROUP_PRIMITIVE_PARAMS);
+	}
 
 	if (!(emit.key.hs || emit.key.ds || emit.key.gs || indirect))
 		fd6_vsc_update_sizes(ctx->batch, info, draw);
@@ -207,7 +209,10 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 	fixup_draw_state(ctx, &emit);
 
-	emit.dirty = ctx->dirty;      /* *after* fixup_shader_state() */
+	/* *after* fixup_shader_state(): */
+	emit.dirty = ctx->dirty;
+	emit.dirty_groups = ctx->gen_dirty;
+
 	emit.bs = fd6_emit_get_prog(&emit)->bs;
 	emit.vs = fd6_emit_get_prog(&emit)->vs;
 	emit.hs = fd6_emit_get_prog(&emit)->hs;
@@ -215,11 +220,20 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 	emit.gs = fd6_emit_get_prog(&emit)->gs;
 	emit.fs = fd6_emit_get_prog(&emit)->fs;
 
-	ctx->stats.vs_regs += ir3_shader_halfregs(emit.vs);
-	ctx->stats.hs_regs += COND(emit.hs, ir3_shader_halfregs(emit.hs));
-	ctx->stats.ds_regs += COND(emit.ds, ir3_shader_halfregs(emit.ds));
-	ctx->stats.gs_regs += COND(emit.gs, ir3_shader_halfregs(emit.gs));
-	ctx->stats.fs_regs += ir3_shader_halfregs(emit.fs);
+	if (emit.vs->need_driver_params || fd6_ctx->has_dp_state)
+		emit.dirty_groups |= BIT(FD6_GROUP_VS_DRIVER_PARAMS);
+
+	/* If we are doing xfb, we need to emit the xfb state on every draw: */
+	if (emit.prog->stream_output)
+		emit.dirty_groups |= BIT(FD6_GROUP_SO);
+
+	if (unlikely(ctx->stats_users > 0)) {
+		ctx->stats.vs_regs += ir3_shader_halfregs(emit.vs);
+		ctx->stats.hs_regs += COND(emit.hs, ir3_shader_halfregs(emit.hs));
+		ctx->stats.ds_regs += COND(emit.ds, ir3_shader_halfregs(emit.ds));
+		ctx->stats.gs_regs += COND(emit.gs, ir3_shader_halfregs(emit.gs));
+		ctx->stats.fs_regs += ir3_shader_halfregs(emit.fs);
+	}
 
 	struct fd_ringbuffer *ring = ctx->batch->draw;
 
@@ -262,11 +276,28 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		draw0.prim_type = DI_PT_PATCHES0 + info->vertices_per_patch;
 		draw0.tess_enable = true;
 
+		const unsigned max_count = 2048;
+		unsigned count;
+
+		/**
+		 * We can cap tessparam/tessfactor buffer sizes at the sub-draw
+		 * limit.  But in the indirect-draw case we must assume the worst.
+		 */
+		if (indirect && indirect->buffer) {
+			count = ALIGN_NPOT(max_count, info->vertices_per_patch);
+		} else {
+			count = MIN2(max_count, draw->count);
+			count = ALIGN_NPOT(count, info->vertices_per_patch);
+		}
+
+		OUT_PKT7(ring, CP_SET_SUBDRAW_SIZE, 1);
+		OUT_RING(ring, count);
+
 		ctx->batch->tessellation = true;
 		ctx->batch->tessparam_size = MAX2(ctx->batch->tessparam_size,
-				emit.hs->output_size * 4 * draw->count);
+				emit.hs->output_size * 4 * count);
 		ctx->batch->tessfactor_size = MAX2(ctx->batch->tessfactor_size,
-				factor_stride * draw->count);
+				factor_stride * count);
 
 		if (!ctx->batch->tess_addrs_constobj) {
 			/* Reserve space for the bo address - we'll write them later in
@@ -302,7 +333,8 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 		ctx->last.restart_index = restart_index;
 	}
 
-	if (emit.dirty)
+	// TODO move fd6_emit_streamout.. I think..
+	if (emit.dirty_groups)
 		fd6_emit_state(ring, &emit);
 
 	/* for debug after a lock up, write a unique counter value

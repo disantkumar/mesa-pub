@@ -51,11 +51,21 @@ struct hash_table;
 
 struct zink_screen {
    struct pipe_screen base;
+   bool threaded;
+   uint32_t curr_batch; //the current batch id
+   uint32_t last_finished; //this is racy but ultimately doesn't matter
+   VkSemaphore sem;
+   VkSemaphore prev_sem;
 
+   bool device_lost;
    struct sw_winsys *winsys;
 
+   struct hash_table framebuffer_cache;
+   simple_mtx_t framebuffer_mtx;
    struct hash_table surface_cache;
    simple_mtx_t surface_mtx;
+   struct hash_table bufferview_cache;
+   simple_mtx_t bufferview_mtx;
 
    struct slab_parent_pool transfer_pool;
    VkPipelineCache pipeline_cache;
@@ -68,6 +78,7 @@ struct zink_screen {
 
    unsigned shader_id;
 
+   uint64_t total_video_mem;
    uint64_t total_mem;
 
    VkInstance instance;
@@ -84,6 +95,7 @@ struct zink_screen {
    bool have_triangle_fans;
 
    uint32_t gfx_queue;
+   uint32_t max_queues;
    uint32_t timestamp_valid_bits;
    VkDevice dev;
    VkDebugUtilsMessengerEXT debugUtilsCallbackHandle;
@@ -95,9 +107,13 @@ struct zink_screen {
 
    PFN_vkGetPhysicalDeviceFeatures2 vk_GetPhysicalDeviceFeatures2;
    PFN_vkGetPhysicalDeviceProperties2 vk_GetPhysicalDeviceProperties2;
+   PFN_vkGetPhysicalDeviceFormatProperties2 vk_GetPhysicalDeviceFormatProperties2;
+   PFN_vkGetPhysicalDeviceImageFormatProperties2 vk_GetPhysicalDeviceImageFormatProperties2;
 
    PFN_vkCmdDrawIndirectCount vk_CmdDrawIndirectCount;
    PFN_vkCmdDrawIndexedIndirectCount vk_CmdDrawIndexedIndirectCount;
+
+   PFN_vkWaitSemaphores vk_WaitSemaphores;
 
    PFN_vkGetMemoryFdKHR vk_GetMemoryFdKHR;
    PFN_vkCmdBeginConditionalRenderingEXT vk_CmdBeginConditionalRenderingEXT;
@@ -132,19 +148,66 @@ struct zink_screen {
 
    struct {
       bool dual_color_blend_by_location;
+      bool inline_uniforms;
    } driconf;
 
    VkFormatProperties format_props[PIPE_FORMAT_COUNT];
    struct {
-      uint32_t sampler_view;
+      uint32_t image_view;
+      uint32_t buffer_view;
    } null_descriptor_hashes;
 };
+
+
+/* update last_finished to account for batch_id wrapping */
+static inline void
+zink_screen_update_last_finished(struct zink_screen *screen, uint32_t batch_id)
+{
+   /* last_finished may have wrapped */
+   if (screen->last_finished < UINT_MAX / 2) {
+      /* last_finished has wrapped, batch_id has not */
+      if (batch_id > UINT_MAX / 2)
+         return;
+   } else if (batch_id < UINT_MAX / 2) {
+      /* batch_id has wrapped, last_finished has not */
+      screen->last_finished = batch_id;
+      return;
+   }
+   /* neither have wrapped */
+   screen->last_finished = MAX2(batch_id, screen->last_finished);
+}
+
+/* check a batch_id against last_finished while accounting for wrapping */
+static inline bool
+zink_screen_check_last_finished(struct zink_screen *screen, uint32_t batch_id)
+{
+   /* last_finished may have wrapped */
+   if (screen->last_finished < UINT_MAX / 2) {
+      /* last_finished has wrapped, batch_id has not */
+      if (batch_id > UINT_MAX / 2)
+         return true;
+   } else if (batch_id < UINT_MAX / 2) {
+      /* batch_id has wrapped, last_finished has not */
+      return false;
+   }
+   return screen->last_finished >= batch_id;
+}
+
+bool
+zink_screen_init_semaphore(struct zink_screen *screen);
+
 
 static inline struct zink_screen *
 zink_screen(struct pipe_screen *pipe)
 {
    return (struct zink_screen *)pipe;
 }
+
+
+struct mem_cache_entry {
+   VkDeviceMemory mem;
+   void *map;
+};
 
 VkFormat
 zink_get_format(struct zink_screen *screen, enum pipe_format format);

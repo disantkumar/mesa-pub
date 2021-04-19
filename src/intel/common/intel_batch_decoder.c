@@ -244,7 +244,35 @@ handle_state_base_address(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 }
 
 static void
-dump_binding_table(struct intel_batch_decode_ctx *ctx, uint32_t offset, int count)
+handle_binding_table_pool_alloc(struct intel_batch_decode_ctx *ctx,
+                                const uint32_t *p)
+{
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+
+   uint64_t bt_pool_base = 0;
+   bool bt_pool_enable = false;
+
+   while (intel_field_iterator_next(&iter)) {
+      if (strcmp(iter.name, "Binding Table Pool Base Address") == 0) {
+         bt_pool_base = iter.raw_value;
+      } else if (strcmp(iter.name, "Binding Table Pool Enable") == 0) {
+         bt_pool_enable = iter.raw_value;
+      }
+   }
+
+   if (bt_pool_enable) {
+      ctx->bt_pool_base = bt_pool_base;
+   } else {
+      ctx->bt_pool_base = 0;
+   }
+}
+
+static void
+dump_binding_table(struct intel_batch_decode_ctx *ctx,
+                   uint32_t offset, int count)
 {
    struct intel_group *strct =
       intel_spec_find_struct(ctx->spec, "RENDER_SURFACE_STATE");
@@ -253,9 +281,16 @@ dump_binding_table(struct intel_batch_decode_ctx *ctx, uint32_t offset, int coun
       return;
    }
 
+   /* When 256B binding tables are enabled, we have to shift the offset */
+   if (ctx->use_256B_binding_tables)
+      offset <<= 3;
+
+   const uint64_t bt_pool_base = ctx->bt_pool_base ? ctx->bt_pool_base :
+                                                     ctx->surface_base;
+
    if (count < 0) {
-      count = update_count(ctx, ctx->surface_base + offset,
-                           ctx->surface_base, 1, 8);
+      count = update_count(ctx, bt_pool_base + offset,
+                           bt_pool_base, 1, 8);
    }
 
    if (offset % 32 != 0 || offset >= UINT16_MAX) {
@@ -264,7 +299,7 @@ dump_binding_table(struct intel_batch_decode_ctx *ctx, uint32_t offset, int coun
    }
 
    struct intel_batch_decode_bo bind_bo =
-      ctx_get_bo(ctx, true, ctx->surface_base + offset);
+      ctx_get_bo(ctx, true, bt_pool_base + offset);
 
    if (bind_bo.map == NULL) {
       fprintf(ctx->fp, "  binding table unavailable\n");
@@ -297,10 +332,7 @@ dump_samplers(struct intel_batch_decode_ctx *ctx, uint32_t offset, int count)
    struct intel_group *strct = intel_spec_find_struct(ctx->spec, "SAMPLER_STATE");
    uint64_t state_addr = ctx->dynamic_base + offset;
 
-   if (count < 0) {
-      count = update_count(ctx, state_addr, ctx->dynamic_base,
-                           strct->dw_length, 4);
-   }
+   assert(count > 0);
 
    struct intel_batch_decode_bo bo = ctx_get_bo(ctx, true, state_addr);
    const void *state_map = bo.map;
@@ -310,16 +342,24 @@ dump_samplers(struct intel_batch_decode_ctx *ctx, uint32_t offset, int count)
       return;
    }
 
-   if (offset % 32 != 0 || state_addr - bo.addr >= bo.size) {
+   if (offset % 32 != 0) {
       fprintf(ctx->fp, "  invalid sampler state pointer\n");
+      return;
+   }
+
+   const unsigned sampler_state_size = strct->dw_length * 4;
+
+   if (count * sampler_state_size >= bo.size) {
+      fprintf(ctx->fp, "  sampler state ends after bo ends\n");
+      assert(!"sampler state ends after bo ends");
       return;
    }
 
    for (int i = 0; i < count; i++) {
       fprintf(ctx->fp, "sampler state %d\n", i);
       ctx_print_group(ctx, strct, state_addr, state_map);
-      state_addr += 16;
-      state_map += 16;
+      state_addr += sampler_state_size;
+      state_map += sampler_state_size;
    }
 }
 
@@ -350,8 +390,10 @@ handle_interface_descriptor_data(struct intel_batch_decode_ctx *ctx,
    ctx_disassemble_program(ctx, ksp, "compute shader");
    fprintf(ctx->fp, "\n");
 
-   dump_samplers(ctx, sampler_offset, sampler_count);
-   dump_binding_table(ctx, binding_table_offset, binding_entry_count);
+   if (sampler_count)
+      dump_samplers(ctx, sampler_offset, sampler_count);
+   if (binding_entry_count)
+      dump_binding_table(ctx, binding_table_offset, binding_entry_count);
 }
 
 static void
@@ -532,7 +574,7 @@ decode_single_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
    struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
 
    uint64_t ksp = 0;
-   bool is_simd8 = ctx->devinfo.gen >= 11; /* vertex shaders on Gen8+ only */
+   bool is_simd8 = ctx->devinfo.ver >= 11; /* vertex shaders on Gfx8+ only */
    bool is_enabled = true;
 
    struct intel_field_iterator iter;
@@ -709,7 +751,7 @@ decode_3dstate_constant(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 }
 
 static void
-decode_gen6_3dstate_binding_table_pointers(struct intel_batch_decode_ctx *ctx,
+decode_gfx6_3dstate_binding_table_pointers(struct intel_batch_decode_ctx *ctx,
                                            const uint32_t *p)
 {
    fprintf(ctx->fp, "VS Binding Table:\n");
@@ -733,16 +775,16 @@ static void
 decode_3dstate_sampler_state_pointers(struct intel_batch_decode_ctx *ctx,
                                       const uint32_t *p)
 {
-   dump_samplers(ctx, p[1], -1);
+   dump_samplers(ctx, p[1], 1);
 }
 
 static void
-decode_3dstate_sampler_state_pointers_gen6(struct intel_batch_decode_ctx *ctx,
+decode_3dstate_sampler_state_pointers_gfx6(struct intel_batch_decode_ctx *ctx,
                                            const uint32_t *p)
 {
-   dump_samplers(ctx, p[1], -1);
-   dump_samplers(ctx, p[2], -1);
-   dump_samplers(ctx, p[3], -1);
+   dump_samplers(ctx, p[1], 1);
+   dump_samplers(ctx, p[2], 1);
+   dump_samplers(ctx, p[3], 1);
 }
 
 static bool
@@ -853,14 +895,57 @@ decode_3dstate_slice_table_state_pointers(struct intel_batch_decode_ctx *ctx,
 }
 
 static void
+handle_gt_mode(struct intel_batch_decode_ctx *ctx,
+               uint32_t reg_addr, uint32_t val)
+{
+   struct intel_group *reg = intel_spec_find_register(ctx->spec, reg_addr);
+
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, reg, &val, 0, false);
+
+   uint32_t bt_alignment;
+   bool bt_alignment_mask = 0;
+
+   while (intel_field_iterator_next(&iter)) {
+      if (strcmp(iter.name, "Binding Table Alignment") == 0) {
+         bt_alignment = iter.raw_value;
+      } else if (strcmp(iter.name, "Binding Table Alignment Mask") == 0) {
+         bt_alignment_mask = iter.raw_value;
+      }
+   }
+
+   if (bt_alignment_mask)
+      ctx->use_256B_binding_tables = bt_alignment;
+}
+
+struct reg_handler {
+   const char *name;
+   void (*handler)(struct intel_batch_decode_ctx *ctx,
+                   uint32_t reg_addr, uint32_t val);
+} reg_handlers[] = {
+   { "GT_MODE", handle_gt_mode }
+};
+
+static void
 decode_load_register_imm(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 {
-   struct intel_group *reg = intel_spec_find_register(ctx->spec, p[1]);
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+   const unsigned length = intel_group_get_length(inst, p);
+   assert(length & 1);
+   const unsigned nr_regs = (length - 1) / 2;
 
-   if (reg != NULL) {
-      fprintf(ctx->fp, "register %s (0x%x): 0x%x\n",
-              reg->name, reg->register_offset, p[2]);
-      ctx_print_group(ctx, reg, reg->register_offset, &p[2]);
+   for (unsigned i = 0; i < nr_regs; i++) {
+      struct intel_group *reg = intel_spec_find_register(ctx->spec, p[i * 2 + 1]);
+      if (reg != NULL) {
+         fprintf(ctx->fp, "register %s (0x%x): 0x%x\n",
+                 reg->name, reg->register_offset, p[2]);
+         ctx_print_group(ctx, reg, reg->register_offset, &p[2]);
+
+         for (unsigned i = 0; i < ARRAY_SIZE(reg_handlers); i++) {
+            if (strcmp(reg->name, reg_handlers[i].name) == 0)
+               reg_handlers[i].handler(ctx, p[1], p[2]);
+         }
+      }
    }
 }
 
@@ -1035,6 +1120,7 @@ struct custom_decoder {
    void (*decode)(struct intel_batch_decode_ctx *ctx, const uint32_t *p);
 } custom_decoders[] = {
    { "STATE_BASE_ADDRESS", handle_state_base_address },
+   { "3DSTATE_BINDING_TABLE_POOL_ALLOC", handle_binding_table_pool_alloc },
    { "MEDIA_INTERFACE_DESCRIPTOR_LOAD", handle_media_interface_descriptor_load },
    { "COMPUTE_WALKER", handle_compute_walker },
    { "3DSTATE_VERTEX_BUFFERS", handle_3dstate_vertex_buffers },
@@ -1052,7 +1138,7 @@ struct custom_decoder {
    { "3DSTATE_CONSTANT_DS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_ALL", decode_3dstate_constant_all },
 
-   { "3DSTATE_BINDING_TABLE_POINTERS", decode_gen6_3dstate_binding_table_pointers },
+   { "3DSTATE_BINDING_TABLE_POINTERS", decode_gfx6_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_VS", decode_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_HS", decode_3dstate_binding_table_pointers },
    { "3DSTATE_BINDING_TABLE_POINTERS_DS", decode_3dstate_binding_table_pointers },
@@ -1064,7 +1150,7 @@ struct custom_decoder {
    { "3DSTATE_SAMPLER_STATE_POINTERS_DS", decode_3dstate_sampler_state_pointers },
    { "3DSTATE_SAMPLER_STATE_POINTERS_GS", decode_3dstate_sampler_state_pointers },
    { "3DSTATE_SAMPLER_STATE_POINTERS_PS", decode_3dstate_sampler_state_pointers },
-   { "3DSTATE_SAMPLER_STATE_POINTERS", decode_3dstate_sampler_state_pointers_gen6 },
+   { "3DSTATE_SAMPLER_STATE_POINTERS", decode_3dstate_sampler_state_pointers_gfx6 },
 
    { "3DSTATE_VIEWPORT_STATE_POINTERS_CC", decode_3dstate_viewport_state_pointers_cc },
    { "3DSTATE_VIEWPORT_STATE_POINTERS_SF_CLIP", decode_3dstate_viewport_state_pointers_sf_clip },

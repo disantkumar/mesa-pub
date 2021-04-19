@@ -29,16 +29,24 @@ struct sw_displaytarget;
 struct zink_batch;
 struct zink_context;
 
+#define ZINK_RESOURCE_USAGE_STREAMOUT (1 << 10) //much greater than ZINK_DESCRIPTOR_TYPES
+
+#include "util/simple_mtx.h"
 #include "util/u_transfer.h"
 #include "util/u_range.h"
 #include "util/u_dynarray.h"
+#include "util/u_threaded_context.h"
 
+#include "zink_batch.h"
 #include "zink_descriptors.h"
 
 #include <vulkan/vulkan.h>
 
-#define ZINK_RESOURCE_ACCESS_READ 1
-#define ZINK_RESOURCE_ACCESS_WRITE 32
+enum zink_resource_access {
+   ZINK_RESOURCE_ACCESS_READ = 1,
+   ZINK_RESOURCE_ACCESS_WRITE = 32,
+   ZINK_RESOURCE_ACCESS_RW = ZINK_RESOURCE_ACCESS_READ | ZINK_RESOURCE_ACCESS_WRITE,
+};
 
 struct mem_key {
    VkMemoryRequirements reqs;
@@ -51,6 +59,10 @@ struct zink_resource_object {
       VkBuffer buffer;
       VkImage image;
    };
+
+   VkBuffer sbuffer;
+   bool storage_init; //layout was set for image
+
    VkDeviceMemory mem;
    uint32_t mem_hash;
    struct mem_key mkey;
@@ -59,14 +71,16 @@ struct zink_resource_object {
    unsigned persistent_maps; //if nonzero, requires vkFlushMappedMemoryRanges during batch use
    struct zink_descriptor_refs desc_set_refs;
 
-   /* this has to be atomic for fence access, so we can't use a bitmask and make everything neat */
-   uint8_t batch_uses[5]; //ZINK_NUM_BATCHES
+   struct zink_batch_usage reads;
+   struct zink_batch_usage writes;
+   void *map;
    bool is_buffer;
    bool host_visible;
+   bool coherent;
 };
 
 struct zink_resource {
-   struct pipe_resource base;
+   struct threaded_resource base;
 
    enum pipe_format internal_format:16;
 
@@ -74,6 +88,7 @@ struct zink_resource {
    VkAccessFlags access;
 
    struct zink_resource_object *obj;
+   struct zink_resource_object *scanout_obj; //TODO: remove for wsi
    union {
       struct util_range valid_buffer_range;
       struct {
@@ -86,11 +101,16 @@ struct zink_resource {
 
    struct sw_displaytarget *dt;
    unsigned dt_stride;
+
+   uint32_t bind_history; // enum zink_descriptor_type bitmask
+   uint32_t bind_stages;
 };
 
 struct zink_transfer {
-   struct pipe_transfer base;
+   struct threaded_transfer base;
    struct pipe_resource *staging_res;
+   unsigned offset;
+   unsigned depthPitch;
 };
 
 static inline struct zink_resource *
@@ -113,15 +133,11 @@ zink_get_depth_stencil_resources(struct pipe_resource *res,
 void
 zink_resource_setup_transfer_layouts(struct zink_context *ctx, struct zink_resource *src, struct zink_resource *dst);
 
-int
-zink_get_resource_latest_batch_usage(struct zink_context *ctx, uint32_t batch_uses);
+bool
+zink_resource_has_usage(struct zink_resource *res, enum zink_resource_access usage);
 
-uint32_t
-zink_get_resource_usage(struct zink_resource *res);
-
-void
-zink_resource_desc_set_add(struct zink_resource *res, struct zink_descriptor_set *zds, unsigned idx);
-
+bool
+zink_resource_has_curr_read_usage(struct zink_context *ctx, struct zink_resource *res);
 
 void
 zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *resource_object);
@@ -142,4 +158,6 @@ zink_resource_object_reference(struct zink_screen *screen,
    if (dst) *dst = src;
 }
 
+bool
+zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res);
 #endif

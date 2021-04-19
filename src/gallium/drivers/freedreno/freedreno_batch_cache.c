@@ -99,8 +99,8 @@ key_alloc(unsigned num_surfs)
 	return key;
 }
 
-static uint32_t
-key_hash(const void *_key)
+uint32_t
+fd_batch_key_hash(const void *_key)
 {
 	const struct fd_batch_key *key = _key;
 	uint32_t hash = 0;
@@ -109,8 +109,8 @@ key_hash(const void *_key)
 	return hash;
 }
 
-static bool
-key_equals(const void *_a, const void *_b)
+bool
+fd_batch_key_equals(const void *_a, const void *_b)
 {
 	const struct fd_batch_key *a = _a;
 	const struct fd_batch_key *b = _b;
@@ -118,10 +118,19 @@ key_equals(const void *_a, const void *_b)
 		(memcmp(a->surf, b->surf, sizeof(a->surf[0]) * a->num_surfs) == 0);
 }
 
+struct fd_batch_key *
+fd_batch_key_clone(void *mem_ctx, const struct fd_batch_key *key)
+{
+	unsigned sz = sizeof(struct fd_batch_key) + (sizeof(key->surf[0]) * key->num_surfs);
+	struct fd_batch_key *new_key = rzalloc_size(mem_ctx, sz);
+	memcpy(new_key, key, sz);
+	return new_key;
+}
+
 void
 fd_bc_init(struct fd_batch_cache *cache)
 {
-	cache->ht = _mesa_hash_table_create(NULL, key_hash, key_equals);
+	cache->ht = _mesa_hash_table_create(NULL, fd_batch_key_hash, fd_batch_key_equals);
 }
 
 void
@@ -420,7 +429,7 @@ batch_from_key(struct fd_batch_cache *cache, struct fd_batch_key *key,
 	assert_dt
 {
 	struct fd_batch *batch = NULL;
-	uint32_t hash = key_hash(key);
+	uint32_t hash = fd_batch_key_hash(key);
 	struct hash_entry *entry =
 		_mesa_hash_table_search_pre_hashed(cache->ht, hash, key);
 

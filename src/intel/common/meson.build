@@ -18,15 +18,11 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# TODO: android?
-
 files_libintel_common = files(
   'intel_aux_map.c',
   'intel_aux_map.h',
   'intel_buffer_alloc.h',
   'intel_clflush.h',
-  'intel_batch_decoder.c',
-  'intel_decoder.c',
   'intel_decoder.h',
   'intel_disasm.c',
   'intel_disasm.h',
@@ -44,6 +40,19 @@ files_libintel_common = files(
   'intel_measure.h',
 )
 
+files_batch_decoder = files(
+  'intel_batch_decoder.c',
+  'intel_decoder.c',
+)
+
+batch_decoder_dependencies = []
+if with_platform_android
+  files_libintel_common += 'intel_batch_decoder_stub.c'
+else
+  batch_decoder_dependencies += dep_expat
+  files_libintel_common += files_batch_decoder
+endif
+
 libintel_common = static_library(
   'intel_common',
   [files_libintel_common, genX_xml_h, sha1_h],
@@ -51,7 +60,7 @@ libintel_common = static_library(
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
   link_with : [libisl],
-  dependencies : [dep_expat, dep_libdrm, dep_thread, idep_genxml, idep_mesautil],
+  dependencies : [batch_decoder_dependencies, dep_libdrm, dep_thread, idep_genxml, idep_mesautil],
 )
 
 libintel_extra_dependencies = []
@@ -67,15 +76,15 @@ idep_libintel_common = declare_dependency(
 install_intel_gpu_tests = get_option('install-intel-gpu-tests')
 
 if install_intel_gpu_tests
-  foreach g : [['70', 'gen7'], ['75', 'hsw'], ['80', 'gen8'],
-               ['90', 'gen9'], ['110', 'gen11'], ['120', 'gen12'],
-               ['125', 'gen125']]
+  foreach g : [['70', 'gfx7'], ['75', 'hsw'], ['80', 'gfx8'],
+               ['90', 'gfx9'], ['110', 'gfx11'], ['120', 'gfx12'],
+               ['125', 'gfx125']]
     executable(
       'intel_@0@_mi_builder_test'.format(g[1]),
       files('tests/mi_builder_test.cpp'),
       cpp_args : [
         cpp_msvc_compat_args,
-        '-DGEN_VERSIONx10=@0@'.format(g[0])
+        '-DGFX_VERx10=@0@'.format(g[0])
       ],
       gnu_symbol_visibility : 'hidden',
       include_directories : [inc_include, inc_src, inc_intel],

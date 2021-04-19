@@ -53,6 +53,7 @@ typedef uint32_t xcb_window_t;
 #include "vk_instance.h"
 #include "vk_physical_device.h"
 #include "vk_shader_module.h"
+#include "vk_util.h"
 
 #include "wsi_common.h"
 
@@ -118,19 +119,6 @@ void __lvp_finishme(const char *file, int line, const char *format, ...)
       lvp_finishme("stub %s", __func__); \
       return; \
    } while (0)
-
-static inline gl_shader_stage
-vk_to_mesa_shader_stage(VkShaderStageFlagBits vk_stage)
-{
-   assert(__builtin_popcount(vk_stage) == 1);
-   return ffs(vk_stage) - 1;
-}
-
-static inline VkShaderStageFlagBits
-mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
-{
-   return (1 << mesa_stage);
-}
 
 #define LVP_STAGE_MASK ((1 << MESA_SHADER_STAGES) - 1)
 
@@ -219,9 +207,10 @@ struct lvp_device_memory {
 struct lvp_image {
    struct vk_object_base base;
    VkImageType type;
-   VkFormat vk_format;
    VkDeviceSize size;
    uint32_t alignment;
+   struct pipe_memory_allocation *pmem;
+   unsigned memory_offset;
    struct pipe_resource *bo;
 };
 
@@ -330,6 +319,7 @@ struct lvp_framebuffer {
    uint32_t                                     height;
    uint32_t                                     layers;
 
+   bool                                         imageless;
    uint32_t                                     attachment_count;
    struct lvp_image_view *                      attachments[0];
 };
@@ -444,7 +434,6 @@ struct lvp_descriptor_update_template {
    uint32_t entry_count;
    uint32_t set;
    VkDescriptorUpdateTemplateType type;
-   struct lvp_descriptor_set_layout *descriptor_set_layout;
    VkPipelineBindPoint bind_point;
    struct lvp_pipeline_layout *pipeline_layout;
    VkDescriptorUpdateTemplateEntry entry[0];
@@ -505,12 +494,13 @@ struct lvp_semaphore {
 
 struct lvp_buffer {
    struct vk_object_base base;
-   struct lvp_device *                          device;
+
    VkDeviceSize                                 size;
 
    VkBufferUsageFlags                           usage;
    VkDeviceSize                                 offset;
 
+   struct pipe_memory_allocation *pmem;
    struct pipe_resource *bo;
    uint64_t total_size;
 };
@@ -560,6 +550,7 @@ struct lvp_cmd_buffer {
    struct list_head                             pool_link;
 
    struct list_head                             cmds;
+   struct list_head                            *last_emit;
 
    uint8_t push_constants[MAX_PUSH_CONSTANTS_SIZE];
 };
@@ -747,18 +738,19 @@ struct lvp_cmd_bind_vertex_buffers {
 };
 
 struct lvp_cmd_draw {
-   uint32_t vertex_count;
    uint32_t instance_count;
-   uint32_t first_vertex;
    uint32_t first_instance;
+   uint32_t draw_count;
+   struct pipe_draw_start_count draws[0];
 };
 
 struct lvp_cmd_draw_indexed {
-   uint32_t index_count;
    uint32_t instance_count;
-   uint32_t first_index;
    uint32_t vertex_offset;
    uint32_t first_instance;
+   bool calc_start;
+   uint32_t draw_count;
+   struct pipe_draw_start_count draws[0];
 };
 
 struct lvp_cmd_draw_indirect {
@@ -936,6 +928,7 @@ struct lvp_cmd_begin_render_pass {
    struct lvp_render_pass *render_pass;
    VkRect2D render_area;
    struct lvp_attachment_state *attachments;
+   struct lvp_image_view **imageless_views;
 };
 
 struct lvp_cmd_next_subpass {
@@ -1113,6 +1106,8 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
                           struct lvp_fence *fence,
                           struct lvp_cmd_buffer *cmd_buffer);
 
+struct lvp_image *lvp_swapchain_get_image(VkSwapchainKHR swapchain,
+					  uint32_t index);
 enum pipe_format vk_format_to_pipe(VkFormat format);
 
 static inline VkImageAspectFlags
