@@ -298,7 +298,7 @@ panfrost_emit_bifrost_blend(struct panfrost_batch *batch,
         for (unsigned i = 0; i < MAX2(rt_count, 1); ++i) {
                 /* Disable blending for unbacked render targets */
                 if (rt_count == 0 || !batch->key.cbufs[i]) {
-                        pan_pack(rts, BLEND, cfg) {
+                        pan_pack(rts + i * MALI_BLEND_LENGTH, BLEND, cfg) {
                                 cfg.enable = false;
                                 cfg.bifrost.internal.mode = MALI_BIFROST_BLEND_MODE_OFF;
                         }
@@ -2258,7 +2258,7 @@ panfrost_emit_tls(struct panfrost_batch *batch)
         struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
 
         /* Emitted with the FB descriptor on Midgard. */
-        if (!pan_is_bifrost(dev))
+        if (!pan_is_bifrost(dev) && batch->framebuffer.gpu)
                 return;
 
         struct panfrost_bo *tls_bo =

@@ -824,29 +824,29 @@ radv_tex_dim(VkImageType image_type, VkImageViewType view_type, unsigned nr_laye
 }
 
 static unsigned
-gfx9_border_color_swizzle(const enum pipe_swizzle swizzle[4])
+gfx9_border_color_swizzle(const struct util_format_description *desc)
 {
    unsigned bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
 
-   if (swizzle[3] == PIPE_SWIZZLE_X) {
+   if (desc->swizzle[3] == PIPE_SWIZZLE_X) {
       /* For the pre-defined border color values (white, opaque
        * black, transparent black), the only thing that matters is
        * that the alpha channel winds up in the correct place
        * (because the RGB channels are all the same) so either of
        * these enumerations will work.
        */
-      if (swizzle[2] == PIPE_SWIZZLE_Y)
+      if (desc->swizzle[2] == PIPE_SWIZZLE_Y)
          bc_swizzle = V_008F20_BC_SWIZZLE_WZYX;
       else
          bc_swizzle = V_008F20_BC_SWIZZLE_WXYZ;
-   } else if (swizzle[0] == PIPE_SWIZZLE_X) {
-      if (swizzle[1] == PIPE_SWIZZLE_Y)
+   } else if (desc->swizzle[0] == PIPE_SWIZZLE_X) {
+      if (desc->swizzle[1] == PIPE_SWIZZLE_Y)
          bc_swizzle = V_008F20_BC_SWIZZLE_XYZW;
       else
          bc_swizzle = V_008F20_BC_SWIZZLE_XWYZ;
-   } else if (swizzle[1] == PIPE_SWIZZLE_X) {
+   } else if (desc->swizzle[1] == PIPE_SWIZZLE_X) {
       bc_swizzle = V_008F20_BC_SWIZZLE_YXWZ;
-   } else if (swizzle[2] == PIPE_SWIZZLE_X) {
+   } else if (desc->swizzle[2] == PIPE_SWIZZLE_X) {
       bc_swizzle = V_008F20_BC_SWIZZLE_ZYXW;
    }
 
@@ -906,7 +906,7 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
               S_00A00C_BASE_LEVEL(image->info.samples > 1 ? 0 : first_level) |
               S_00A00C_LAST_LEVEL(image->info.samples > 1 ? util_logbase2(image->info.samples)
                                                           : last_level) |
-              S_00A00C_BC_SWIZZLE(gfx9_border_color_swizzle(swizzle)) | S_00A00C_TYPE(type);
+              S_00A00C_BC_SWIZZLE(gfx9_border_color_swizzle(desc)) | S_00A00C_TYPE(type);
    /* Depth is the the last accessible layer on gfx9+. The hw doesn't need
     * to know the total number of layers.
     */
@@ -924,6 +924,10 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
                   S_00A018_MAX_COMPRESSED_BLOCK_SIZE(
                      image->planes[0].surface.u.gfx9.color.dcc.max_compressed_block_size) |
                   S_00A018_ALPHA_IS_ON_MSB(vi_alpha_is_on_msb(device, vk_format));
+   }
+
+   if (radv_image_get_iterate256(device, image)) {
+      state[6] |= S_00A018_ITERATE_256(1);
    }
 
    /* Initialize the sampler view for FMASK. */
@@ -1047,7 +1051,7 @@ si_make_texture_descriptor(struct radv_device *device, struct radv_image *image,
    state[7] = 0;
 
    if (device->physical_device->rad_info.chip_class == GFX9) {
-      unsigned bc_swizzle = gfx9_border_color_swizzle(swizzle);
+      unsigned bc_swizzle = gfx9_border_color_swizzle(desc);
 
       /* Depth is the last accessible layer on Gfx9.
        * The hw doesn't need to know the total number of layers.
@@ -1658,7 +1662,8 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
 static void
 radv_image_view_make_descriptor(struct radv_image_view *iview, struct radv_device *device,
                                 VkFormat vk_format, const VkComponentMapping *components,
-                                bool is_storage_image, bool disable_compression, unsigned plane_id,
+                                bool is_storage_image, bool disable_compression,
+                                bool enable_compression, unsigned plane_id,
                                 unsigned descriptor_plane_id)
 {
    struct radv_image *image = iview->image;
@@ -1699,7 +1704,7 @@ radv_image_view_make_descriptor(struct radv_image_view *iview, struct radv_devic
    }
 
    bool enable_write_compression = radv_image_use_dcc_image_stores(device, image);
-   if (is_storage_image && !enable_write_compression)
+   if (is_storage_image && !(enable_write_compression || enable_compression))
       disable_compression = true;
    si_set_mutable_tex_desc_fields(device, image, base_level_info, plane_id, iview->base_mip,
                                   iview->base_mip, blk_w, is_stencil, is_storage_image,
@@ -1898,13 +1903,16 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
    iview->support_fast_clear = radv_image_view_can_fast_clear(device, iview);
 
    bool disable_compression = extra_create_info ? extra_create_info->disable_compression : false;
+   bool enable_compression = extra_create_info ? extra_create_info->enable_compression : false;
    for (unsigned i = 0;
         i < (iview->multiple_planes ? vk_format_get_plane_count(image->vk_format) : 1); ++i) {
       VkFormat format = vk_format_get_plane_format(iview->vk_format, i);
       radv_image_view_make_descriptor(iview, device, format, &pCreateInfo->components, false,
-                                      disable_compression, iview->plane_id + i, i);
+                                      disable_compression, enable_compression, iview->plane_id + i,
+                                      i);
       radv_image_view_make_descriptor(iview, device, format, &pCreateInfo->components, true,
-                                      disable_compression, iview->plane_id + i, i);
+                                      disable_compression, enable_compression, iview->plane_id + i,
+                                      i);
    }
 }
 

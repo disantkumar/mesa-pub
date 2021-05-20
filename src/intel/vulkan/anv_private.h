@@ -3339,7 +3339,17 @@ struct anv_graphics_pipeline {
 
    uint32_t                                     batch_data[512];
 
+   /* States that are part of batch_data and should be not emitted
+    * dynamically.
+    */
+   anv_cmd_dirty_mask_t                         static_state_mask;
+
+   /* States that need to be reemitted in cmd_buffer_flush_dynamic_state().
+    * This might cover more than the dynamic states specified at pipeline
+    * creation.
+    */
    anv_cmd_dirty_mask_t                         dynamic_state_mask;
+
    struct anv_dynamic_state                     dynamic_state;
 
    uint32_t                                     topology;
@@ -3927,6 +3937,31 @@ anv_can_sample_with_hiz(const struct gen_device_info * const devinfo,
       return false;
 
    return image->samples == 1;
+}
+
+/* Returns true if an MCS-enabled buffer can be sampled from. */
+static inline bool
+anv_can_sample_mcs_with_clear(const struct gen_device_info * const devinfo,
+                              const struct anv_image *image)
+{
+   assert(image->aspects == VK_IMAGE_ASPECT_COLOR_BIT);
+   const uint32_t plane =
+      anv_image_aspect_to_plane(image->aspects, VK_IMAGE_ASPECT_COLOR_BIT);
+
+   assert(isl_aux_usage_has_mcs(image->planes[plane].aux_usage));
+
+   const struct anv_surface *anv_surf = &image->planes[plane].primary_surface;
+
+   /* On TGL, the sampler has an issue with some 8 and 16bpp MSAA fast clears.
+    * See HSD 1707282275, wa_14013111325. Due to the use of
+    * format-reinterpretation, a simplified workaround is implemented.
+    */
+   if (devinfo->ver >= 12 &&
+       isl_format_get_layout(anv_surf->isl.format)->bpb <= 16) {
+      return false;
+   }
+
+   return true;
 }
 
 static inline bool

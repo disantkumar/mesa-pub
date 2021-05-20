@@ -1499,6 +1499,9 @@ static void render_pass_resolve(struct rendering_state *state)
 
       info.dst.box = info.src.box;
 
+      info.src.level = src_imgv->subresourceRange.baseMipLevel;
+      info.dst.level = dst_imgv->subresourceRange.baseMipLevel;
+
       state->pctx->blit(state->pctx, &info);
    }
 }
@@ -3139,11 +3142,9 @@ static void lvp_execute_cmd_buffer(struct lvp_cmd_buffer *cmd_buffer,
 
 VkResult lvp_execute_cmds(struct lvp_device *device,
                           struct lvp_queue *queue,
-                          struct lvp_fence *fence,
                           struct lvp_cmd_buffer *cmd_buffer)
 {
    struct rendering_state state;
-   struct pipe_fence_handle *handle = NULL;
    memset(&state, 0, sizeof(state));
    state.pctx = queue->ctx;
    state.blend_dirty = true;
@@ -3153,12 +3154,6 @@ VkResult lvp_execute_cmds(struct lvp_device *device,
    /* create a gallium context */
    lvp_execute_cmd_buffer(cmd_buffer, &state);
 
-   state.pctx->flush(state.pctx, fence ? &handle : NULL, 0);
-   if (fence) {
-      mtx_lock(&device->fence_lock);
-      fence->handle = handle;
-      mtx_unlock(&device->fence_lock);
-   }
    state.start_vb = -1;
    state.num_vb = 0;
    state.pctx->set_vertex_buffers(state.pctx, 0, 0, PIPE_MAX_ATTRIBS, false, NULL);

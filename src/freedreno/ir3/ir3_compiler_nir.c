@@ -1312,18 +1312,6 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		barrier->flags = IR3_INSTR_SS | IR3_INSTR_SY;
 		barrier->barrier_class = IR3_BARRIER_EVERYTHING;
 		break;
-	case nir_intrinsic_memory_barrier:
-		barrier = ir3_FENCE(b);
-		barrier->cat7.g = true;
-		barrier->cat7.r = true;
-		barrier->cat7.w = true;
-		barrier->cat7.l = true;
-		barrier->barrier_class = IR3_BARRIER_IMAGE_W |
-				IR3_BARRIER_BUFFER_W;
-		barrier->barrier_conflict =
-				IR3_BARRIER_IMAGE_R | IR3_BARRIER_IMAGE_W |
-				IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
-		break;
 	case nir_intrinsic_memory_barrier_buffer:
 		barrier = ir3_FENCE(b);
 		barrier->cat7.g = true;
@@ -1353,6 +1341,7 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 		barrier->barrier_conflict = IR3_BARRIER_SHARED_R |
 				IR3_BARRIER_SHARED_W;
 		break;
+	case nir_intrinsic_memory_barrier:
 	case nir_intrinsic_group_memory_barrier:
 		barrier = ir3_FENCE(b);
 		barrier->cat7.g = true;
@@ -2751,7 +2740,7 @@ emit_block(struct ir3_context *ctx, nir_block *nblock)
 		ctx->addr0_ht[i] = NULL;
 	}
 
-	_mesa_hash_table_u64_destroy(ctx->addr1_ht, NULL);
+	_mesa_hash_table_u64_destroy(ctx->addr1_ht);
 	ctx->addr1_ht = NULL;
 
 	nir_foreach_instr (instr, nblock) {
@@ -3036,6 +3025,7 @@ setup_input(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 	so->inputs[n].slot = slot;
 	so->inputs[n].compmask |= compmask;
 	so->inputs_count = MAX2(so->inputs_count, n + 1);
+	compile_assert(ctx, so->inputs_count < ARRAY_SIZE(so->inputs));
 	so->inputs[n].flat = !coord;
 
 	if (ctx->so->type == MESA_SHADER_FRAGMENT) {
@@ -3328,6 +3318,31 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 	}
 }
 
+static bool
+uses_load_input(struct ir3_shader_variant *so)
+{
+	return so->type == MESA_SHADER_VERTEX || so->type == MESA_SHADER_FRAGMENT;
+}
+
+static bool
+uses_store_output(struct ir3_shader_variant *so)
+{
+	switch (so->type) {
+		case MESA_SHADER_VERTEX:
+			return !so->key.has_gs && !so->key.tessellation;
+		case MESA_SHADER_TESS_EVAL:
+			return !so->key.has_gs;
+		case MESA_SHADER_GEOMETRY:
+		case MESA_SHADER_FRAGMENT:
+			return true;
+		case MESA_SHADER_TESS_CTRL:
+		case MESA_SHADER_COMPUTE:
+			return false;
+		default:
+			unreachable("unknown stage");
+	}
+}
+
 static void
 emit_instructions(struct ir3_context *ctx)
 {
@@ -3358,14 +3373,22 @@ emit_instructions(struct ir3_context *ctx)
 		}
 	}
 
-	/* TODO: for GS/HS/DS, load_input isn't used. but ctx->s->num_inputs is non-zero
-	 * likely the same for num_outputs in cases where store_output isn't used
-	 */
-	ctx->so->inputs_count = ctx->s->num_inputs;
-	ctx->ninputs = ctx->s->num_inputs * 4;
-	ctx->noutputs = ctx->s->num_outputs * 4;
-	ctx->inputs  = rzalloc_array(ctx, struct ir3_instruction *, ctx->ninputs);
-	ctx->outputs = rzalloc_array(ctx, struct ir3_instruction *, ctx->noutputs);
+	if (uses_load_input(ctx->so)) {
+		ctx->so->inputs_count = ctx->s->num_inputs;
+		compile_assert(ctx, ctx->so->inputs_count < ARRAY_SIZE(ctx->so->inputs));
+		ctx->ninputs = ctx->s->num_inputs * 4;
+		ctx->inputs  = rzalloc_array(ctx, struct ir3_instruction *, ctx->ninputs);
+	} else {
+		ctx->ninputs = 0;
+		ctx->so->inputs_count = 0;
+	}
+
+	if (uses_store_output(ctx->so)) {
+		ctx->noutputs = ctx->s->num_outputs * 4;
+		ctx->outputs = rzalloc_array(ctx, struct ir3_instruction *, ctx->noutputs);
+	} else {
+		ctx->noutputs = 0;
+	}
 
 	ctx->ir = ir3_create(ctx->compiler, ctx->so);
 

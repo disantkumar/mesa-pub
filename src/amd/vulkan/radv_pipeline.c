@@ -3299,6 +3299,7 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
          }
 
          if (nir_opt_load_store_vectorize(nir[i], &vectorize_opts)) {
+            NIR_PASS_V(nir[i], nir_copy_prop);
             lower_to_scalar = true;
 
             /* Gather info again, to update whether 8/16-bit are used. */
@@ -3444,6 +3445,8 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_device *device,
          gs_variants[MESA_SHADER_GEOMETRY] = pipeline->gs_copy_shader;
 
          radv_pipeline_cache_insert_shaders(device, cache, gs_copy_hash, gs_variants, gs_binaries);
+
+         pipeline->gs_copy_shader = gs_variants[MESA_SHADER_GEOMETRY];
       }
       free(gs_copy_binary);
    }

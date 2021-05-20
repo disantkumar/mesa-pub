@@ -755,16 +755,16 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineMultisampleStateCreateInfo *info,
               uint32_t dynamic_states)
 {
-   /* If the sample locations are dynamic, 3DSTATE_MULTISAMPLE on Gfx7/7.5
-    * will be emitted dynamically, so skip it here. On Gfx8+
-    * 3DSTATE_SAMPLE_PATTERN will be emitted dynamically, so skip it here.
+   /* Only lookup locations if the extensions is active, otherwise the default
+    * ones will be used either at device initialization time or through
+    * 3DSTATE_MULTISAMPLE on Gfx7/7.5 by passing NULL locations.
     */
-   if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
-      /* Only lookup locations if the extensions is active, otherwise the
-       * default ones will be used either at device initialization time or
-       * through 3DSTATE_MULTISAMPLE on Gfx7/7.5 by passing NULL locations.
+   if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations) {
+      /* If the sample locations are dynamic, 3DSTATE_MULTISAMPLE on Gfx7/7.5
+       * will be emitted dynamically, so skip it here. On Gfx8+
+       * 3DSTATE_SAMPLE_PATTERN will be emitted dynamically, so skip it here.
        */
-      if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations) {
+      if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
 #if GFX_VER >= 8
          genX(emit_sample_pattern)(&pipeline->base.batch,
                                    pipeline->dynamic_state.sample_locations.samples,
@@ -1413,6 +1413,7 @@ emit_3dstate_streamout(struct anv_graphics_pipeline *pipeline,
       if (xfb_info) {
          so.SOFunctionEnable = true;
          so.SOStatisticsEnable = true;
+         so.ReorderMode = TRAILING;
 
          const VkPipelineRasterizationStateStreamCreateInfoEXT *stream_info =
             vk_find_struct_const(rs_info, PIPELINE_RASTERIZATION_STATE_STREAM_CREATE_INFO_EXT);

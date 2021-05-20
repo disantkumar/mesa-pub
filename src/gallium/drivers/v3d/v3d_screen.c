@@ -651,6 +651,10 @@ v3d_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
         int i;
         int num_modifiers = ARRAY_SIZE(v3d_available_modifiers);
 
+        /* Expose DRM_FORMAT_MOD_BROADCOM_SAND128 only for PIPE_FORMAT_NV12 */
+        if (format != PIPE_FORMAT_NV12)
+                num_modifiers--;
+
         if (!modifiers) {
                 *count = num_modifiers;
                 return;
@@ -660,10 +664,8 @@ v3d_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
         for (i = 0; i < *count; i++) {
                 modifiers[i] = v3d_available_modifiers[i];
                 if (external_only)
-                        external_only[i] =
-                                v3d_available_modifiers[i] ==
-                                DRM_FORMAT_MOD_BROADCOM_SAND128;
-       }
+                        external_only[i] = util_format_is_yuv(format);
+        }
 }
 
 static bool
@@ -691,7 +693,7 @@ v3d_screen_is_dmabuf_modifier_supported(struct pipe_screen *pscreen,
         for (i = 0; i < ARRAY_SIZE(v3d_available_modifiers) - 1; i++) {
                 if (v3d_available_modifiers[i] == modifier) {
                         if (external_only)
-                                *external_only = false;
+                                *external_only = util_format_is_yuv(format);
 
                         return true;
                 }

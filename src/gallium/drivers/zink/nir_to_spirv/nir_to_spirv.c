@@ -3510,14 +3510,7 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info)
    ctx.GLSL_std_450 = spirv_builder_import(&ctx.builder, "GLSL.std.450");
    spirv_builder_emit_source(&ctx.builder, SpvSourceLanguageUnknown, 0);
 
-   if (s->info.num_images) {
-      /* this is required for correct io semantics */
-      spirv_builder_emit_extension(&ctx.builder, "SPV_KHR_vulkan_memory_model");
-      spirv_builder_emit_cap(&ctx.builder, SpvCapabilityVulkanMemoryModel);
-      spirv_builder_emit_cap(&ctx.builder, SpvCapabilityVulkanMemoryModelDeviceScope);
-      spirv_builder_emit_mem_model(&ctx.builder, SpvAddressingModelLogical,
-                                   SpvMemoryModelVulkan);
-   } else if (s->info.stage == MESA_SHADER_COMPUTE) {
+   if (s->info.stage == MESA_SHADER_COMPUTE) {
       SpvAddressingModel model;
       if (s->info.cs.ptr_size == 32)
          model = SpvAddressingModelPhysical32;
@@ -3531,7 +3524,8 @@ nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info)
       spirv_builder_emit_mem_model(&ctx.builder, SpvAddressingModelLogical,
                                    SpvMemoryModelGLSL450);
 
-   if (s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL)) {
+   if (s->info.stage == MESA_SHADER_FRAGMENT &&
+       s->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_STENCIL)) {
       spirv_builder_emit_extension(&ctx.builder, "SPV_EXT_shader_stencil_export");
       spirv_builder_emit_cap(&ctx.builder, SpvCapabilityStencilExportEXT);
    }

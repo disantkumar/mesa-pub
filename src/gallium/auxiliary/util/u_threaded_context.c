@@ -2976,6 +2976,133 @@ tc_resource_commit(struct pipe_context *_pipe, struct pipe_resource *res,
    return true; /* we don't care about the return value for this call */
 }
 
+static unsigned
+tc_init_intel_perf_query_info(struct pipe_context *_pipe)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   return pipe->init_intel_perf_query_info(pipe);
+}
+
+static void
+tc_get_intel_perf_query_info(struct pipe_context *_pipe,
+                             unsigned query_index,
+                             const char **name,
+                             uint32_t *data_size,
+                             uint32_t *n_counters,
+                             uint32_t *n_active)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   tc_sync(tc); /* n_active vs begin/end_intel_perf_query */
+   pipe->get_intel_perf_query_info(pipe, query_index, name, data_size,
+         n_counters, n_active);
+}
+
+static void
+tc_get_intel_perf_query_counter_info(struct pipe_context *_pipe,
+                                     unsigned query_index,
+                                     unsigned counter_index,
+                                     const char **name,
+                                     const char **desc,
+                                     uint32_t *offset,
+                                     uint32_t *data_size,
+                                     uint32_t *type_enum,
+                                     uint32_t *data_type_enum,
+                                     uint64_t *raw_max)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   pipe->get_intel_perf_query_counter_info(pipe, query_index, counter_index,
+         name, desc, offset, data_size, type_enum, data_type_enum, raw_max);
+}
+
+static struct pipe_query *
+tc_new_intel_perf_query_obj(struct pipe_context *_pipe, unsigned query_index)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   return pipe->new_intel_perf_query_obj(pipe, query_index);
+}
+
+static void
+tc_call_begin_intel_perf_query(struct pipe_context *pipe, union tc_payload *payload)
+{
+   (void)pipe->begin_intel_perf_query(pipe, payload->query);
+}
+
+static bool
+tc_begin_intel_perf_query(struct pipe_context *_pipe, struct pipe_query *q)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+
+   tc_add_small_call(tc, TC_CALL_begin_intel_perf_query)->query = q;
+
+   /* assume success, begin failure can be signaled from get_intel_perf_query_data */
+   return true;
+}
+
+static void
+tc_call_end_intel_perf_query(struct pipe_context *pipe, union tc_payload *payload)
+{
+   pipe->end_intel_perf_query(pipe, payload->query);
+}
+
+static void
+tc_end_intel_perf_query(struct pipe_context *_pipe, struct pipe_query *q)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+
+   tc_add_small_call(tc, TC_CALL_end_intel_perf_query)->query = q;
+}
+
+static void
+tc_delete_intel_perf_query(struct pipe_context *_pipe, struct pipe_query *q)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   tc_sync(tc); /* flush potentially pending begin/end_intel_perf_queries */
+   pipe->delete_intel_perf_query(pipe, q);
+}
+
+static void
+tc_wait_intel_perf_query(struct pipe_context *_pipe, struct pipe_query *q)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   tc_sync(tc); /* flush potentially pending begin/end_intel_perf_queries */
+   pipe->wait_intel_perf_query(pipe, q);
+}
+
+static bool
+tc_is_intel_perf_query_ready(struct pipe_context *_pipe, struct pipe_query *q)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   tc_sync(tc); /* flush potentially pending begin/end_intel_perf_queries */
+   return pipe->is_intel_perf_query_ready(pipe, q);
+}
+
+static bool
+tc_get_intel_perf_query_data(struct pipe_context *_pipe,
+                             struct pipe_query *q,
+                             size_t data_size,
+                             uint32_t *data,
+                             uint32_t *bytes_written)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   struct pipe_context *pipe = tc->pipe;
+
+   tc_sync(tc); /* flush potentially pending begin/end_intel_perf_queries */
+   return pipe->get_intel_perf_query_data(pipe, q, data_size, data, bytes_written);
+}
 
 /********************************************************************
  * callback
@@ -3043,7 +3170,7 @@ tc_destroy(struct pipe_context *_pipe)
    slab_destroy_child(&tc->pool_transfers);
    assert(tc->batch_slots[tc->next].num_total_call_slots == 0);
    pipe->destroy(pipe);
-   os_free_aligned(tc);
+   FREE(tc);
 }
 
 static const tc_execute execute_func[TC_NUM_CALLS] = {
@@ -3084,19 +3211,11 @@ threaded_context_create(struct pipe_context *pipe,
    if (!debug_get_bool_option("GALLIUM_THREAD", util_get_cpu_caps()->nr_cpus > 1))
       return pipe;
 
-   tc = os_malloc_aligned(sizeof(struct threaded_context), 16);
+   tc = CALLOC_STRUCT(threaded_context);
    if (!tc) {
       pipe->destroy(pipe);
       return NULL;
    }
-   memset(tc, 0, sizeof(*tc));
-
-   assert((uintptr_t)tc % 16 == 0);
-   /* These should be static asserts, but they don't work with MSVC */
-   assert(offsetof(struct threaded_context, batch_slots) % 16 == 0);
-   assert(offsetof(struct threaded_context, batch_slots[0].call) % 16 == 0);
-   assert(offsetof(struct threaded_context, batch_slots[0].call[1]) % 16 == 0);
-   assert(offsetof(struct threaded_context, batch_slots[1].call) % 16 == 0);
 
    /* The driver context isn't wrapped, so set its "priv" to NULL. */
    pipe->priv = NULL;
@@ -3256,6 +3375,16 @@ threaded_context_create(struct pipe_context *pipe,
    CTX_INIT(delete_image_handle);
    CTX_INIT(make_image_handle_resident);
    CTX_INIT(set_frontend_noop);
+   CTX_INIT(init_intel_perf_query_info);
+   CTX_INIT(get_intel_perf_query_info);
+   CTX_INIT(get_intel_perf_query_counter_info);
+   CTX_INIT(new_intel_perf_query_obj);
+   CTX_INIT(begin_intel_perf_query);
+   CTX_INIT(end_intel_perf_query);
+   CTX_INIT(delete_intel_perf_query);
+   CTX_INIT(wait_intel_perf_query);
+   CTX_INIT(is_intel_perf_query_ready);
+   CTX_INIT(get_intel_perf_query_data);
 #undef CTX_INIT
 
    if (out)

@@ -338,7 +338,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
          * to UBO ordinarily, but it isn't as aggressive as we need. */
 
         NIR_PASS(progress, nir, nir_opt_peephole_select, 64, false, true);
-        NIR_PASS_V(nir, nir_lower_uniforms_to_ubo, 16);
+        NIR_PASS_V(nir, nir_lower_uniforms_to_ubo, false, false);
 
         do {
                 progress = false;
@@ -1489,7 +1489,7 @@ emit_sysval_read(compiler_context *ctx, nir_instr *instr,
 }
 
 static unsigned
-compute_builtin_arg(nir_op op)
+compute_builtin_arg(nir_intrinsic_op op)
 {
         switch (op) {
         case nir_intrinsic_load_work_group_id:
@@ -1572,7 +1572,7 @@ emit_compute_builtin(compiler_context *ctx, nir_intrinsic_instr *instr)
 }
 
 static unsigned
-vertex_builtin_arg(nir_op op)
+vertex_builtin_arg(nir_intrinsic_op op)
 {
         switch (op) {
         case nir_intrinsic_load_vertex_id:

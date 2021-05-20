@@ -3056,12 +3056,13 @@ void visit_alu_instr(isel_context *ctx, nir_alu_instr *instr)
           */
          f32 = bld.vop1(aco_opcode::v_cvt_f32_f16, bld.def(v1), f16);
          Temp smallest = bld.copy(bld.def(s1), Operand(0x38800000u));
-         Instruction* vop3 = bld.vopc_e64(aco_opcode::v_cmp_nlt_f32, bld.hint_vcc(bld.def(bld.lm)), f32, smallest);
-         vop3->vop3().abs[0] = true;
-         cmp_res = vop3->definitions[0].getTemp();
+         Instruction* tmp0 = bld.vopc_e64(aco_opcode::v_cmp_lt_f32, bld.def(bld.lm), f32, smallest);
+         tmp0->vop3().abs[0] = true;
+         Temp tmp1 = bld.vopc(aco_opcode::v_cmp_lg_f32, bld.hint_vcc(bld.def(bld.lm)), Operand(0u), f32);
+         cmp_res = bld.sop2(aco_opcode::s_nand_b64, bld.def(s2), bld.def(s1, scc), tmp0->definitions[0].getTemp(), tmp1);
       }
 
-      if (ctx->block->fp_mode.preserve_signed_zero_inf_nan32 || ctx->program->chip_class < GFX8) {
+      if (ctx->block->fp_mode.preserve_signed_zero_inf_nan32) {
          Temp copysign_0 = bld.vop2(aco_opcode::v_mul_f32, bld.def(v1), Operand(0u), as_vgpr(ctx, src));
          bld.vop2(aco_opcode::v_cndmask_b32, Definition(dst), copysign_0, f32, cmp_res);
       } else {
@@ -5436,8 +5437,10 @@ Temp get_sampler_desc(isel_context *ctx, nir_deref_instr *deref_instr,
          constant_index = 0;
 
       const uint32_t *samplers = radv_immutable_samplers(layout, binding);
+      uint32_t dword0_mask = tex_instr->op == nir_texop_tg4 ?
+                             C_008F30_TRUNC_COORD : 0xffffffffu;
       return bld.pseudo(aco_opcode::p_create_vector, bld.def(s4),
-                        Operand(samplers[constant_index * 4 + 0]),
+                        Operand(samplers[constant_index * 4 + 0] & dword0_mask),
                         Operand(samplers[constant_index * 4 + 1]),
                         Operand(samplers[constant_index * 4 + 2]),
                         Operand(samplers[constant_index * 4 + 3]));
@@ -5499,6 +5502,23 @@ Temp get_sampler_desc(isel_context *ctx, nir_deref_instr *deref_instr,
       res = bld.pseudo(aco_opcode::p_create_vector, bld.def(s8),
                        components[0], components[1], components[2], components[3],
                        components[4], components[5], components[6], components[7]);
+   } else if (desc_type == ACO_DESC_SAMPLER && tex_instr->op == nir_texop_tg4) {
+      Temp components[4];
+      for (unsigned i = 0; i < 4; i++)
+         components[i] = bld.tmp(s1);
+
+      bld.pseudo(aco_opcode::p_split_vector,
+                 Definition(components[0]), Definition(components[1]),
+                 Definition(components[2]), Definition(components[3]), res);
+
+      /* We want to always use the linear filtering truncation behaviour for
+       * nir_texop_tg4, even if the sampler uses nearest/point filtering.
+       */
+      components[0] = bld.sop2(aco_opcode::s_and_b32, bld.def(s1), bld.def(s1, scc),
+                               components[0], Operand((uint32_t)C_008F30_TRUNC_COORD));
+
+      res = bld.pseudo(aco_opcode::p_create_vector, bld.def(s4),
+                       components[0], components[1], components[2], components[3]);
    }
 
    return res;
@@ -7485,6 +7505,8 @@ Temp emit_reduction_instr(isel_context *ctx, aco_opcode aco_op, ReduceOp op,
    /* vcc clobber */
    bool clobber_vcc = false;
    if ((op == iadd32 || op == imul64) && ctx->program->chip_class < GFX9)
+      clobber_vcc = true;
+   if ((op == iadd8 || op == iadd16) && ctx->program->chip_class < GFX8)
       clobber_vcc = true;
    if (op == iadd64 || op == umin64 || op == umax64 || op == imin64 || op == imax64)
       clobber_vcc = true;

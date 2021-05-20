@@ -412,9 +412,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.props.limits.maxViewports;
 
    case PIPE_CAP_IMAGE_LOAD_FORMATTED:
-      return screen->info.feats.features.shaderStorageImageExtendedFormats &&
-             screen->info.feats.features.shaderStorageImageReadWithoutFormat &&
-             screen->info.feats.features.shaderStorageImageWriteWithoutFormat;
+      return screen->info.feats.features.shaderStorageImageReadWithoutFormat;
 
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
       return 1;
@@ -748,10 +746,8 @@ zink_get_shader_param(struct pipe_screen *pscreen,
       return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
 
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      if (screen->info.have_KHR_vulkan_memory_model &&
-          (screen->info.feats.features.shaderStorageImageExtendedFormats ||
-          (screen->info.feats.features.shaderStorageImageWriteWithoutFormat &&
-           screen->info.feats.features.shaderStorageImageReadWithoutFormat)))
+      if (screen->info.feats.features.shaderStorageImageExtendedFormats &&
+          screen->info.feats.features.shaderStorageImageWriteWithoutFormat)
          return MIN2(screen->info.props.limits.maxPerStageDescriptorStorageImages,
                      PIPE_MAX_SHADER_IMAGES);
       return 0;
@@ -1349,6 +1345,7 @@ zink_screen_init_semaphore(struct zink_screen *screen)
        */
       if (screen->prev_sem)
          vkDestroySemaphore(screen->dev, screen->prev_sem, NULL);
+      screen->prev_sem = screen->sem;
       screen->sem = sem;
       return true;
    }

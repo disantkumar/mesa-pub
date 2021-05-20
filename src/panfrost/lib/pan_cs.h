@@ -103,6 +103,7 @@ struct pan_fb_bifrost_info {
 struct pan_fb_info {
         unsigned width, height;
         struct {
+                /* Max values are inclusive */
                 unsigned minx, miny, maxx, maxy;
         } extent;
         unsigned nr_samples;
@@ -133,6 +134,10 @@ pan_emit_tls(const struct panfrost_device *dev,
 bool
 pan_fbd_has_zs_crc_ext(const struct panfrost_device *dev,
                        const struct pan_fb_info *fb);
+
+int
+pan_select_crc_rt(const struct panfrost_device *dev,
+                  const struct pan_fb_info *fb);
 
 unsigned
 pan_emit_fbd(const struct panfrost_device *dev,

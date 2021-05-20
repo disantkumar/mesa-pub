@@ -877,10 +877,10 @@ pan_preload_emit_viewport(struct pan_pool *pool,
                         /* Align on 32x32 tiles */
                         cfg.scissor_minimum_x = fb->extent.minx & ~31;
                         cfg.scissor_minimum_y = fb->extent.miny & ~31;
-                        cfg.scissor_maximum_x = MIN2(ALIGN_POT(fb->extent.maxx, 32) - 1,
-                                                     fb->width - 1);
-                        cfg.scissor_maximum_y = MIN2(ALIGN_POT(fb->extent.maxy, 32) - 1,
-                                                     fb->height - 1);
+                        cfg.scissor_maximum_x = MIN2(ALIGN_POT(fb->extent.maxx + 1, 32),
+                                                     fb->width) - 1;
+                        cfg.scissor_maximum_y = MIN2(ALIGN_POT(fb->extent.maxy + 1, 32),
+                                                     fb->height) - 1;
                 }
         }
 
@@ -970,17 +970,63 @@ pan_preload_emit_bifrost_pre_frame_dcd(struct pan_pool *desc_pool,
                                        mali_ptr coords, mali_ptr rsd,
                                        mali_ptr tsd)
 {
+        struct panfrost_device *dev = desc_pool->dev;
+
         unsigned dcd_idx = zs ? 0 : 1;
         pan_preload_fb_bifrost_alloc_pre_post_dcds(desc_pool, fb);
         assert(fb->bifrost.pre_post.dcds.cpu);
         void *dcd = fb->bifrost.pre_post.dcds.cpu +
                     (dcd_idx * (MALI_DRAW_LENGTH + MALI_DRAW_PADDING_LENGTH));
 
+        int crc_rt = pan_select_crc_rt(dev, fb);
+
+        bool always_write = false;
+
+        /* If CRC data is currently invalid and this batch will make it valid,
+         * write even clean tiles to make sure CRC data is updated. */
+        if (crc_rt >= 0) {
+                unsigned level = fb->rts[crc_rt].view->first_level;
+                bool valid = fb->rts[crc_rt].state->slices[level].crc_valid;
+                bool full = !fb->extent.minx && !fb->extent.miny &&
+                        fb->extent.maxx == (fb->width - 1) &&
+                        fb->extent.maxy == (fb->height - 1);
+
+                if (full && !valid)
+                        always_write = true;
+        }
+
         pan_preload_emit_dcd(desc_pool, fb, zs, coords, tsd, rsd, dcd);
-        fb->bifrost.pre_post.modes[dcd_idx] =
-                zs ?
-                MALI_PRE_POST_FRAME_SHADER_MODE_EARLY_ZS_ALWAYS :
-                MALI_PRE_POST_FRAME_SHADER_MODE_INTERSECT;
+        if (zs) {
+                enum pipe_format fmt = fb->zs.view.zs->image->layout.format;
+                bool always = false;
+
+                /* If we're dealing with a combined ZS resource and only one
+                 * component is cleared, we need to reload the whole surface
+                 * because the zs_clean_pixel_write_enable flag is set in that
+                 * case.
+                 */
+                if (util_format_is_depth_and_stencil(fmt) &&
+                    fb->zs.clear.z != fb->zs.clear.s)
+                        always = true;
+
+                /* We could use INTERSECT on Bifrost v7 too, but
+                 * EARLY_ZS_ALWAYS has the advantage of reloading the ZS tile
+                 * buffer one or more tiles ahead, making ZS data immediately
+                 * available for any ZS tests taking place in other shaders.
+                 * Thing's haven't been benchmarked to determine what's
+                 * preferable (saving bandwidth vs having ZS preloaded
+                 * earlier), so let's leave it like that for now.
+                 */
+                fb->bifrost.pre_post.modes[dcd_idx] =
+                        desc_pool->dev->arch > 6 ?
+                        MALI_PRE_POST_FRAME_SHADER_MODE_EARLY_ZS_ALWAYS :
+                        always ? MALI_PRE_POST_FRAME_SHADER_MODE_ALWAYS :
+                        MALI_PRE_POST_FRAME_SHADER_MODE_INTERSECT;
+        } else {
+                fb->bifrost.pre_post.modes[dcd_idx] =
+                        always_write ? MALI_PRE_POST_FRAME_SHADER_MODE_ALWAYS :
+                        MALI_PRE_POST_FRAME_SHADER_MODE_INTERSECT;
+        }
 }
 
 static void

@@ -549,8 +549,10 @@ bool validate_subdword_operand(chip_class chip, const aco_ptr<Instruction>& inst
       return byte == 0;
    if (instr->isPseudo() && chip >= GFX8)
       return true;
-   if (instr->isSDWA() && (instr->sdwa().sel[index] & sdwa_asuint) == (sdwa_isra | op.bytes()))
-      return true;
+   if (instr->isSDWA()) {
+      unsigned sel = instr->sdwa().sel[index] & sdwa_asuint;
+      return (sel & sdwa_isra) && (sel & sdwa_rasize) <= op.bytes();
+   }
    if (byte == 2 && can_use_opsel(chip, instr->opcode, index, 1))
       return true;
 
@@ -677,7 +679,7 @@ bool validate_ra(Program *program) {
       return false;
 
    bool err = false;
-   aco::live live_vars = aco::live_var_analysis(program);
+   aco::live live_vars = aco::live_var_analysis(program, false);
    std::vector<std::vector<Temp>> phi_sgpr_ops(program->blocks.size());
    uint16_t sgpr_limit = get_addr_sgpr_from_waves(program, program->num_waves);
 
