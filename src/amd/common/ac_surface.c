@@ -28,6 +28,7 @@
 #define AC_SURFACE_INCLUDE_NIR
 #include "ac_surface.h"
 
+#include "ac_drm_fourcc.h"
 #include "ac_gpu_info.h"
 #include "addrlib/inc/addrinterface.h"
 #include "addrlib/src/amdgpu_asic_addr.h"
@@ -46,52 +47,6 @@
 #include <stdlib.h>
 
 #ifdef _WIN32
-typedef uint64_t __u64;
-#define DRM_FORMAT_MOD_VENDOR_NONE    0
-#define DRM_FORMAT_MOD_VENDOR_AMD     0x02
-#define DRM_FORMAT_RESERVED	      ((1ULL << 56) - 1)
-#define fourcc_mod_code(vendor, val) \
-	((((__u64)DRM_FORMAT_MOD_VENDOR_## vendor) << 56) | ((val) & 0x00ffffffffffffffULL))
-#define DRM_FORMAT_MOD_INVALID	fourcc_mod_code(NONE, DRM_FORMAT_RESERVED)
-#define DRM_FORMAT_MOD_LINEAR	fourcc_mod_code(NONE, 0)
-#define AMD_FMT_MOD fourcc_mod_code(AMD, 0)
-#define IS_AMD_FMT_MOD(val) (((val) >> 56) == DRM_FORMAT_MOD_VENDOR_AMD)
-#define AMD_FMT_MOD_TILE_VER_GFX9 1
-#define AMD_FMT_MOD_TILE_VER_GFX10 2
-#define AMD_FMT_MOD_TILE_VER_GFX10_RBPLUS 3
-#define AMD_FMT_MOD_TILE_GFX9_64K_S 9
-#define AMD_FMT_MOD_TILE_GFX9_64K_D 10
-#define AMD_FMT_MOD_TILE_GFX9_64K_S_X 25
-#define AMD_FMT_MOD_TILE_GFX9_64K_D_X 26
-#define AMD_FMT_MOD_TILE_GFX9_64K_R_X 27
-#define AMD_FMT_MOD_DCC_BLOCK_64B 0
-#define AMD_FMT_MOD_DCC_BLOCK_128B 1
-#define AMD_FMT_MOD_TILE_VERSION_SHIFT 0
-#define AMD_FMT_MOD_TILE_SHIFT 8
-#define AMD_FMT_MOD_TILE_MASK 0x1F
-#define AMD_FMT_MOD_DCC_SHIFT 13
-#define AMD_FMT_MOD_DCC_MASK 0x1
-#define AMD_FMT_MOD_DCC_RETILE_SHIFT 14
-#define AMD_FMT_MOD_DCC_RETILE_MASK 0x1
-#define AMD_FMT_MOD_DCC_PIPE_ALIGN_SHIFT 15
-#define AMD_FMT_MOD_DCC_PIPE_ALIGN_MASK 0x1
-#define AMD_FMT_MOD_DCC_INDEPENDENT_64B_SHIFT 16
-#define AMD_FMT_MOD_DCC_INDEPENDENT_64B_MASK 0x1
-#define AMD_FMT_MOD_DCC_INDEPENDENT_128B_SHIFT 17
-#define AMD_FMT_MOD_DCC_INDEPENDENT_128B_MASK 0x1
-#define AMD_FMT_MOD_DCC_MAX_COMPRESSED_BLOCK_SHIFT 18
-#define AMD_FMT_MOD_DCC_MAX_COMPRESSED_BLOCK_MASK 0x3
-#define AMD_FMT_MOD_DCC_CONSTANT_ENCODE_SHIFT 20
-#define AMD_FMT_MOD_PIPE_XOR_BITS_SHIFT 21
-#define AMD_FMT_MOD_BANK_XOR_BITS_SHIFT 24
-#define AMD_FMT_MOD_PACKERS_SHIFT 27 /* aliases with BANK_XOR_BITS */
-#define AMD_FMT_MOD_RB_SHIFT 30
-#define AMD_FMT_MOD_PIPE_SHIFT 33
-#define AMD_FMT_MOD_SET(field, value) \
-	((uint64_t)(value) << AMD_FMT_MOD_##field##_SHIFT)
-#define AMD_FMT_MOD_GET(field, value) \
-	(((value) >> AMD_FMT_MOD_##field##_SHIFT) & AMD_FMT_MOD_##field##_MASK)
-
 #define AMDGPU_TILING_ARRAY_MODE_SHIFT			0
 #define AMDGPU_TILING_ARRAY_MODE_MASK			0xf
 #define AMDGPU_TILING_PIPE_CONFIG_SHIFT			4
@@ -125,7 +80,6 @@ typedef uint64_t __u64;
 #define AMDGPU_TILING_GET(value, field) \
 	(((__u64)(value) >> AMDGPU_TILING_##field##_SHIFT) & AMDGPU_TILING_##field##_MASK)
 #else
-#include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/amdgpu_drm.h"
 #endif
 
@@ -165,12 +119,17 @@ ac_modifier_fill_dcc_params(uint64_t modifier, struct radeon_surf *surf,
 {
    assert(ac_modifier_has_dcc(modifier));
 
-   surf_info->flags.metaRbUnaligned = 0;
    if (AMD_FMT_MOD_GET(DCC_RETILE, modifier)) {
       surf_info->flags.metaPipeUnaligned = 0;
    } else {
       surf_info->flags.metaPipeUnaligned = !AMD_FMT_MOD_GET(DCC_PIPE_ALIGN, modifier);
    }
+
+   /* The metaPipeUnaligned is not strictly necessary, but ensure we don't set metaRbUnaligned on
+    * non-displayable DCC surfaces just because num_render_backends = 1 */
+   surf_info->flags.metaRbUnaligned = AMD_FMT_MOD_GET(TILE_VERSION, modifier) == AMD_FMT_MOD_TILE_VER_GFX9 &&
+                                      AMD_FMT_MOD_GET(RB, modifier) == 0 &&
+                                      surf_info->flags.metaPipeUnaligned;
 
    surf->u.gfx9.color.dcc.independent_64B_blocks = AMD_FMT_MOD_GET(DCC_INDEPENDENT_64B, modifier);
    surf->u.gfx9.color.dcc.independent_128B_blocks = AMD_FMT_MOD_GET(DCC_INDEPENDENT_128B, modifier);
@@ -185,7 +144,7 @@ bool ac_is_modifier_supported(const struct radeon_info *info,
 
    if (util_format_is_compressed(format) ||
        util_format_is_depth_or_stencil(format) ||
-       util_format_get_blocksize(format) > 8)
+       util_format_get_blocksizebits(format) > 64)
       return false;
 
    if (info->chip_class < GFX9)
@@ -194,7 +153,8 @@ bool ac_is_modifier_supported(const struct radeon_info *info,
    if(modifier == DRM_FORMAT_MOD_LINEAR)
       return true;
 
-   if (util_format_get_num_planes(format) > 1)
+   /* GFX8 may need a different modifier for each plane */
+   if (info->chip_class < GFX9 && util_format_get_num_planes(format) > 1)
       return false;
 
    uint32_t allowed_swizzles = 0xFFFFFFFF;
@@ -214,6 +174,10 @@ bool ac_is_modifier_supported(const struct radeon_info *info,
       return false;
 
    if (ac_modifier_has_dcc(modifier)) {
+      /* TODO: support multi-planar formats with DCC */
+      if (util_format_get_num_planes(format) > 1)
+         return false;
+
       if (!info->has_graphics)
          return false;
 
@@ -259,24 +223,25 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
                             AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B) |
                             AMD_FMT_MOD_SET(DCC_CONSTANT_ENCODE, info->has_dcc_constant_encode) |
                             AMD_FMT_MOD_SET(PIPE_XOR_BITS, pipe_xor_bits) |
-                            AMD_FMT_MOD_SET(BANK_XOR_BITS, bank_xor_bits) |
-                            AMD_FMT_MOD_SET(RB, rb);
+                            AMD_FMT_MOD_SET(BANK_XOR_BITS, bank_xor_bits);
 
       ADD_MOD(AMD_FMT_MOD |
               AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_D_X) |
               AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX9) |
               AMD_FMT_MOD_SET(DCC_PIPE_ALIGN, 1) |
               common_dcc |
-              AMD_FMT_MOD_SET(PIPE, pipes))
+              AMD_FMT_MOD_SET(PIPE, pipes) |
+              AMD_FMT_MOD_SET(RB, rb))
 
       ADD_MOD(AMD_FMT_MOD |
               AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_S_X) |
               AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX9) |
               AMD_FMT_MOD_SET(DCC_PIPE_ALIGN, 1) |
               common_dcc |
-              AMD_FMT_MOD_SET(PIPE, pipes))
+              AMD_FMT_MOD_SET(PIPE, pipes) |
+              AMD_FMT_MOD_SET(RB, rb))
 
-      if (util_format_get_blocksize(format) == 4) {
+      if (util_format_get_blocksizebits(format) == 32) {
          if (info->max_render_backends == 1) {
             ADD_MOD(AMD_FMT_MOD |
                     AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_S_X) |
@@ -290,7 +255,8 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
                  AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX9) |
                  AMD_FMT_MOD_SET(DCC_RETILE, 1) |
                  common_dcc |
-                 AMD_FMT_MOD_SET(PIPE, pipes))
+                 AMD_FMT_MOD_SET(PIPE, pipes) |
+                 AMD_FMT_MOD_SET(RB, rb))
       }
 
 
@@ -341,7 +307,6 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
 
          if (info->max_render_backends == 1) {
             ADD_MOD(AMD_FMT_MOD | common_dcc |
-                    AMD_FMT_MOD_SET(DCC_PIPE_ALIGN, 1) |
                     AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
                     AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, independent_128b) |
                     AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B))
@@ -365,7 +330,7 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
               AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_S_X) |
               AMD_FMT_MOD_SET(PIPE_XOR_BITS, pipe_xor_bits))
 
-      if (util_format_get_blocksize(format) != 4) {
+      if (util_format_get_blocksizebits(format) != 32) {
          ADD_MOD(AMD_FMT_MOD |
                  AMD_FMT_MOD_SET(TILE, AMD_FMT_MOD_TILE_GFX9_64K_D) |
                  AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX9));
@@ -2859,7 +2824,7 @@ void ac_surface_print_info(FILE *out, const struct radeon_info *info,
                  surf->meta_offset, surf->meta_size, 1 << surf->meta_alignment_log2,
                  surf->u.gfx9.color.display_dcc_pitch_max, surf->num_meta_levels);
 
-      if (surf->u.gfx9.zs.stencil_offset)
+      if (surf->has_stencil)
          fprintf(out,
                  "    Stencil: offset=%" PRIu64 ", swmode=%u, epitch=%u\n",
                  surf->u.gfx9.zs.stencil_offset,

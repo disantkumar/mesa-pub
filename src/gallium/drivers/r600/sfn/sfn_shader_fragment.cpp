@@ -161,7 +161,7 @@ bool FragmentShaderFromNir::process_load_input(nir_intrinsic_instr *instr,
             tgsi_interpolate = TGSI_INTERPOLATE_COLOR;
             break;
       }
-         /* fallthrough */
+         FALLTHROUGH;
       case INTERP_MODE_SMOOTH:
          tgsi_interpolate = TGSI_INTERPOLATE_PERSPECTIVE;
          break;
@@ -206,7 +206,7 @@ bool FragmentShaderFromNir::process_load_input(nir_intrinsic_instr *instr,
    case TGSI_SEMANTIC_PRIMID:
       sh_info().gs_prim_id_input = true;
       sh_info().ps_prim_id_input = m_shaderio.inputs().size();
-      /* fallthrough */
+      FALLTHROUGH;
    case TGSI_SEMANTIC_FOG:
    case TGSI_SEMANTIC_GENERIC:
    case TGSI_SEMANTIC_TEXCOORD:
@@ -252,7 +252,7 @@ bool FragmentShaderFromNir::scan_sysvalue_access(nir_instr *instr)
          break;
       case nir_intrinsic_load_sample_pos:
          m_sv_values.set(es_sample_pos);
-         /* fallthrough */
+         FALLTHROUGH;
       case nir_intrinsic_load_sample_id:
          m_sv_values.set(es_sample_id);
          break;
@@ -400,8 +400,6 @@ void FragmentShaderFromNir::emit_shader_start()
          auto v = new GPRValue(m_frag_pos_index, i);
          v->set_as_input();
          auto reg = PValue(v);
-         if (i == 3)
-            emit_instruction(new AluInstruction(op1_recip_ieee, reg, reg, {alu_write, alu_last_instr}));
          m_frag_pos[i] = reg;
       }
    }

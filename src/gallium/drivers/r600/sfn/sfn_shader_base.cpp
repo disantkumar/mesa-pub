@@ -124,7 +124,7 @@ bool ShaderFromNirProcessor::scan_instruction(nir_instr *instr)
       case nir_intrinsic_image_atomic_comp_swap:
       case nir_intrinsic_ssbo_atomic_comp_swap:
          m_sel.info.writes_memory = 1;
-         /* fallthrough */
+         FALLTHROUGH;
       case nir_intrinsic_image_load:
          m_ssbo_instr.set_require_rat_return_address();
          break;
@@ -285,11 +285,18 @@ bool ShaderFromNirProcessor::process_uniforms(nir_variable *uniform)
          sh_info().indirect_files |= 1 << TGSI_FILE_IMAGE;
    }
 
-   if (uniform->type->is_image()) {
-      ++m_image_count;
-   }
-
    return true;
+}
+
+void ShaderFromNirProcessor::set_shader_info(const nir_shader *sh)
+{
+   m_image_count = sh->info.num_images;
+   do_set_shader_info(sh);
+}
+
+void ShaderFromNirProcessor::do_set_shader_info(const nir_shader *sh)
+{
+   (void)sh;
 }
 
 bool ShaderFromNirProcessor::scan_inputs_read(const nir_shader *sh)

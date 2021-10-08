@@ -154,7 +154,8 @@ typedef struct {
 } lower_tess_io_state;
 
 static bool
-match_mask(nir_intrinsic_instr *intrin,
+match_mask(gl_shader_stage stage,
+           nir_intrinsic_instr *intrin,
            uint64_t mask,
            bool match_indirect)
 {
@@ -163,11 +164,12 @@ match_mask(nir_intrinsic_instr *intrin,
       return match_indirect;
 
    uint64_t slot = nir_intrinsic_io_semantics(intrin).location;
-   if (intrin->intrinsic != nir_intrinsic_load_per_vertex_input &&
+   if (stage == MESA_SHADER_TESS_CTRL &&
+       intrin->intrinsic != nir_intrinsic_load_per_vertex_input &&
        intrin->intrinsic != nir_intrinsic_store_per_vertex_output)
       slot -= VARYING_SLOT_PATCH0;
 
-   return (1UL << slot) & mask;
+   return (UINT64_C(1) << slot) & mask;
 }
 
 static bool
@@ -178,7 +180,7 @@ tcs_output_needs_vmem(nir_intrinsic_instr *intrin,
                    ? st->tes_inputs_read
                    : st->tes_patch_inputs_read;
 
-   return match_mask(intrin, mask, true);
+   return match_mask(MESA_SHADER_TESS_CTRL, intrin, mask, true);
 }
 
 static bool
@@ -189,7 +191,7 @@ tcs_output_needs_lds(nir_intrinsic_instr *intrin,
                    ? shader->info.outputs_read
                    : shader->info.patch_outputs_read;
 
-   return match_mask(intrin, mask, true);
+   return match_mask(MESA_SHADER_TESS_CTRL, intrin, mask, true);
 }
 
 static bool
@@ -208,7 +210,7 @@ lower_ls_output_store(nir_builder *b,
    lower_tess_io_state *st = (lower_tess_io_state *) state;
 
    /* If this is a temp-only TCS input, we don't need to use shared memory at all. */
-   if (match_mask(intrin, st->tcs_temp_only_inputs, false))
+   if (match_mask(MESA_SHADER_VERTEX, intrin, st->tcs_temp_only_inputs, false))
       return false;
 
    b->cursor = nir_before_instr(instr);
@@ -430,6 +432,18 @@ lower_hs_output_load(nir_builder *b,
                                 .align_mul = 16u, .align_offset = (nir_intrinsic_component(intrin) * 4u) % 16u);
 }
 
+static void
+update_hs_scoped_barrier(nir_intrinsic_instr *intrin)
+{
+   /* Output loads and stores are lowered to shared memory access,
+    * so we have to update the barriers to also reflect this.
+    */
+   unsigned mem_modes = nir_intrinsic_memory_modes(intrin);
+   if (mem_modes & nir_var_shader_out)
+      mem_modes |= nir_var_mem_shared;
+   nir_intrinsic_set_memory_modes(intrin, mem_modes);
+}
+
 static nir_ssa_def *
 lower_hs_output_access(nir_builder *b,
                        nir_instr *instr,
@@ -442,8 +456,14 @@ lower_hs_output_access(nir_builder *b,
        intrin->intrinsic == nir_intrinsic_store_per_vertex_output) {
       lower_hs_output_store(b, intrin, st);
       return NIR_LOWER_INSTR_PROGRESS_REPLACE;
-   } else {
+   } else if (intrin->intrinsic == nir_intrinsic_load_output ||
+              intrin->intrinsic == nir_intrinsic_load_per_vertex_output) {
       return lower_hs_output_load(b, intrin, st);
+   } else if (intrin->intrinsic == nir_intrinsic_scoped_barrier) {
+      update_hs_scoped_barrier(intrin);
+      return NIR_LOWER_INSTR_PROGRESS;
+   } else {
+      unreachable("intrinsic not supported by lower_hs_output_access");
    }
 }
 
@@ -571,7 +591,7 @@ lower_tes_input_load(nir_builder *b,
 }
 
 static bool
-filter_any_output_access(const nir_instr *instr,
+filter_hs_output_access(const nir_instr *instr,
                          UNUSED const void *st)
 {
    if (instr->type != nir_instr_type_intrinsic)
@@ -581,7 +601,8 @@ filter_any_output_access(const nir_instr *instr,
    return intrin->intrinsic == nir_intrinsic_store_output ||
           intrin->intrinsic == nir_intrinsic_store_per_vertex_output ||
           intrin->intrinsic == nir_intrinsic_load_output ||
-          intrin->intrinsic == nir_intrinsic_load_per_vertex_output;
+          intrin->intrinsic == nir_intrinsic_load_per_vertex_output ||
+          intrin->intrinsic == nir_intrinsic_scoped_barrier;
 }
 
 static bool
@@ -658,7 +679,7 @@ ac_nir_lower_hs_outputs_to_mem(nir_shader *shader,
    };
 
    nir_shader_lower_instructions(shader,
-                                 filter_any_output_access,
+                                 filter_hs_output_access,
                                  lower_hs_output_access,
                                  &state);
 

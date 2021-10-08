@@ -249,25 +249,13 @@ fd6_emit_fb_tex(struct fd_ringbuffer *state, struct fd_context *ctx) assert_dt
    struct pipe_surface *psurf = pfb->cbufs[0];
    struct fd_resource *rsc = fd_resource(psurf->texture);
 
-   uint32_t texconst0 = fd6_tex_const_0(
-      psurf->texture, psurf->u.tex.level, psurf->format, PIPE_SWIZZLE_X,
-      PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W);
-
-   /* always TILE6_2 mode in GMEM.. which also means no swap: */
-   texconst0 &=
-      ~(A6XX_TEX_CONST_0_SWAP__MASK | A6XX_TEX_CONST_0_TILE_MODE__MASK);
-   texconst0 |= A6XX_TEX_CONST_0_TILE_MODE(TILE6_2);
-
-   OUT_RING(state, texconst0);
+   OUT_RINGP(state, 0, &ctx->batch->fb_read_patches); /* texconst0, patched in gmem emit */
    OUT_RING(state, A6XX_TEX_CONST_1_WIDTH(pfb->width) |
                       A6XX_TEX_CONST_1_HEIGHT(pfb->height));
-   OUT_RINGP(state, A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D),
-             &ctx->batch->fb_read_patches);
+   OUT_RING(state, 0); /* texconst2, patched in gmem emit */
    OUT_RING(state, A6XX_TEX_CONST_3_ARRAY_PITCH(rsc->layout.layer_size));
-
-   OUT_RING(state, A6XX_TEX_CONST_4_BASE_LO(ctx->screen->gmem_base));
-   OUT_RING(state, A6XX_TEX_CONST_5_BASE_HI(ctx->screen->gmem_base >> 32) |
-                      A6XX_TEX_CONST_5_DEPTH(1));
+   OUT_RING(state, 0); /* BASE_LO, patched in gmem emit */
+   OUT_RING(state, 0); /* BASE_HI, patched in gmem emit */
    OUT_RING(state, 0); /* texconst6 */
    OUT_RING(state, 0); /* texconst7 */
    OUT_RING(state, 0); /* texconst8 */
@@ -1378,9 +1366,11 @@ static void
 fd6_framebuffer_barrier(struct fd_context *ctx) assert_dt
 {
    struct fd6_context *fd6_ctx = fd6_context(ctx);
-   struct fd_batch *batch = ctx->batch;
+   struct fd_batch *batch = fd_context_batch_locked(ctx);
    struct fd_ringbuffer *ring = batch->draw;
    unsigned seqno;
+
+   fd_batch_needs_flush(batch);
 
    seqno = fd6_event_write(batch, ring, RB_DONE_TS, true);
 
@@ -1403,6 +1393,9 @@ fd6_framebuffer_barrier(struct fd_context *ctx) assert_dt
    OUT_RING(ring, CP_WAIT_MEM_GTE_0_RESERVED(0));
    OUT_RELOC(ring, control_ptr(fd6_ctx, seqno));
    OUT_RING(ring, CP_WAIT_MEM_GTE_3_REF(seqno));
+
+   fd_batch_unlock_submit(batch);
+   fd_batch_reference(&batch, NULL);
 }
 
 void

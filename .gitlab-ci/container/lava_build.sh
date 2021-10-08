@@ -7,7 +7,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 check_minio()
 {
-    MINIO_PATH="${MINIO_HOST}/mesa-lava/$1/${MINIO_SUFFIX}/${DISTRIBUTION_TAG}/${DEBIAN_ARCH}"
+    MINIO_PATH="${MINIO_HOST}/mesa-lava/$1/${DISTRIBUTION_TAG}/${DEBIAN_ARCH}"
     if wget -q --method=HEAD "https://${MINIO_PATH}/done"; then
         exit
     fi
@@ -33,6 +33,7 @@ if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8016-sbc.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8096-db820c.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
+    DEVICE_TREES+=" arch/arm64/boot/dts/mediatek/mt8183-kukui-jacuzzi-juniper-sku16.dtb"
     KERNEL_IMAGE_NAME="Image"
 elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     GCC_ARCH="arm-linux-gnueabihf"
@@ -73,15 +74,19 @@ apt-get install -y --no-remove \
                    cmake \
                    debootstrap \
                    git \
+                   glslang-tools \
+                   libdrm-dev \
                    libegl1-mesa-dev \
                    libgbm-dev \
                    libgles2-mesa-dev \
+                   libpng-dev \
                    libssl-dev \
                    libudev-dev \
                    libvulkan-dev \
                    libwaffle-dev \
                    libwayland-dev \
                    libx11-xcb-dev \
+                   libxcb-dri2-0-dev \
                    libxkbcommon-dev \
                    patch \
                    python3-distutils \
@@ -97,6 +102,7 @@ if [[ "$DEBIAN_ARCH" = "armhf" ]]; then
                        libelf-dev:armhf \
                        libgbm-dev:armhf \
                        libgles2-mesa-dev:armhf \
+                       libpng-dev:armhf \
                        libudev-dev:armhf \
                        libvulkan-dev:armhf \
                        libwaffle-dev:armhf \
@@ -109,6 +115,13 @@ fi
 ############### Building
 STRIP_CMD="${GCC_ARCH}-strip"
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}
+
+
+############### Build apitrace
+. .gitlab-ci/container/build-apitrace.sh
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
+mv /apitrace/build /lava-files/rootfs-${DEBIAN_ARCH}/apitrace
+rm -rf /apitrace
 
 
 ############### Build dEQP runner
@@ -125,7 +138,7 @@ mv /deqp /lava-files/rootfs-${DEBIAN_ARCH}/.
 
 
 ############### Build piglit
-. .gitlab-ci/container/build-piglit.sh
+PIGLIT_OPTS="-DPIGLIT_BUILD_DMA_BUF_TESTS=ON" . .gitlab-ci/container/build-piglit.sh
 mv /piglit /lava-files/rootfs-${DEBIAN_ARCH}/.
 
 
@@ -133,58 +146,8 @@ mv /piglit /lava-files/rootfs-${DEBIAN_ARCH}/.
 EXTRA_MESON_ARGS+=" -D prefix=/libdrm"
 . .gitlab-ci/container/build-libdrm.sh
 
-
-############### Cross-build kernel
-mkdir -p kernel
-wget -qO- ${KERNEL_URL} | tar -xz --strip-components=1 -C kernel
-pushd kernel
-
-# The kernel doesn't like the gold linker (or the old lld in our debians).
-# Sneak in some override symlinks during kernel build until we can update
-# debian (they'll get blown away by the rm of the kernel dir at the end).
-mkdir -p ld-links
-for i in /usr/bin/*-ld /usr/bin/ld; do
-    i=`basename $i`
-    ln -sf /usr/bin/$i.bfd ld-links/$i
-done
-export PATH=`pwd`/ld-links:$PATH
-
-if [ -n "$INSTALL_KERNEL_MODULES" ]; then
-    # Disable all modules in defconfig, so we only build the ones we want
-    sed -i 's/=m/=n/g' ${DEFCONFIG}
-fi
-
-./scripts/kconfig/merge_config.sh ${DEFCONFIG} ../.gitlab-ci/container/${KERNEL_ARCH}.config
-make ${KERNEL_IMAGE_NAME}
-for image in ${KERNEL_IMAGE_NAME}; do
-    cp arch/${KERNEL_ARCH}/boot/${image} /lava-files/.
-done
-
-if [[ -n ${DEVICE_TREES} ]]; then
-    make dtbs
-    cp ${DEVICE_TREES} /lava-files/.
-fi
-
-if [ -n "$INSTALL_KERNEL_MODULES" ]; then
-    make modules
-    INSTALL_MOD_PATH=/lava-files/rootfs-${DEBIAN_ARCH}/ make modules_install
-fi
-
-if [[ ${DEBIAN_ARCH} = "arm64" ]] && [[ ${MINIO_SUFFIX} = "baremetal" ]]; then
-    make Image.lzma
-    mkimage \
-        -f auto \
-        -A arm \
-        -O linux \
-        -d arch/arm64/boot/Image.lzma \
-        -C lzma\
-        -b arch/arm64/boot/dts/qcom/sdm845-cheza-r3.dtb \
-        /lava-files/cheza-kernel
-    KERNEL_IMAGE_NAME+=" cheza-kernel"
-fi
-
-popd
-rm -rf kernel
+############### Build kernel
+. .gitlab-ci/container/build-kernel.sh
 
 ############### Delete rust, since the tests won't be compiling anything.
 rm -rf /root/.cargo
@@ -217,7 +180,7 @@ find /libdrm/ -name lib\*\.so\* | xargs cp -t /lava-files/rootfs-${DEBIAN_ARCH}/
 rm -rf /libdrm
 
 
-if [ ${DEBIAN_ARCH} = arm64 ] && [ ${MINIO_SUFFIX} = baremetal ]; then
+if [ ${DEBIAN_ARCH} = arm64 ]; then
     # Make a gzipped copy of the Image for db410c.
     gzip -k /lava-files/Image
     KERNEL_IMAGE_NAME+=" Image.gz"

@@ -86,6 +86,8 @@ dri_fill_st_options(struct dri_screen *screen)
       driQueryOptionb(optionCache, "allow_glsl_builtin_variable_redeclaration");
    options->allow_higher_compat_version =
       driQueryOptionb(optionCache, "allow_higher_compat_version");
+   options->glsl_ignore_write_to_readonly_var =
+      driQueryOptionb(optionCache, "glsl_ignore_write_to_readonly_var");
    options->glsl_zero_init = driQueryOptionb(optionCache, "glsl_zero_init");
    options->force_integer_tex_nearest =
       driQueryOptionb(optionCache, "force_integer_tex_nearest");
@@ -105,6 +107,8 @@ dri_fill_st_options(struct dri_screen *screen)
       driQueryOptionb(optionCache, "force_gl_names_reuse");
    options->transcode_etc =
       driQueryOptionb(optionCache, "transcode_etc");
+   options->transcode_astc =
+      driQueryOptionb(optionCache, "transcode_astc");
 
    char *vendor_str = driQueryOptionstr(optionCache, "force_gl_vendor");
    /* not an empty string */
@@ -455,10 +459,8 @@ dri_fill_st_visual(struct st_visual *stvis,
       PIPE_FORMAT_R16G16B16A16_SNORM : PIPE_FORMAT_NONE;
 
    stvis->buffer_mask |= ST_ATTACHMENT_FRONT_LEFT_MASK;
-   stvis->render_buffer = ST_ATTACHMENT_FRONT_LEFT;
    if (mode->doubleBufferMode) {
       stvis->buffer_mask |= ST_ATTACHMENT_BACK_LEFT_MASK;
-      stvis->render_buffer = ST_ATTACHMENT_BACK_LEFT;
    }
    if (mode->stereoMode) {
       stvis->buffer_mask |= ST_ATTACHMENT_FRONT_RIGHT_MASK;

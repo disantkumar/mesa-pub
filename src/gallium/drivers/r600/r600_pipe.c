@@ -158,7 +158,7 @@ static struct pipe_context *r600_create_context(struct pipe_screen *screen,
 
 	r600_init_blit_functions(rctx);
 
-	if (rscreen->b.info.has_hw_decode) {
+	if (rscreen->b.info.has_video_hw.uvd_decode) {
 		rctx->b.b.create_video_codec = r600_uvd_create_decoder;
 		rctx->b.b.create_video_buffer = r600_video_buffer_create;
 	} else {
@@ -247,8 +247,7 @@ fail:
 
 static bool is_nir_enabled(struct r600_common_screen *screen) {
    return ((screen->debug_flags & DBG_NIR_PREFERRED) &&
-       screen->family >= CHIP_CEDAR &&
-       screen->family < CHIP_CAYMAN);
+       screen->family >= CHIP_CEDAR);
 }
 
 /*
@@ -571,7 +570,7 @@ static int r600_get_shader_param(struct pipe_screen* pscreen,
 	case PIPE_SHADER_COMPUTE:
 		if (rscreen->b.family >= CHIP_CEDAR)
 			break;
-		/* fallthrough */
+		FALLTHROUGH;
 	default:
 		return 0;
 	}

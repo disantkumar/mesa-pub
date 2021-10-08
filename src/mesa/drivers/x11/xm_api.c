@@ -341,8 +341,7 @@ create_xmesa_buffer(XMesaDrawable d, BufferType type,
                                   vis->mesa_visual.depthBits > 0,
                                   vis->mesa_visual.stencilBits > 0,
                                   vis->mesa_visual.accumRedBits > 0,
-                                  GL_FALSE,  /* software alpha buffer */
-                                  vis->mesa_visual.numAuxBuffers > 0 );
+                                  GL_FALSE  /* software alpha buffer */ );
 
    /* GLX_EXT_texture_from_pixmap */
    b->TextureTarget = 0;
@@ -597,7 +596,6 @@ initialize_visual_and_buffer(XMesaVisual v, XMesaBuffer b,
       printf("X/Mesa visual = %p\n", (void *) v);
       printf("X/Mesa dithered pf = %u\n", v->dithered_pf);
       printf("X/Mesa undithered pf = %u\n", v->undithered_pf);
-      printf("X/Mesa level = %d\n", v->mesa_visual.level);
       printf("X/Mesa depth = %d\n", GET_VISUAL_DEPTH(v));
       printf("X/Mesa bits per pixel = %d\n", v->BitsPerPixel);
    }
@@ -662,13 +660,13 @@ xmesa_color_to_pixel(struct gl_context *ctx,
       case PF_8A8R8G8B:
          return PACK_8A8R8G8B( r, g, b, a );
       case PF_8R8G8B:
-         /* fall through */
+         FALLTHROUGH;
       case PF_8R8G8B24:
          return PACK_8R8G8B( r, g, b );
       case PF_5R6G5B:
          return PACK_5R6G5B( r, g, b );
       case PF_Dither_True:
-         /* fall through */
+         FALLTHROUGH;
       case PF_Dither_5R6G5B:
          {
             unsigned long p;
@@ -818,8 +816,6 @@ XMesaVisual XMesaCreateVisual( XMesaDisplay *display,
    v->visualType = xmesa_convert_from_x_visual_type(visinfo->c_class);
 #endif
 
-   v->mesa_visual.visualRating = visualCaveat;
-
    if (alpha_flag)
       v->mesa_visual.alphaBits = 8;
 
@@ -857,8 +853,6 @@ XMesaVisual XMesaCreateVisual( XMesaDisplay *display,
                            accum_blue_size, accum_alpha_size,
                            0);
 
-   /* XXX minor hack */
-   v->mesa_visual.level = level;
    return v;
 }
 
@@ -1306,6 +1300,26 @@ Display *XMesaGetCurrentDisplay(void)
 }
 
 
+/**
+ * Swap buffers notification callback.
+ *
+ * \param ctx GL context.
+ *
+ * Called by window system just before swapping buffers.
+ * We have to finish any pending rendering.
+ */
+static void
+XMesaNotifySwapBuffers(struct gl_context *ctx)
+{
+   if (MESA_VERBOSE & VERBOSE_SWAPBUFFERS)
+      _mesa_debug(ctx, "SwapBuffers\n");
+
+   FLUSH_VERTICES(ctx, 0, 0);
+   if (ctx->Driver.Flush) {
+      ctx->Driver.Flush(ctx, 0);
+   }
+}
+
 
 /*
  * Copy the back buffer to the front buffer.  If there's no back buffer
@@ -1325,7 +1339,7 @@ void XMesaSwapBuffers( XMesaBuffer b )
     * we have to flush any pending rendering commands first.
     */
    if (ctx && ctx->DrawBuffer == &(b->mesa_buffer))
-      _mesa_notifySwapBuffers(ctx);
+      XMesaNotifySwapBuffers(ctx);
 
    if (b->db_mode) {
       if (b->backxrb->ximage) {
@@ -1380,7 +1394,7 @@ void XMesaCopySubBuffer( XMesaBuffer b, int x, int y, int width, int height )
     * we have to flush any pending rendering commands first.
     */
    if (ctx && ctx->DrawBuffer == &(b->mesa_buffer))
-      _mesa_notifySwapBuffers(ctx);
+      XMesaNotifySwapBuffers(ctx);
 
    if (!b->backxrb) {
       /* single buffered */
@@ -1582,7 +1596,7 @@ unsigned long XMesaDitherColor( XMesaContext xmesa, GLint x, GLint y,
       case PF_5R6G5B:
          return PACK_5R6G5B( r, g, b );
       case PF_Dither_5R6G5B:
-         /* fall through */
+         FALLTHROUGH;
       case PF_Dither_True:
          {
             unsigned long p;
@@ -1626,7 +1640,6 @@ xbuffer_to_renderbuffer(int buffer)
    case GLX_BACK_RIGHT_EXT:
       return BUFFER_BACK_RIGHT;
    case GLX_AUX0_EXT:
-      return BUFFER_AUX0;
    case GLX_AUX1_EXT:
    case GLX_AUX2_EXT:
    case GLX_AUX3_EXT:

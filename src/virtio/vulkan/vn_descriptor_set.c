@@ -189,11 +189,15 @@ vn_DestroyDescriptorPool(VkDevice device,
 
    alloc = pAllocator ? pAllocator : &pool->allocator;
 
+   /* We must emit vkDestroyDescriptorPool before freeing the sets in
+    * pool->descriptor_sets.  Otherwise, another thread might reuse their
+    * object ids while they still refer to the sets in the renderer.
+    */
    vn_async_vkDestroyDescriptorPool(dev->instance, device, descriptorPool,
                                     NULL);
 
-   list_for_each_entry_safe (struct vn_descriptor_set, set,
-                             &pool->descriptor_sets, head) {
+   list_for_each_entry_safe(struct vn_descriptor_set, set,
+                            &pool->descriptor_sets, head) {
       list_del(&set->head);
 
       vn_object_base_fini(&set->base);
@@ -217,8 +221,8 @@ vn_ResetDescriptorPool(VkDevice device,
    vn_async_vkResetDescriptorPool(dev->instance, device, descriptorPool,
                                   flags);
 
-   list_for_each_entry_safe (struct vn_descriptor_set, set,
-                             &pool->descriptor_sets, head) {
+   list_for_each_entry_safe(struct vn_descriptor_set, set,
+                            &pool->descriptor_sets, head) {
       list_del(&set->head);
 
       vn_object_base_fini(&set->base);

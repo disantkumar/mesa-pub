@@ -409,12 +409,6 @@ _mesa_GetFragDataIndex(GLuint program, const GLchar *name)
    if (!name)
       return -1;
 
-   if (strncmp(name, "gl_", 3) == 0) {
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glGetFragDataIndex(illegal name)");
-      return -1;
-   }
-
    /* Not having a fragment shader is not an error.
     */
    if (shProg->_LinkedShaders[MESA_SHADER_FRAGMENT] == NULL)
@@ -443,12 +437,6 @@ _mesa_GetFragDataLocation(GLuint program, const GLchar *name)
 
    if (!name)
       return -1;
-
-   if (strncmp(name, "gl_", 3) == 0) {
-      _mesa_error(ctx, GL_INVALID_OPERATION,
-                  "glGetFragDataLocation(illegal name)");
-      return -1;
-   }
 
    /* Not having a fragment shader is not an error.
     */
@@ -705,7 +693,7 @@ _mesa_program_resource_find_name(struct gl_shader_program *shProg,
             if (name[baselen] == '.') {
                return res;
             }
-            /* fall-through */
+            FALLTHROUGH;
          case GL_PROGRAM_INPUT:
          case GL_PROGRAM_OUTPUT:
             if (name[baselen] == '\0') {
@@ -1099,7 +1087,7 @@ program_resource_location(struct gl_program_resource *res, unsigned array_index)
           RESOURCE_UNI(res)->atomic_buffer_index != -1)
          return -1;
 
-      /* fallthrough */
+      FALLTHROUGH;
    case GL_VERTEX_SUBROUTINE_UNIFORM:
    case GL_GEOMETRY_SUBROUTINE_UNIFORM:
    case GL_FRAGMENT_SUBROUTINE_UNIFORM:
@@ -1491,7 +1479,7 @@ _mesa_program_resource_prop(struct gl_shader_program *shProg,
    case GL_REFERENCED_BY_COMPUTE_SHADER:
       if (!_mesa_has_compute_shaders(ctx))
          goto invalid_enum;
-      /* fallthrough */
+      FALLTHROUGH;
    case GL_REFERENCED_BY_VERTEX_SHADER:
    case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
    case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:

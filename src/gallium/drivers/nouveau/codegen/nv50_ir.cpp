@@ -26,7 +26,6 @@
 
 extern "C" {
 #include "nouveau_debug.h"
-#include "nv50/nv50_program.h"
 }
 
 namespace nv50_ir {
@@ -439,7 +438,7 @@ ImmediateValue::applyLog2()
    case TYPE_S16:
    case TYPE_S32:
       assert(!this->isNegative());
-      // fall through
+      FALLTHROUGH;
    case TYPE_U8:
    case TYPE_U16:
    case TYPE_U32:
@@ -447,7 +446,7 @@ ImmediateValue::applyLog2()
       break;
    case TYPE_S64:
       assert(!this->isNegative());
-      // fall through
+      FALLTHROUGH;
    case TYPE_U64:
       reg.data.u64 = util_logbase2_64(reg.data.u64);
       break;
@@ -750,7 +749,7 @@ Instruction::clone(ClonePolicy<Function>& pol, Instruction *i) const
 {
    if (!i)
       i = new_Instruction(pol.context(), op, dType);
-#ifndef NDEBUG // non-conformant assert, so this is required
+#if !defined(NDEBUG) && defined(__cpp_rtti)
    assert(typeid(*i) == typeid(*this));
 #endif
 

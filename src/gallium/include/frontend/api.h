@@ -207,11 +207,6 @@ struct st_visual
    enum pipe_format depth_stencil_format;
    enum pipe_format accum_format;
    unsigned samples;
-
-   /**
-    * Desired render buffer.
-    */
-   enum st_attachment_type render_buffer;
 };
 
 
@@ -232,6 +227,7 @@ struct st_config_options
    bool allow_glsl_relaxed_es;
    bool allow_glsl_builtin_variable_redeclaration;
    bool allow_higher_compat_version;
+   bool glsl_ignore_write_to_readonly_var;
    bool glsl_zero_init;
    bool vs_position_always_invariant;
    bool force_glsl_abs_sqrt;
@@ -242,6 +238,7 @@ struct st_config_options
    bool force_integer_tex_nearest;
    bool force_gl_names_reuse;
    bool transcode_etc;
+   bool transcode_astc;
    char *force_gl_vendor;
    unsigned char config_options_sha1[20];
 };

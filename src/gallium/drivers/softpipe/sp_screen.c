@@ -55,6 +55,7 @@ static const struct debug_named_value sp_debug_options[] = {
    {"no_rast",   SP_DBG_NO_RAST,    "no-ops rasterization, for profiling purposes"},
    {"use_llvm",  SP_DBG_USE_LLVM,   "Use LLVM if available for shaders"},
    {"use_tgsi",  SP_DBG_USE_TGSI,   "Request TGSI from the API instead of NIR"},
+   DEBUG_NAMED_VALUE_END
 };
 
 int sp_debug;
@@ -78,6 +79,8 @@ static const nir_shader_compiler_options sp_compiler_options = {
    .fuse_ffma64 = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
    .lower_fdph = true,
    .lower_flrp64 = true,
    .lower_fmod = true,
@@ -346,11 +349,11 @@ softpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
    switch (param) {
    case PIPE_CAPF_MAX_LINE_WIDTH:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 255.0; /* arbitrary */
    case PIPE_CAPF_MAX_POINT_WIDTH:
-      /* fall-through */
+      FALLTHROUGH;
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
       return 255.0; /* arbitrary */
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:

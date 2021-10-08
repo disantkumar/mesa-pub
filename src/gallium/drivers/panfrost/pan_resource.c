@@ -67,7 +67,7 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
 
         assert(whandle->type == WINSYS_HANDLE_TYPE_FD);
 
-        rsc = rzalloc(pscreen, struct panfrost_resource);
+        rsc = CALLOC_STRUCT(panfrost_resource);
         if (!rsc)
                 return NULL;
 
@@ -98,28 +98,25 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
                                            crc_mode, &explicit_layout);
 
         if (!valid) {
-                ralloc_free(rsc);
+                FREE(rsc);
                 return NULL;
         }
 
         rsc->image.data.bo = panfrost_bo_import(dev, whandle->handle);
+        /* Sometimes an import can fail e.g. on an invalid buffer fd, out of
+         * memory space to mmap it etc.
+         */
+        if (!rsc->image.data.bo) {
+                FREE(rsc);
+                return NULL;
+        }
         if (rsc->image.layout.crc_mode == PAN_IMAGE_CRC_OOB)
-                rsc->image.crc.bo = panfrost_bo_create(dev, rsc->image.layout.crc_size, 0);
+                rsc->image.crc.bo = panfrost_bo_create(dev, rsc->image.layout.crc_size, 0, "CRC data");
 
         rsc->modifier_constant = true;
 
-        rsc->state.slices[0].data_valid = true;
+        BITSET_SET(rsc->valid.data, 0);
         panfrost_resource_set_damage_region(pscreen, &rsc->base, 0, NULL);
-
-        /* If we import an AFBC resource, it should be in a format that's
-         * supported, otherwise we don't know if the fixup is expected to be
-         * applied or not. In practice that's not a problem if the buffer has
-         * been exported by the GPU because the same constraint applies to both
-         * ends, but we might have issues if the exporter is a different piece
-         * of hardware (VPU?) that supports the BGR variants.
-         */
-        assert(!drm_is_afbc(whandle->modifier) ||
-               !panfrost_afbc_format_needs_fixup(dev, rsc->image.layout.format));
 
         if (dev->ro) {
                 rsc->scanout =
@@ -141,29 +138,20 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
         struct panfrost_resource *rsrc = (struct panfrost_resource *) pt;
         struct renderonly_scanout *scanout = rsrc->scanout;
 
-        /* If we export an AFBC resource, it should be in a format that's
-         * supported, otherwise the importer has no clue about the format fixup
-         * done internally. In practice that shouldn't be an issue for GPU
-         * buffers because the same constraint applies to both ends, but we
-         * might have issues if the importer is a different piece of hardware
-         * that supports BGR variants.
-         */
-        assert(!drm_is_afbc(rsrc->image.layout.modifier) ||
-               !panfrost_afbc_format_needs_fixup(dev, rsrc->image.layout.format));
-
         handle->modifier = rsrc->image.layout.modifier;
         rsrc->modifier_constant = true;
 
         if (handle->type == WINSYS_HANDLE_TYPE_SHARED) {
                 return false;
         } else if (handle->type == WINSYS_HANDLE_TYPE_KMS) {
-                if (renderonly_get_handle(scanout, handle))
+                if (dev->ro) {
+                        return renderonly_get_handle(scanout, handle);
+                } else {
+                        handle->handle = rsrc->image.data.bo->gem_handle;
+                        handle->stride = rsrc->image.layout.slices[0].line_stride;
+                        handle->offset = rsrc->image.layout.slices[0].offset;
                         return true;
-
-                handle->handle = rsrc->image.data.bo->gem_handle;
-                handle->stride = rsrc->image.layout.slices[0].line_stride;
-                handle->offset = rsrc->image.layout.slices[0].offset;
-                return TRUE;
+                }
         } else if (handle->type == WINSYS_HANDLE_TYPE_FD) {
                 if (scanout) {
                         struct drm_prime_handle args = {
@@ -193,6 +181,30 @@ panfrost_resource_get_handle(struct pipe_screen *pscreen,
         }
 
         return false;
+}
+
+static bool
+panfrost_resource_get_param(struct pipe_screen *pscreen,
+                            struct pipe_context *pctx, struct pipe_resource *prsc,
+                            unsigned plane, unsigned layer, unsigned level,
+                            enum pipe_resource_param param,
+                            unsigned usage, uint64_t *value)
+{
+        struct panfrost_resource *rsrc = (struct panfrost_resource *) prsc;
+
+        switch (param) {
+        case PIPE_RESOURCE_PARAM_STRIDE:
+                *value = rsrc->image.layout.slices[level].line_stride;
+                return true;
+        case PIPE_RESOURCE_PARAM_OFFSET:
+                *value = rsrc->image.layout.slices[level].offset;
+                return true;
+        case PIPE_RESOURCE_PARAM_MODIFIER:
+                *value = rsrc->image.layout.modifier;
+                return true;
+        default:
+                return false;
+        }
 }
 
 static void
@@ -382,14 +394,6 @@ panfrost_should_afbc(struct panfrost_device *dev,
         if (pres->base.width0 <= 16 && pres->base.height0 <= 16)
                 return false;
 
-        /* AFBC(BGR) is not natively supported on Bifrost v7+. When we don't
-         * share the buffer we can fake those formats since we're in control
-         * of the format/swizzle we apply to the textures/RTs.
-         */
-        if (panfrost_afbc_format_needs_fixup(dev, fmt) &&
-            (pres->base.bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)))
-                return false;
-
         /* Otherwise, we'd prefer AFBC as it is dramatically more efficient
          * than linear or usually even u-interleaved */
         return true;
@@ -457,6 +461,7 @@ panfrost_should_checksum(const struct panfrost_device *dev, const struct panfros
         return pres->base.bind & PIPE_BIND_RENDER_TARGET &&
                 panfrost_is_2d(pres) &&
                 bytes_per_pixel <= bytes_per_pixel_max &&
+                pres->base.last_level == 0 &&
                 !(dev->debug & PAN_DBG_NO_CRC);
 }
 
@@ -545,7 +550,7 @@ panfrost_resource_set_damage_region(struct pipe_screen *screen,
                                 pres->damage.tile_map.stride *
                                 DIV_ROUND_UP(res->height0, 32);
                         pres->damage.tile_map.data =
-                                ralloc_size(pres, pres->damage.tile_map.size);
+                                malloc(pres->damage.tile_map.size);
                 }
 
                 memset(pres->damage.tile_map.data, 0, pres->damage.tile_map.size);
@@ -629,7 +634,7 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
             (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)))
                 return panfrost_create_scanout_res(screen, template, modifier);
 
-        struct panfrost_resource *so = rzalloc(screen, struct panfrost_resource);
+        struct panfrost_resource *so = CALLOC_STRUCT(panfrost_resource);
         so->base = *template;
         so->base.screen = screen;
 
@@ -639,10 +644,27 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
 
         panfrost_resource_setup(dev, so, modifier, template->format);
 
+        /* Guess a label based on the bind */
+        unsigned bind = template->bind;
+        const char *label =
+                (bind & PIPE_BIND_INDEX_BUFFER) ? "Index buffer" :
+                (bind & PIPE_BIND_SCANOUT) ? "Scanout" :
+                (bind & PIPE_BIND_DISPLAY_TARGET) ? "Display target" :
+                (bind & PIPE_BIND_SHARED) ? "Shared resource" :
+                (bind & PIPE_BIND_RENDER_TARGET) ? "Render target" :
+                (bind & PIPE_BIND_DEPTH_STENCIL) ? "Depth/stencil buffer" :
+                (bind & PIPE_BIND_SAMPLER_VIEW) ? "Texture" :
+                (bind & PIPE_BIND_VERTEX_BUFFER) ? "Vertex buffer" :
+                (bind & PIPE_BIND_CONSTANT_BUFFER) ? "Constant buffer" :
+                (bind & PIPE_BIND_GLOBAL) ? "Global memory" :
+                (bind & PIPE_BIND_SHADER_BUFFER) ? "Shader buffer" :
+                (bind & PIPE_BIND_SHADER_IMAGE) ? "Shader image" :
+                "Other resource";
+
         /* We create a BO immediately but don't bother mapping, since we don't
          * care to map e.g. FBOs which the CPU probably won't touch */
         so->image.data.bo =
-                panfrost_bo_create(dev, so->image.layout.data_size, PAN_BO_DELAY_MMAP);
+                panfrost_bo_create(dev, so->image.layout.data_size, PAN_BO_DELAY_MMAP, label);
 
         if (drm_is_afbc(so->image.layout.modifier))
                 panfrost_resource_init_afbc_headers(so);
@@ -650,7 +672,7 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
         panfrost_resource_set_damage_region(screen, &so->base, 0, NULL);
 
         if (template->bind & PIPE_BIND_INDEX_BUFFER)
-                so->index_cache = rzalloc(so, struct panfrost_minmax_cache);
+                so->index_cache = CALLOC_STRUCT(panfrost_minmax_cache);
 
         return (struct pipe_resource *)so;
 }
@@ -701,8 +723,11 @@ panfrost_resource_destroy(struct pipe_screen *screen,
         if (rsrc->image.crc.bo)
                 panfrost_bo_unreference(rsrc->image.crc.bo);
 
+        free(rsrc->index_cache);
+        free(rsrc->damage.tile_map.data);
+
         util_range_destroy(&rsrc->valid_buffer_range);
-        ralloc_free(rsrc);
+        free(rsrc);
 }
 
 /* Most of the time we can do CPU-side transfers, but sometimes we need to use
@@ -825,6 +850,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
         /* We don't have s/w routines for AFBC, so use a staging texture */
         if (drm_is_afbc(rsrc->image.layout.modifier)) {
                 struct panfrost_resource *staging = pan_alloc_staging(ctx, rsrc, level, box);
+                assert(staging);
 
                 /* Staging resources have one LOD: level 0. Query the strides
                  * on this LOD.
@@ -842,14 +868,11 @@ panfrost_ptr_map(struct pipe_context *pctx,
 
                 assert(transfer->staging.rsrc != NULL);
 
-                /* TODO: Eliminate this flush. It's only there to determine if
-                 * we're initialized or not, when the initialization could come
-                 * from a pending batch XXX */
-                panfrost_flush_batches_accessing_bo(ctx, rsrc->image.data.bo, true);
+                bool valid = BITSET_TEST(rsrc->valid.data, level);
 
-                if ((usage & PIPE_MAP_READ) && rsrc->state.slices[level].data_valid) {
+                if ((usage & PIPE_MAP_READ) && (valid || rsrc->track.nr_writers > 0)) {
                         pan_blit_to_staging(pctx, transfer);
-                        panfrost_flush_batches_accessing_bo(ctx, staging->image.data.bo, true);
+                        panfrost_flush_writer(ctx, staging);
                         panfrost_bo_wait(staging->image.data.bo, INT64_MAX, false);
                 }
 
@@ -871,14 +894,14 @@ panfrost_ptr_map(struct pipe_context *pctx,
             (usage & PIPE_MAP_WRITE) &&
             !(resource->target == PIPE_BUFFER
               && !util_ranges_intersect(&rsrc->valid_buffer_range, box->x, box->x + box->width)) &&
-            panfrost_pending_batches_access_bo(ctx, bo)) {
+            rsrc->track.nr_users > 0) {
 
                 /* When a resource to be modified is already being used by a
                  * pending batch, it is often faster to copy the whole BO than
                  * to flush and split the frame in two.
                  */
 
-                panfrost_flush_batches_accessing_bo(ctx, bo, false);
+                panfrost_flush_writer(ctx, rsrc);
                 panfrost_bo_wait(bo, INT64_MAX, false);
 
                 create_new_bo = true;
@@ -890,7 +913,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                  * not ready yet (still accessed by one of the already flushed
                  * batches), we try to allocate a new one to avoid waiting.
                  */
-                if (panfrost_pending_batches_access_bo(ctx, bo) ||
+                if (rsrc->track.nr_users > 0 ||
                     !panfrost_bo_wait(bo, 0, true)) {
                         /* We want the BO to be MMAPed. */
                         uint32_t flags = bo->flags & ~PAN_BO_DELAY_MMAP;
@@ -903,7 +926,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                          */
                         if (!(bo->flags & PAN_BO_SHARED))
                                 newbo = panfrost_bo_create(dev, bo->size,
-                                                           flags);
+                                                           flags, bo->label);
 
                         if (newbo) {
                                 if (copy_resource)
@@ -921,7 +944,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                                 /* Allocation failed or was impossible, let's
                                  * fall back on a flush+wait.
                                  */
-                                panfrost_flush_batches_accessing_bo(ctx, bo, true);
+                                panfrost_flush_batches_accessing_rsrc(ctx, rsrc);
                                 panfrost_bo_wait(bo, INT64_MAX, true);
                         }
                 }
@@ -931,10 +954,10 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 /* No flush for writes to uninitialized */
         } else if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
                 if (usage & PIPE_MAP_WRITE) {
-                        panfrost_flush_batches_accessing_bo(ctx, bo, true);
+                        panfrost_flush_batches_accessing_rsrc(ctx, rsrc);
                         panfrost_bo_wait(bo, INT64_MAX, true);
                 } else if (usage & PIPE_MAP_READ) {
-                        panfrost_flush_batches_accessing_bo(ctx, bo, false);
+                        panfrost_flush_writer(ctx, rsrc);
                         panfrost_bo_wait(bo, INT64_MAX, false);
                 }
         }
@@ -945,7 +968,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                 transfer->map = ralloc_size(transfer, transfer->base.layer_stride * box->depth);
                 assert(box->depth == 1);
 
-                if ((usage & PIPE_MAP_READ) && rsrc->state.slices[level].data_valid) {
+                if ((usage & PIPE_MAP_READ) && BITSET_TEST(rsrc->valid.data, level)) {
                         panfrost_load_tiled_image(
                                         transfer->map,
                                         bo->ptr.cpu + rsrc->image.layout.slices[level].offset,
@@ -976,7 +999,7 @@ panfrost_ptr_map(struct pipe_context *pctx,
                  * initialized (maybe), so be conservative */
 
                 if (usage & PIPE_MAP_WRITE) {
-                        rsrc->state.slices[level].data_valid = true;
+                        BITSET_SET(rsrc->valid.data, level);
                         panfrost_minmax_cache_invalidate(rsrc->index_cache, &transfer->base);
                 }
 
@@ -1019,7 +1042,7 @@ pan_resource_modifier_convert(struct panfrost_context *ctx,
         };
 
         for (int i = 0; i <= rsrc->base.last_level; i++) {
-                if (rsrc->state.slices[i].data_valid) {
+                if (BITSET_TEST(rsrc->valid.data, i)) {
                         blit.dst.level = blit.src.level  = i;
                         panfrost_blit(&ctx->base, &blit);
                 }
@@ -1080,7 +1103,7 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
         struct panfrost_device *dev = pan_device(pctx->screen);
 
         if (transfer->usage & PIPE_MAP_WRITE)
-                prsrc->state.slices[transfer->level].crc_valid = false;
+                prsrc->valid.crc = false;
 
         /* AFBC will use a staging resource. `initialized` will be set when the
          * fragment job is created; this is deferred to prevent useless surface
@@ -1102,7 +1125,7 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
                                 panfrost_bo_reference(prsrc->image.data.bo);
                         } else {
                                 pan_blit_from_staging(pctx, trans);
-                                panfrost_flush_batches_accessing_bo(pan_context(pctx), pan_resource(trans->staging.rsrc)->image.data.bo, true);
+                                panfrost_flush_batches_accessing_rsrc(pan_context(pctx), pan_resource(trans->staging.rsrc));
                         }
                 }
 
@@ -1114,7 +1137,7 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
                 struct panfrost_bo *bo = prsrc->image.data.bo;
 
                 if (transfer->usage & PIPE_MAP_WRITE) {
-                        prsrc->state.slices[transfer->level].data_valid = true;
+                        BITSET_SET(prsrc->valid.data, transfer->level);
 
                         if (prsrc->image.layout.modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED) {
                                 assert(transfer->box.depth == 1);
@@ -1123,9 +1146,10 @@ panfrost_ptr_unmap(struct pipe_context *pctx,
                                         panfrost_resource_setup(dev, prsrc, DRM_FORMAT_MOD_LINEAR,
                                                                 prsrc->image.layout.format);
                                         if (prsrc->image.layout.data_size > bo->size) {
+                                                const char *label = bo->label;
                                                 panfrost_bo_unreference(bo);
                                                 bo = prsrc->image.data.bo =
-                                                        panfrost_bo_create(dev, prsrc->image.layout.data_size, 0);
+                                                        panfrost_bo_create(dev, prsrc->image.layout.data_size, 0, label);
                                                 assert(bo);
                                         }
 
@@ -1179,15 +1203,26 @@ panfrost_ptr_flush_region(struct pipe_context *pctx,
                                transfer->box.x + box->x,
                                transfer->box.x + box->x + box->width);
         } else {
-                unsigned level = transfer->level;
-                rsc->state.slices[level].data_valid = true;
+                BITSET_SET(rsc->valid.data, transfer->level);
         }
 }
 
 static void
-panfrost_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+panfrost_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsrc)
 {
-        /* TODO */
+        struct panfrost_context *ctx = pan_context(pctx);
+        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
+
+        /* Handle the glInvalidateFramebuffer case */
+        if (batch->key.zsbuf && batch->key.zsbuf->texture == prsrc)
+                batch->resolve &= ~PIPE_CLEAR_DEPTHSTENCIL;
+
+        for (unsigned i = 0; i < batch->key.nr_cbufs; ++i) {
+                struct pipe_surface *surf = batch->key.cbufs[i];
+
+                if (surf && surf->texture == prsrc)
+                        batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
+        }
 }
 
 static enum pipe_format
@@ -1215,7 +1250,7 @@ panfrost_generate_mipmap(
 
         assert(rsrc->image.data.bo);
         for (unsigned l = base_level + 1; l <= last_level; ++l)
-                rsrc->state.slices[l].data_valid = false;
+                BITSET_CLEAR(rsrc->valid.data, l);
 
         /* Beyond that, we just delegate the hard stuff. */
 
@@ -1276,6 +1311,9 @@ panfrost_resource_set_stencil(struct pipe_resource *prsrc,
 static struct pipe_resource *
 panfrost_resource_get_stencil(struct pipe_resource *prsrc)
 {
+        if (!pan_resource(prsrc)->separate_stencil)
+                return NULL;
+
         return &pan_resource(prsrc)->separate_stencil->base;
 }
 
@@ -1303,6 +1341,7 @@ panfrost_resource_screen_init(struct pipe_screen *pscreen)
         pscreen->resource_destroy = u_transfer_helper_resource_destroy;
         pscreen->resource_from_handle = panfrost_resource_from_handle;
         pscreen->resource_get_handle = panfrost_resource_get_handle;
+        pscreen->resource_get_param = panfrost_resource_get_param;
         pscreen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
                                         true, false,
                                         fake_rgtc, true);
@@ -1311,8 +1350,10 @@ panfrost_resource_screen_init(struct pipe_screen *pscreen)
 void
 panfrost_resource_context_init(struct pipe_context *pctx)
 {
-        pctx->transfer_map = u_transfer_helper_transfer_map;
-        pctx->transfer_unmap = u_transfer_helper_transfer_unmap;
+        pctx->buffer_map = u_transfer_helper_transfer_map;
+        pctx->buffer_unmap = u_transfer_helper_transfer_unmap;
+        pctx->texture_map = u_transfer_helper_transfer_map;
+        pctx->texture_unmap = u_transfer_helper_transfer_unmap;
         pctx->create_surface = panfrost_create_surface;
         pctx->surface_destroy = panfrost_surface_destroy;
         pctx->resource_copy_region = util_resource_copy_region;

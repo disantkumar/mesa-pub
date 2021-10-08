@@ -437,8 +437,15 @@ anv_create_ahw_memory(VkDevice device_h,
    if (AHardwareBuffer_allocate(&desc, &ahw) != 0)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-   mem->ahw = ahw;
-   return VK_SUCCESS;
+   const VkImportAndroidHardwareBufferInfoANDROID import_info = {
+      .buffer = ahw,
+   };
+   VkResult result = anv_import_ahw_memory(device_h, mem, &import_info);
+
+   /* Release a reference to avoid leak for AHB allocation. */
+   AHardwareBuffer_release(ahw);
+
+   return result;
 #else
    return VK_ERROR_EXTENSION_NOT_PRESENT;
 #endif
@@ -614,6 +621,59 @@ anv_image_from_gralloc(VkDevice device_h,
    anv_device_release_bo(device, bo);
 
    return result;
+}
+
+VkResult
+anv_image_bind_from_gralloc(struct anv_device *device,
+                            struct anv_image *image,
+                            const VkNativeBufferANDROID *gralloc_info)
+{
+   /* Do not close the gralloc handle's dma_buf. The lifetime of the dma_buf
+    * must exceed that of the gralloc handle, and we do not own the gralloc
+    * handle.
+    */
+   int dma_buf = gralloc_info->handle->data[0];
+
+   /* We need to set the WRITE flag on window system buffers so that GEM will
+    * know we're writing to them and synchronize uses on other rings (for
+    * example, if the display server uses the blitter ring).
+    *
+    * If this function fails and if the imported bo was resident in the cache,
+    * we should avoid updating the bo's flags. Therefore, we defer updating
+    * the flags until success is certain.
+    *
+    */
+   struct anv_bo *bo = NULL;
+   VkResult result = anv_device_import_bo(device, dma_buf,
+                                          ANV_BO_ALLOC_IMPLICIT_SYNC |
+                                          ANV_BO_ALLOC_IMPLICIT_WRITE,
+                                          0 /* client_address */,
+                                          &bo);
+   if (result != VK_SUCCESS) {
+      return vk_errorf(device, &device->vk.base, result,
+                       "failed to import dma-buf from VkNativeBufferANDROID");
+   }
+
+   uint64_t img_size = image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].memory_range.size;
+   if (img_size < bo->size) {
+      result = vk_errorf(device, &device->vk.base, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+                         "dma-buf from VkNativeBufferANDROID is too small for "
+                         "VkImage: %"PRIu64"B < %"PRIu64"B",
+                         bo->size, img_size);
+      anv_device_release_bo(device, bo);
+      return result;
+   }
+
+   assert(!image->disjoint);
+   assert(image->n_planes == 1);
+   assert(image->planes[0].primary_surface.memory_range.binding ==
+          ANV_IMAGE_MEMORY_BINDING_MAIN);
+   assert(image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address.bo == NULL);
+   assert(image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address.offset == 0);
+   image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].address.bo = bo;
+   image->from_gralloc = true;
+
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -813,7 +873,7 @@ anv_AcquireImageANDROID(
          }
       } else if (semaphore_h != VK_NULL_HANDLE) {
          semaphore_fd = nativeFenceFd;
-      } else if (fence_h == VK_NULL_HANDLE) {
+      } else if (fence_h != VK_NULL_HANDLE) {
          fence_fd = nativeFenceFd;
       } else {
          /* Nothing to import into so we have to close the file */

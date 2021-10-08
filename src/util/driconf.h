@@ -204,6 +204,10 @@
    DRI_CONF_OPT_B(glsl_correct_derivatives_after_discard, def, \
                   "Implicit and explicit derivatives after a discard behave as if the discard didn't happen")
 
+#define DRI_CONF_GLSL_IGNORE_WRITE_TO_READONLY_VAR(def) \
+   DRI_CONF_OPT_B(glsl_ignore_write_to_readonly_var, def, \
+                  "Forces the GLSL compiler to ignore writes to readonly vars rather than throwing an error")
+
 #define DRI_CONF_ALLOW_GLSL_CROSS_STAGE_INTERPOLATION_MISMATCH(def) \
    DRI_CONF_OPT_B(allow_glsl_cross_stage_interpolation_mismatch, def,   \
                   "Allow interpolation qualifier mismatch across shader stages")
@@ -232,6 +236,9 @@
 
 #define DRI_CONF_TRANSCODE_ETC(def) \
    DRI_CONF_OPT_B(transcode_etc, def, "Transcode ETC formats to DXTC if unsupported")
+
+#define DRI_CONF_TRANSCODE_ASTC(def) \
+   DRI_CONF_OPT_B(transcode_astc, def, "Transcode ASTC formats to DXTC if unsupported")
 
 #define DRI_CONF_GLX_EXTENSION_OVERRIDE() \
    DRI_CONF_OPT_S_NODEF(glx_extension_override, \
@@ -478,8 +485,36 @@
    DRI_CONF_OPT_B(radv_disable_shrink_image_store, def, \
                   "Disabling shrinking of image stores based on the format")
 
+#define DRI_CONF_RADV_ABSOLUTE_DEPTH_BIAS(def) \
+   DRI_CONF_OPT_B(radv_absolute_depth_bias, def, \
+                  "Consider depthBiasConstantFactor an absolute depth bias (like D3D9)")
+
 #define DRI_CONF_RADV_OVERRIDE_UNIFORM_OFFSET_ALIGNMENT(def) \
    DRI_CONF_OPT_I(radv_override_uniform_offset_alignment, def, 0, 128, \
                   "Override the minUniformBufferOffsetAlignment exposed to the application. (0 = default)")
+
+#define DRI_CONF_RADV_ZERO_VRAM(def) \
+   DRI_CONF_OPT_B(radv_zero_vram, def, \
+                  "Initialize to zero all VRAM allocations")
+
+#define DRI_CONF_RADV_LOWER_DISCARD_TO_DEMOTE(def) \
+   DRI_CONF_OPT_B(radv_lower_discard_to_demote, def, \
+                  "Lower discard instructions to demote")
+
+#define DRI_CONF_RADV_INVARIANT_GEOM(def) \
+   DRI_CONF_OPT_B(radv_invariant_geom, def, \
+                  "Mark geometry-affecting outputs as invariant")
+
+#define DRI_CONF_RADV_DISABLE_TC_COMPAT_HTILE_GENERAL(def) \
+   DRI_CONF_OPT_B(radv_disable_tc_compat_htile_general, def, \
+                  "Disable TC-compat HTILE in GENERAL layout")
+
+#define DRI_CONF_RADV_DISABLE_DCC(def) \
+   DRI_CONF_OPT_B(radv_disable_dcc, def, \
+                  "Disable DCC for color images")
+
+#define DRI_CONF_RADV_REPORT_APU_AS_DGPU(def) \
+   DRI_CONF_OPT_B(radv_report_apu_as_dgpu, def, \
+                  "Report APUs as discrete GPUs instead of integrated GPUs")
 
 #endif

@@ -26,7 +26,7 @@
 #include "brw_fs.h"
 #include "brw_nir.h"
 #include "brw_vec4_tes.h"
-#include "dev/gen_debug.h"
+#include "dev/intel_debug.h"
 #include "main/uniforms.h"
 #include "util/macros.h"
 
@@ -161,7 +161,7 @@ brw_texture_offset(const nir_tex_instr *tex, unsigned src,
 }
 
 const char *
-brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
+brw_instruction_name(const struct intel_device_info *devinfo, enum opcode op)
 {
    switch (op) {
    case 0 ... NUM_BRW_OPCODES - 1:
@@ -421,6 +421,10 @@ brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
       return "set_low_32bit";
    case VEC4_OPCODE_SET_HIGH_32BIT:
       return "set_high_32bit";
+   case VEC4_OPCODE_MOV_FOR_SCRATCH:
+      return "mov_for_scratch";
+   case VEC4_OPCODE_ZERO_OOB_PUSH_REGS:
+      return "zero_oob_push_regs";
 
    case FS_OPCODE_DDX_COARSE:
       return "ddx_coarse";
@@ -871,14 +875,14 @@ backend_instruction::is_commutative() const
           conditional_mod == BRW_CONDITIONAL_L) {
          return true;
       }
-      /* fallthrough */
+      FALLTHROUGH;
    default:
       return false;
    }
 }
 
 bool
-backend_instruction::is_3src(const struct gen_device_info *devinfo) const
+backend_instruction::is_3src(const struct intel_device_info *devinfo) const
 {
    return ::is_3src(devinfo, opcode);
 }
@@ -968,6 +972,8 @@ backend_instruction::can_do_source_mods() const
    case SHADER_OPCODE_CLUSTER_BROADCAST:
    case SHADER_OPCODE_MOV_INDIRECT:
    case SHADER_OPCODE_SHUFFLE:
+   case SHADER_OPCODE_INT_QUOTIENT:
+   case SHADER_OPCODE_INT_REMAINDER:
       return false;
    default:
       return true;
@@ -1079,14 +1085,15 @@ backend_instruction::reads_accumulator_implicitly() const
 }
 
 bool
-backend_instruction::writes_accumulator_implicitly(const struct gen_device_info *devinfo) const
+backend_instruction::writes_accumulator_implicitly(const struct intel_device_info *devinfo) const
 {
    return writes_accumulator ||
           (devinfo->ver < 6 &&
            ((opcode >= BRW_OPCODE_ADD && opcode < BRW_OPCODE_NOP) ||
             (opcode >= FS_OPCODE_DDX_COARSE && opcode <= FS_OPCODE_LINTERP))) ||
           (opcode == FS_OPCODE_LINTERP &&
-           (!devinfo->has_pln || devinfo->ver <= 6));
+           (!devinfo->has_pln || devinfo->ver <= 6)) ||
+          (eot && devinfo->ver >= 12); /* See Wa_14010017096. */
 }
 
 bool
@@ -1134,6 +1141,7 @@ backend_instruction::has_side_effects() const
    case SHADER_OPCODE_BTD_SPAWN_LOGICAL:
    case SHADER_OPCODE_BTD_RETIRE_LOGICAL:
    case RT_OPCODE_TRACE_RAY_LOGICAL:
+   case VEC4_OPCODE_ZERO_OOB_PUSH_REGS:
       return true;
    default:
       return eot;
@@ -1167,13 +1175,11 @@ backend_instruction::is_volatile() const
 static bool
 inst_is_in_block(const bblock_t *block, const backend_instruction *inst)
 {
-   bool found = false;
    foreach_inst_in_block (backend_instruction, i, block) {
-      if (inst == i) {
-         found = true;
-      }
+      if (inst == i)
+         return true;
    }
-   return found;
+   return false;
 }
 #endif
 
@@ -1192,6 +1198,7 @@ void
 backend_instruction::insert_after(bblock_t *block, backend_instruction *inst)
 {
    assert(this != inst);
+   assert(block->end_ip_delta == 0);
 
    if (!this->is_head_sentinel())
       assert(inst_is_in_block(block, this) || !"Instruction not in block");
@@ -1207,6 +1214,7 @@ void
 backend_instruction::insert_before(bblock_t *block, backend_instruction *inst)
 {
    assert(this != inst);
+   assert(block->end_ip_delta == 0);
 
    if (!this->is_tail_sentinel())
       assert(inst_is_in_block(block, this) || !"Instruction not in block");
@@ -1222,6 +1230,7 @@ void
 backend_instruction::insert_before(bblock_t *block, exec_list *list)
 {
    assert(inst_is_in_block(block, this) || !"Instruction not in block");
+   assert(block->end_ip_delta == 0);
 
    unsigned num_inst = list->length();
 
@@ -1233,13 +1242,23 @@ backend_instruction::insert_before(bblock_t *block, exec_list *list)
 }
 
 void
-backend_instruction::remove(bblock_t *block)
+backend_instruction::remove(bblock_t *block, bool defer_later_block_ip_updates)
 {
    assert(inst_is_in_block(block, this) || !"Instruction not in block");
 
-   adjust_later_block_ips(block, -1);
+   if (defer_later_block_ip_updates) {
+      block->end_ip_delta--;
+   } else {
+      assert(block->end_ip_delta == 0);
+      adjust_later_block_ips(block, -1);
+   }
 
    if (block->start_ip == block->end_ip) {
+      if (block->end_ip_delta != 0) {
+         adjust_later_block_ips(block, block->end_ip_delta);
+         block->end_ip_delta = 0;
+      }
+
       block->cfg->remove_block(block);
    } else {
       block->end_ip--;
@@ -1311,7 +1330,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
                 struct brw_compile_stats *stats,
                 char **error_str)
 {
-   const struct gen_device_info *devinfo = compiler->devinfo;
+   const struct intel_device_info *devinfo = compiler->devinfo;
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
    const bool debug_enabled = INTEL_DEBUG & DEBUG_TES;
    const unsigned *assembly;
