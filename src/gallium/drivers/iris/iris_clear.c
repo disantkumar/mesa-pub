@@ -295,8 +295,7 @@ fast_clear_color(struct iris_context *ice,
     */
    iris_emit_end_of_pipe_sync(batch,
                               "fast clear: pre-flush",
-                              PIPE_CONTROL_RENDER_TARGET_FLUSH |
-                              PIPE_CONTROL_TILE_CACHE_FLUSH);
+                              PIPE_CONTROL_RENDER_TARGET_FLUSH);
 
    iris_batch_sync_region_start(batch);
 

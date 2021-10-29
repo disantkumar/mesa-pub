@@ -66,7 +66,6 @@ iris_fine_fence_new(struct iris_batch *batch, unsigned flags)
    } else {
       pc = PIPE_CONTROL_WRITE_IMMEDIATE |
            PIPE_CONTROL_RENDER_TARGET_FLUSH |
-           PIPE_CONTROL_TILE_CACHE_FLUSH |
            PIPE_CONTROL_DEPTH_CACHE_FLUSH |
            PIPE_CONTROL_DATA_CACHE_FLUSH;
    }
