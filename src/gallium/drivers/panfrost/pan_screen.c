@@ -225,12 +225,12 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
                 return MAX_MIP_LEVELS;
 
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
-                /* Hardware is natively upper left */
+        case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+                /* Hardware is upper left. Pixel center at (0.5, 0.5) */
                 return 0;
 
         case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
         case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-        case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
         case PIPE_CAP_TGSI_TEXCOORD:
                 return 1;
 
@@ -560,11 +560,8 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
 {
         /* Query AFBC status */
         struct panfrost_device *dev = pan_device(screen);
-        bool afbc = panfrost_format_supports_afbc(dev, format);
+        bool afbc = dev->has_afbc && panfrost_format_supports_afbc(dev, format);
         bool ytr = panfrost_afbc_can_ytr(format);
-
-        /* Don't advertise AFBC before T760 */
-        afbc &= !(dev->quirks & MIDGARD_NO_AFBC);
 
         unsigned count = 0;
 
@@ -829,15 +826,14 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         panfrost_open_device(screen, fd, dev);
 
         if (dev->debug & PAN_DBG_NO_AFBC)
-                dev->quirks |= MIDGARD_NO_AFBC;
+                dev->has_afbc = false;
 
-        /* XXX: AFBC is currently broken on Bifrost in a few different ways
+        /* XXX: AFBC is currently broken on Bifrost
          *
          *  - Preload is broken if the effective tile size is not 16x16
-         *  - Some systems lack AFBC but we need kernel changes to know that
          */
         if (dev->arch == 7)
-                dev->quirks |= MIDGARD_NO_AFBC;
+                dev->has_afbc = false;
 
         dev->ro = ro;
 

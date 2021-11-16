@@ -771,12 +771,12 @@ crocus_calculate_urb_fence(struct crocus_batch *batch, unsigned csize,
             exit(1);
          }
 
-         if (unlikely(INTEL_DEBUG & (DEBUG_URB|DEBUG_PERF)))
+         if (INTEL_DEBUG(DEBUG_URB|DEBUG_PERF))
             fprintf(stderr, "URB CONSTRAINED\n");
       }
 
 done:
-      if (unlikely(INTEL_DEBUG & DEBUG_URB))
+      if (INTEL_DEBUG(DEBUG_URB))
          fprintf(stderr,
                  "URB fence: %d ..VS.. %d ..GS.. %d ..CLP.. %d ..SF.. %d ..CS.. %d\n",
                  ice->urb.vs_start,
@@ -1197,7 +1197,7 @@ emit_l3_state(struct crocus_batch *batch, bool compute)
       compute ? batch->screen->l3_config_cs : batch->screen->l3_config_3d;
 
    setup_l3_config(batch, cfg);
-   if (unlikely(INTEL_DEBUG & DEBUG_L3)) {
+   if (INTEL_DEBUG(DEBUG_L3)) {
       intel_dump_l3_config(cfg, stderr);
    }
 }
@@ -5861,8 +5861,10 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
      bool ret = crocus_calculate_urb_fence(batch, ice->curbe.total_size,
                                            brw_vue_prog_data(ice->shaders.prog[MESA_SHADER_VERTEX]->prog_data)->urb_entry_size,
                                            ((struct brw_sf_prog_data *)ice->shaders.sf_prog->prog_data)->urb_entry_size);
-     if (ret)
-        dirty |= CROCUS_DIRTY_GEN5_PIPELINED_POINTERS;
+     if (ret) {
+	dirty |= CROCUS_DIRTY_GEN5_PIPELINED_POINTERS | CROCUS_DIRTY_RASTER | CROCUS_DIRTY_CLIP;
+	stage_dirty |= CROCUS_STAGE_DIRTY_GS | CROCUS_STAGE_DIRTY_VS;
+     }
    }
 #endif
    if (dirty & CROCUS_DIRTY_CC_VIEWPORT) {
@@ -8792,7 +8794,7 @@ crocus_emit_raw_pipe_control(struct crocus_batch *batch,
 
    /* Emit --------------------------------------------------------------- */
 
-   if (INTEL_DEBUG & DEBUG_PIPE_CONTROL) {
+   if (INTEL_DEBUG(DEBUG_PIPE_CONTROL)) {
       fprintf(stderr,
               "  PC [%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%"PRIx64"]: %s\n",
               (flags & PIPE_CONTROL_FLUSH_ENABLE) ? "PipeCon " : "",
