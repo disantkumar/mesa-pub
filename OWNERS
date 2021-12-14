@@ -1,0 +1,2 @@
+set noparent
+include chromiumos/platform/graphics:main:/OWNERS.mesa_iris
