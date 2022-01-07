@@ -1932,8 +1932,9 @@ anv_device_import_bo(struct anv_device *device,
                            ANV_BO_ALLOC_SNOOPED |
                            ANV_BO_ALLOC_FIXED_ADDRESS)));
 
-   assert(!(alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS) ||
-          (device->physical->has_implicit_ccs && device->info.has_aux_map));
+   /* We can't do implicit CCS with an aux table on shared memory */
+   if (!device->physical->has_implicit_ccs || device->info.has_aux_map)
+       assert(!(alloc_flags & ANV_BO_ALLOC_IMPLICIT_CCS));
 
    struct anv_bo_cache *cache = &device->bo_cache;
    const uint32_t bo_flags =
