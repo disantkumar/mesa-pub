@@ -482,8 +482,14 @@ add_aux_state_tracking_buffer(struct anv_device *device,
    enum anv_image_memory_binding binding =
       ANV_IMAGE_MEMORY_BINDING_PLANE_0 + plane;
 
-   if (image->drm_format_mod != DRM_FORMAT_MOD_INVALID)
+   /* Ensure that AUX state is stored outside the buffer memory for any images
+    * externally sharable. This prevents corruptions arising due to disjoint
+    * processes working with the same image.
+    */
+   if (image->drm_format_mod != DRM_FORMAT_MOD_INVALID ||
+       image->external_handle_types != 0) {
        binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
+   }
 
    /* We believe that 256B alignment may be sufficient, but we choose 4K due to
     * lack of testing.  And MI_LOAD/STORE operations require dword-alignment.
@@ -897,9 +903,15 @@ check_memory_bindings(const struct anv_device *device,
       if (anv_surface_is_valid(&plane->aux_surface)) {
          enum anv_image_memory_binding binding = primary_binding;
 
-         if (image->drm_format_mod != DRM_FORMAT_MOD_INVALID &&
-             !isl_drm_modifier_has_aux(image->drm_format_mod))
-            binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
+         /* Ensure that AUX state is stored outside the buffer memory for any
+          * images externally sharable. This prevents corruptions arising due
+          * to disjoint processes working with the same image.
+          */
+         if ((image->drm_format_mod != DRM_FORMAT_MOD_INVALID &&
+              !isl_drm_modifier_has_aux(image->drm_format_mod)) ||
+             (image->external_handle_types != 0)) {
+             binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
+         }
 
          /* Display hardware requires that the aux surface start at
           * a higher address than the primary surface. The 3D hardware
@@ -915,8 +927,14 @@ check_memory_bindings(const struct anv_device *device,
       if (plane->fast_clear_memory_range.size > 0) {
          enum anv_image_memory_binding binding = primary_binding;
 
-         if (image->drm_format_mod != DRM_FORMAT_MOD_INVALID)
-            binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
+         /* Ensure that clear state is stored outside the buffer memory for any
+          * images externally sharable. This prevents corruptions arising due
+          * to disjoint processes working with the same image.
+          */
+         if (image->drm_format_mod != DRM_FORMAT_MOD_INVALID ||
+             image->external_handle_types != 0) {
+             binding = ANV_IMAGE_MEMORY_BINDING_PRIVATE;
+         }
 
          /* We believe that 256B alignment may be sufficient, but we choose 4K
           * due to lack of testing.  And MI_LOAD/STORE operations require
@@ -1352,6 +1370,13 @@ anv_image_create(VkDevice _device,
    const isl_tiling_flags_t isl_tiling_flags =
       choose_isl_tiling_flags(&device->info, create_info, isl_mod_info,
                               image->needs_set_tiling);
+
+   const VkExternalMemoryImageCreateInfo *ext_mem_info =
+      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+   if (ext_mem_info)
+      image->external_handle_types = ext_mem_info->handleTypes;
+   else
+      image->external_handle_types = 0;
 
    const VkImageFormatListCreateInfoKHR *fmt_list =
       vk_find_struct_const(pCreateInfo->pNext,

@@ -4073,6 +4073,8 @@ struct anv_image {
       /** Location of the fast clear state.  */
       struct anv_image_memory_range fast_clear_memory_range;
    } planes[3];
+
+   VkExternalMemoryHandleTypeFlags external_handle_types;
 };
 
 /* The ordering of this enum is important */
