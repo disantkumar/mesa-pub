@@ -1530,13 +1530,12 @@ anv_CreateImage(VkDevice device,
                                       pAllocator, pImage);
 #endif
 
-   return anv_image_create(device,
-      &(struct anv_image_create_info) {
-         .vk_info = pCreateInfo,
-         .external_format = use_external_format,
-      },
-      pAllocator,
-      pImage);
+   struct anv_image_create_info anv_create_info = {
+      .vk_info = pCreateInfo,
+      .external_format = use_external_format,
+   };
+
+   return anv_image_create(device, &anv_create_info, pAllocator, pImage);
 }
 
 void
