@@ -1178,18 +1178,7 @@ add_all_surfaces_explicit_layout(
       if (result != VK_SUCCESS)
          return result;
 
-      if (!mod_has_aux) {
-         /* Even though the modifier does not support aux, try to create
-          * a driver-private aux to improve performance.
-          */
-         result = add_aux_surface_if_supported(device, image, plane,
-                                               format_plane,
-                                               format_list_info,
-                                               ANV_OFFSET_IMPLICIT, 0,
-                                               isl_extra_usage_flags);
-         if (result != VK_SUCCESS)
-            return result;
-      } else {
+      if (mod_has_aux) {
          const VkSubresourceLayout *aux_layout = &drm_info->pPlaneLayouts[1];
          result = add_aux_surface_if_supported(device, image, plane,
                                                format_plane,
@@ -1534,6 +1523,18 @@ anv_CreateImage(VkDevice device,
       .vk_info = pCreateInfo,
       .external_format = use_external_format,
    };
+
+   /* For dmabuf imports, configure the primary surface without support for
+    * compression if the modifier doesn't specify it. This helps to create
+    * VkImages with memory requirements that are compatible with the buffers
+    * apps provide.
+    */
+   const struct VkImageDrmFormatModifierExplicitCreateInfoEXT *mod_explicit_info =
+      vk_find_struct_const(pCreateInfo->pNext,
+                           IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
+   if (mod_explicit_info &&
+       !isl_drm_modifier_has_aux(mod_explicit_info->drmFormatModifier))
+      anv_create_info.isl_extra_usage_flags |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
 
    return anv_image_create(device, &anv_create_info, pAllocator, pImage);
 }
