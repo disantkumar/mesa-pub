@@ -202,6 +202,13 @@ CHIPSET(0x9AC9, tgl_gt2, "TGL GT2", "Intel(R) UHD Graphics")
 CHIPSET(0x9AD9, tgl_gt2, "TGL GT2", "Intel(R) UHD Graphics")
 CHIPSET(0x9AF8, tgl_gt2, "TGL GT2", "Intel(R) UHD Graphics")
 
+CHIPSET(0xa720, rpl_p, "RPL-P", "Intel(R) Graphics")
+CHIPSET(0xa721, rpl_p, "RPL-P", "Intel(R) Graphics")
+CHIPSET(0xa7a0, rpl_p, "RPL-P", "Intel(R) Graphics")
+CHIPSET(0xa7a1, rpl_p, "RPL-P", "Intel(R) Graphics")
+CHIPSET(0xa7a8, rpl_p, "RPL-P", "Intel(R) Graphics")
+CHIPSET(0xa7a9, rpl_p, "RPL-P", "Intel(R) Graphics")
+
 CHIPSET(0xa780, rpl, "RPL-S", "Intel(R) Graphics")
 CHIPSET(0xa781, rpl, "RPL-S", "Intel(R) Graphics")
 CHIPSET(0xa782, rpl, "RPL-S", "Intel(R) Graphics")
