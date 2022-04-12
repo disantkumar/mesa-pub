@@ -13,6 +13,7 @@ STABLE_EPHEMERAL=" \
       g++-mingw-w64-i686-posix \
       g++-mingw-w64-x86-64-posix \
       glslang-tools \
+      libexpat1-dev \
       libgbm-dev \
       libgles2-mesa-dev \
       liblz4-dev \
@@ -20,7 +21,6 @@ STABLE_EPHEMERAL=" \
       libudev-dev \
       libvulkan-dev \
       libwaffle-dev \
-      libwayland-dev \
       libx11-xcb-dev \
       libxcb-ewmh-dev \
       libxcb-keysyms1-dev \
@@ -120,6 +120,14 @@ wine \
 
 . .gitlab-ci/container/container_pre_build.sh
 
+############### Build libdrm
+
+. .gitlab-ci/container/build-libdrm.sh
+
+############### Build Wayland
+
+. .gitlab-ci/container/build-wayland.sh
+
 ############### Build parallel-deqp-runner's hang-detection tool
 
 . .gitlab-ci/container/build-hang-detection.sh
@@ -145,10 +153,6 @@ PIGLIT_BUILD_TARGETS="piglit_replayer" . .gitlab-ci/container/build-piglit.sh
 setup_wine "/vkd3d-proton-wine64"
 
 . .gitlab-ci/container/build-vkd3d-proton.sh
-
-############### Build libdrm
-
-. .gitlab-ci/container/build-libdrm.sh
 
 ############### Uninstall the build software
 

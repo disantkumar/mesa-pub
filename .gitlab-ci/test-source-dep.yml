@@ -18,6 +18,7 @@
       - .gitlab-ci/**/*
       - include/**/*
       - meson.build
+      - .gitattributes
       - src/*
       - src/compiler/**/*
       - src/drm-shim/**/*
@@ -30,10 +31,6 @@
       - src/loader/**/*
       - src/mapi/**/*
       - src/mesa/*
-      - src/mesa/drivers/*
-      - src/mesa/drivers/common/**/*
-      - src/mesa/drivers/dri/*
-      - src/mesa/drivers/dri/common/**/*
       - src/mesa/main/**/*
       - src/mesa/math/**/*
       - src/mesa/program/**/*
@@ -41,11 +38,10 @@
       - src/mesa/state_tracker/**/*
       - src/mesa/swrast/**/*
       - src/mesa/swrast_setup/**/*
-      - src/mesa/tnl/**/*
-      - src/mesa/tnl_dd/**/*
       - src/mesa/vbo/**/*
       - src/mesa/x86/**/*
       - src/mesa/x86-64/**/*
+      - src/tool/**/*
       - src/util/**/*
 
 .vulkan-rules:
@@ -132,6 +128,7 @@
       - .gitlab-ci.yml
       - .gitlab-ci/**/*
       - meson.build
+      - .gitattributes
       - include/**/*
       - src/compiler/**/*
       - src/include/**/*
@@ -151,6 +148,39 @@
 .freedreno-rules:
   stage: freedreno
   rules:
+    - if: '$FD_FARM == "offline"'
+      when: never
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+        *vulkan_file_list
+      when: on_success
+    - changes: &freedreno_file_list
+      # Note: when https://gitlab.com/gitlab-org/gitlab/-/issues/198688
+      # is supported, we can change the src/freedreno/ rule to explicitly
+      # exclude tools
+      - src/freedreno/**/*
+      - src/gallium/drivers/freedreno/**/*
+      - src/gallium/winsys/freedreno/**/*
+      when: on_success
+    - when: never
+
+# Unfortunately YAML doesn't let us concatenate arrays, so we have to do the
+# rules duplication manually
+.freedreno-rules-restricted:
+  stage: freedreno
+  rules:
+    - if: '$FD_FARM == "offline"'
+      when: never
+    # If the triggerer has access to the restricted traces and if it is pre-merge
+    - if: '($GITLAB_USER_LOGIN !~ "/^(robclark|anholt|flto|cwabbott0|Danil|tomeu)$/") &&
+           ($GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME)'
+      when: never
     - *ignore_scheduled_pipelines
     - changes:
         *mesa_core_file_list
@@ -162,13 +192,33 @@
         *vulkan_file_list
       when: on_success
     - changes:
-      # Note: when https://gitlab.com/gitlab-org/gitlab/-/issues/198688
-      # is supported, we can change the src/freedreno/ rule to explicitly
-      # exclude tools
-      - src/freedreno/**/*
-      - src/gallium/drivers/freedreno/**/*
-      - src/gallium/winsys/freedreno/**/*
+        *freedreno_file_list
       when: on_success
+    - when: never
+
+# Unfortunately YAML doesn't let us concatenate arrays, so we have to do the
+# rules duplication manually
+.freedreno-rules-performance:
+  stage: freedreno
+  rules:
+    - if: '$FD_FARM == "offline"'
+      when: never
+    - *ignore_scheduled_pipelines
+    # Run only on pre-merge pipelines from Marge
+    - if: '$GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: never
+    - changes:
+        *mesa_core_file_list
+      when: manual
+    - changes:
+        *gallium_core_file_list
+      when: manual
+    - changes:
+        *vulkan_file_list
+      when: manual
+    - changes:
+        *freedreno_file_list
+      when: manual
     - when: never
 
 .panfrost-midgard-rules:
@@ -186,6 +236,7 @@
       - src/gallium/winsys/panfrost/**/*
       when: on_success
     - changes: &panfrost_common_file_list
+      - src/panfrost/ci/*
       - src/panfrost/include/*
       - src/panfrost/lib/*
       - src/panfrost/shared/*
@@ -211,6 +262,12 @@
       when: on_success
     - changes:
         *panfrost_gallium_file_list
+      when: on_success
+    - changes:
+        *vulkan_file_list
+      when: on_success
+    - changes: &panfrost_vulkan_file_list
+      - src/panfrost/vulkan/*
       when: on_success
     - changes:
       - src/panfrost/bifrost/**/*
@@ -338,6 +395,25 @@
       when: on_success
     - when: never
 
+.radeonsi-vaapi-rules:
+  stage: amd
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+        *radeonsi_file_list
+      when: on_success
+    - changes: &radeon_vcn_file_list
+      - src/gallium/frontends/va/**/*
+      - src/gallium/drivers/radeon/**/*
+      when: on_success
+    - when: never
+
 .i915g-rules:
   stage: intel
   rules:
@@ -355,7 +431,7 @@
       when: on_success
     - when: never
 
-.iris-rules:
+.crocus-rules:
   stage: intel
   rules:
     - *ignore_scheduled_pipelines
@@ -366,10 +442,47 @@
         *gallium_core_file_list
       when: on_success
     - changes:
+      - src/gallium/drivers/crocus/**/*
+      - src/gallium/winsys/crocus/**/*
+      - src/intel/**/*
+      when: on_success
+    - when: never
+
+.iris-rules:
+  stage: intel
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes: &iris_file_list
       - src/gallium/drivers/iris/**/*
       - src/gallium/winsys/iris/**/*
       - src/intel/**/*
       when: on_success
+    - when: never
+
+# Unfortunately YAML doesn't let us concatenate arrays, so we have to do the
+# rules duplication manually
+.iris-rules-performance:
+  stage: intel
+  rules:
+    - *ignore_scheduled_pipelines
+    # Run only on pre-merge pipelines from Marge
+    - if: '$GITLAB_USER_LOGIN != "marge-bot" || $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME != $CI_COMMIT_REF_NAME'
+      when: never
+    - changes:
+        *mesa_core_file_list
+      when: manual
+    - changes:
+        *gallium_core_file_list
+      when: manual
+    - changes:
+        *iris_file_list
+      when: manual
     - when: never
 
 .anv-rules:
@@ -417,6 +530,9 @@
         *gallium_core_file_list
       when: on_success
     - changes:
+        *softpipe_file_list
+      when: on_success
+    - changes:
         *lavapipe_file_list
       when: on_success
     - changes:
@@ -454,6 +570,26 @@
         *vulkan_file_list
       when: on_success
     - changes: *d3d12_file_list
+      when: on_success
+    - when: never
+
+.etnaviv-rules:
+  stage: etnaviv
+  rules:
+    - *ignore_scheduled_pipelines
+    - changes:
+        *mesa_core_file_list
+      when: on_success
+    - changes:
+        *gallium_core_file_list
+      when: on_success
+    - changes:
+      - src/etnaviv/**/*
+      - src/gallium/drivers/etnaviv/**/*
+      - src/gallium/winsys/etnaviv/**/*
+      - src/gallium/auxiliary/renderonly/**/*
+      - src/gallium/winsys/kmsro/**/*
+      - src/gallium/winsys/etnaviv/**/*
       when: on_success
     - when: never
 

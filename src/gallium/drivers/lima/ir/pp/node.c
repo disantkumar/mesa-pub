@@ -330,12 +330,14 @@ const ppir_op_info ppir_op_infos[] = {
       .name = "undef",
       .type = ppir_node_type_alu,
       .slots = (int []) {
+         PPIR_INSTR_SLOT_END
       },
    },
    [ppir_op_dummy] = {
       .name = "dummy",
       .type = ppir_node_type_alu,
       .slots = (int []) {
+         PPIR_INSTR_SLOT_END
       },
    },
 };
@@ -618,9 +620,9 @@ static ppir_node *ppir_node_insert_mov_local(ppir_node *node)
    ppir_node_add_dep(move, node, ppir_dep_src);
    list_addtail(&move->list, &node->list);
 
-   if (node->is_end) {
-      node->is_end = false;
-      move->is_end = true;
+   if (node->is_out) {
+      node->is_out = false;
+      move->is_out = true;
    }
 
    return move;

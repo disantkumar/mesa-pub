@@ -159,6 +159,16 @@ blorp_alloc_dynamic_state(struct blorp_batch *blorp_batch,
    return stream_state(batch, size, alignment, offset, NULL);
 }
 
+UNUSED static void *
+blorp_alloc_general_state(struct blorp_batch *blorp_batch,
+                          uint32_t size,
+                          uint32_t alignment,
+                          uint32_t *offset)
+{
+   /* Use dynamic state range for general state on crocus. */
+   return blorp_alloc_dynamic_state(blorp_batch, size, alignment, offset);
+}
+
 static void
 blorp_alloc_binding_table(struct blorp_batch *blorp_batch,
                           unsigned num_entries,
@@ -391,12 +401,18 @@ blorp_measure_start(struct blorp_batch *blorp_batch,
 {
 }
 
+static void
+blorp_measure_end(struct blorp_batch *blorp_batch,
+                  const struct blorp_params *params)
+{
+}
+
 void
 genX(crocus_init_blorp)(struct crocus_context *ice)
 {
    struct crocus_screen *screen = (struct crocus_screen *)ice->ctx.screen;
 
-   blorp_init(&ice->blorp, ice, &screen->isl_dev);
+   blorp_init(&ice->blorp, ice, &screen->isl_dev, NULL);
    ice->blorp.compiler = screen->compiler;
    ice->blorp.lookup_shader = crocus_blorp_lookup_shader;
    ice->blorp.upload_shader = crocus_blorp_upload_shader;

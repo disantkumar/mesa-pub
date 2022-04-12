@@ -35,6 +35,7 @@
 #include "main/image.h"
 #include "main/bufferobj.h"
 #include "main/dlist.h"
+#include "main/framebuffer.h"
 #include "main/macros.h"
 #include "main/pbo.h"
 #include "program/program.h"
@@ -137,7 +138,7 @@ make_bitmap_texture(struct gl_context *ctx, GLsizei width, GLsizei height,
     */
    pt = st_texture_create(st, st->internal_target, st->bitmap.tex_format,
                           0, width, height, 1, 1, 0,
-                          PIPE_BIND_SAMPLER_VIEW);
+                          PIPE_BIND_SAMPLER_VIEW, false);
    if (!pt) {
       _mesa_unmap_pbo_source(ctx, unpack);
       return NULL;
@@ -195,7 +196,7 @@ setup_render_state(struct gl_context *ctx,
       GLfloat colorSave[4];
       COPY_4V(colorSave, ctx->Current.Attrib[VERT_ATTRIB_COLOR0]);
       COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_COLOR0], color);
-      st_upload_constants(st, &st->fp->Base, MESA_SHADER_FRAGMENT);
+      st_upload_constants(st, st->fp, MESA_SHADER_FRAGMENT);
       COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_COLOR0], colorSave);
    }
 
@@ -249,11 +250,8 @@ setup_render_state(struct gl_context *ctx,
       num_views = MAX2(fpv->bitmap_sampler + 1, num_views);
       sampler_views[fpv->bitmap_sampler] = sv;
       pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, num_views, 0,
-                              sampler_views);
+                              true, sampler_views);
       st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = num_views;
-
-      for (unsigned i = 0; i < num_views; i++)
-         pipe_sampler_view_reference(&sampler_views[i], NULL);
    }
 
    /* viewport state: viewport matching window dims */
@@ -276,18 +274,14 @@ restore_render_state(struct gl_context *ctx)
 {
    struct st_context *st = st_context(ctx);
    struct cso_context *cso = st->cso_context;
-   struct pipe_context *pipe = st->pipe;
-
-   cso_restore_state(cso);
 
    /* Unbind all because st/mesa won't do it if the current shader doesn't
     * use them.
     */
-   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0,
-                           st->state.num_sampler_views[PIPE_SHADER_FRAGMENT],
-                           NULL);
+   cso_restore_state(cso, CSO_UNBIND_FS_SAMPLERVIEWS);
    st->state.num_sampler_views[PIPE_SHADER_FRAGMENT] = 0;
 
+   ctx->Array.NewVertexElements = true;
    st->dirty |= ST_NEW_VERTEX_ARRAYS |
                 ST_NEW_FS_SAMPLER_VIEWS;
 }
@@ -370,7 +364,8 @@ reset_cache(struct st_context *st)
                                       st->bitmap.tex_format, 0,
                                       BITMAP_CACHE_WIDTH, BITMAP_CACHE_HEIGHT,
                                       1, 1, 0,
-				      PIPE_BIND_SAMPLER_VIEW);
+                                      PIPE_BIND_SAMPLER_VIEW,
+                                      false);
 }
 
 
@@ -600,14 +595,10 @@ init_bitmap_state(struct st_context *st)
    reset_cache(st);
 }
 
-
-/**
- * Called via ctx->Driver.Bitmap()
- */
-static void
+void
 st_Bitmap(struct gl_context *ctx, GLint x, GLint y,
           GLsizei width, GLsizei height,
-          const struct gl_pixelstore_attrib *unpack, const GLubyte *bitmap )
+          const struct gl_pixelstore_attrib *unpack, const GLubyte *bitmap)
 {
    struct st_context *st = st_context(ctx);
    struct pipe_resource *pt;
@@ -651,18 +642,14 @@ st_Bitmap(struct gl_context *ctx, GLint x, GLint y,
    }
 }
 
-
-/**
- * Called via ctx->Driver.DrawAtlasBitmap()
- */
-static void
+void
 st_DrawAtlasBitmaps(struct gl_context *ctx,
                     const struct gl_bitmap_atlas *atlas,
                     GLuint count, const GLubyte *ids)
 {
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
-   struct st_texture_object *stObj = st_texture_object(atlas->texObj);
+   struct gl_texture_object *stObj = atlas->texObj;
    struct pipe_sampler_view *sv;
    /* convert Z from [0,1] to [-1,-1] to match viewport Z scale/bias */
    const float z = ctx->Current.RasterPos[2] * 2.0f - 1.0f;
@@ -774,7 +761,7 @@ st_DrawAtlasBitmaps(struct gl_context *ctx,
 
    u_upload_unmap(pipe->stream_uploader);
 
-   cso_set_vertex_buffers(st->cso_context, 0, 1, &vb);
+   cso_set_vertex_buffers(st->cso_context, 0, 1, 0, false, &vb);
    st->last_num_vbuffers = MAX2(st->last_num_vbuffers, 1);
 
    cso_draw_arrays(st->cso_context, PIPE_PRIM_QUADS, 0, num_verts);
@@ -787,17 +774,6 @@ out:
    /* We uploaded modified constants, need to invalidate them. */
    st->dirty |= ST_NEW_FS_CONSTANTS;
 }
-
-
-
-/** Per-context init */
-void
-st_init_bitmap_functions(struct dd_function_table *functions)
-{
-   functions->Bitmap = st_Bitmap;
-   functions->DrawAtlasBitmaps = st_DrawAtlasBitmaps;
-}
-
 
 /** Per-context tear-down */
 void

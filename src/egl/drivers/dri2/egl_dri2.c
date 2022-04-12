@@ -564,15 +564,6 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
       surface_type &= ~EGL_PIXMAP_BIT;
    }
 
-   /* No support for pbuffer + MSAA for now.
-    *
-    * XXX TODO: pbuffer + MSAA does not work and causes crashes.
-    * See QT bugreport: https://bugreports.qt.io/browse/QTBUG-47509
-    */
-   if (base.Samples) {
-      surface_type &= ~EGL_PBUFFER_BIT;
-   }
-
    if (!surface_type)
       return NULL;
 
@@ -658,33 +649,53 @@ dri2_add_pbuffer_configs_for_visuals(_EGLDisplay *disp)
    return (config_count != 0);
 }
 
-__DRIimage *
-dri2_lookup_egl_image(__DRIscreen *screen, void *image, void *data)
+GLboolean
+dri2_validate_egl_image(void *image, void *data)
 {
    _EGLDisplay *disp = data;
-   struct dri2_egl_image *dri2_img;
    _EGLImage *img;
-
-   (void) screen;
 
    mtx_lock(&disp->Mutex);
    img = _eglLookupImage(image, disp);
    mtx_unlock(&disp->Mutex);
 
    if (img == NULL) {
-      _eglError(EGL_BAD_PARAMETER, "dri2_lookup_egl_image");
-      return NULL;
+      _eglError(EGL_BAD_PARAMETER, "dri2_validate_egl_image");
+      return false;
    }
+
+   return true;
+}
+
+__DRIimage *
+dri2_lookup_egl_image_validated(void *image, void *data)
+{
+   struct dri2_egl_image *dri2_img;
+
+   (void)data;
 
    dri2_img = dri2_egl_image(image);
 
    return dri2_img->dri_image;
 }
 
-const __DRIimageLookupExtension image_lookup_extension = {
-   .base = { __DRI_IMAGE_LOOKUP, 1 },
+__DRIimage *
+dri2_lookup_egl_image(__DRIscreen *screen, void *image, void *data)
+{
+   (void) screen;
 
-   .lookupEGLImage       = dri2_lookup_egl_image
+   if (!dri2_validate_egl_image(image, data))
+      return NULL;
+
+   return dri2_lookup_egl_image_validated(image, data);
+}
+
+const __DRIimageLookupExtension image_lookup_extension = {
+   .base = { __DRI_IMAGE_LOOKUP, 2 },
+
+   .lookupEGLImage       = dri2_lookup_egl_image,
+   .validateEGLImage     = dri2_validate_egl_image,
+   .lookupEGLImageValidated = dri2_lookup_egl_image_validated,
 };
 
 struct dri2_extension_match {
@@ -1772,16 +1783,17 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf,
    if (!_eglBindContext(ctx, dsurf, rsurf, &old_ctx, &old_dsurf, &old_rsurf))
       return EGL_FALSE;
 
+   if (old_ctx == ctx && old_dsurf == dsurf && old_rsurf == rsurf) {
+      _eglPutSurface(old_dsurf);
+      _eglPutSurface(old_rsurf);
+      _eglPutContext(old_ctx);
+      return EGL_TRUE;
+   }
+
    if (old_ctx) {
       __DRIcontext *old_cctx = dri2_egl_context(old_ctx)->dri_context;
       old_disp = old_ctx->Resource.Display;
       old_dri2_dpy = dri2_egl_display(old_disp);
-
-      /* flush before context switch */
-      dri2_gl_flush();
-
-      if (old_dsurf)
-         dri2_surf_update_fence_fd(old_ctx, disp, old_dsurf);
 
       /* Disable shared buffer mode */
       if (old_dsurf && _eglSurfaceInSharedBufferMode(old_dsurf) &&
@@ -1790,6 +1802,9 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf,
       }
 
       dri2_dpy->core->unbindContext(old_cctx);
+
+      if (old_dsurf)
+         dri2_surf_update_fence_fd(old_ctx, disp, old_dsurf);
    }
 
    ddraw = (dsurf) ? dri2_dpy->vtbl->get_dri_drawable(dsurf) : NULL;
@@ -3587,7 +3602,7 @@ dri2_client_wait_sync(_EGLDisplay *disp, _EGLSync *sync,
             ret = cnd_timedwait(&dri2_sync->cond, &dri2_sync->mutex, &expire);
             mtx_unlock(&dri2_sync->mutex);
 
-            if (ret == thrd_busy) {
+            if (ret == thrd_timedout) {
                if (dri2_sync->base.SyncStatus == EGL_UNSIGNALED_KHR) {
                   ret = EGL_TIMEOUT_EXPIRED_KHR;
                } else {

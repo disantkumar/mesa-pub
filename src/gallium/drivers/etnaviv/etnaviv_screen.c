@@ -49,12 +49,12 @@
 
 #include "drm-uapi/drm_fourcc.h"
 
-#define ETNA_DRM_VERSION(major, minor) ((major) << 16 | (minor))
 #define ETNA_DRM_VERSION_FENCE_FD      ETNA_DRM_VERSION(1, 1)
 #define ETNA_DRM_VERSION_PERFMON       ETNA_DRM_VERSION(1, 2)
 
 static const struct debug_named_value etna_debug_options[] = {
    {"dbg_msgs",       ETNA_DBG_MSGS, "Print debug messages"},
+   {"drm_msgs",       ETNA_DRM_MSGS, "Print drm messages"},
    {"frame_msgs",     ETNA_DBG_FRAME_MSGS, "Print frame messages"},
    {"resource_msgs",  ETNA_DBG_RESOURCE_MSGS, "Print resource messages"},
    {"compiler_msgs",  ETNA_DBG_COMPILER_MSGS, "Print compiler messages"},
@@ -72,7 +72,7 @@ static const struct debug_named_value etna_debug_options[] = {
    {"draw_stall",     ETNA_DBG_DRAW_STALL, "Stall FE/PE after each rendered primitive"},
    {"shaderdb",       ETNA_DBG_SHADERDB, "Enable shaderdb output"},
    {"no_singlebuffer",ETNA_DBG_NO_SINGLEBUF, "Disable single buffer feature"},
-   {"nir",            ETNA_DBG_NIR, "use new NIR compiler"},
+   {"tgsi",           ETNA_DBG_TGSI, "use old TGSI compiler"},
    {"deqp",           ETNA_DBG_DEQP, "Hacks to run dEQP GLES3 tests"}, /* needs MESA_GLES_VERSION_OVERRIDE=3.0 */
    {"nocache",        ETNA_DBG_NOCACHE,    "Disable shader cache"},
    DEBUG_NAMED_VALUE_END
@@ -155,12 +155,13 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
    case PIPE_CAP_STRING_MARKER:
+   case PIPE_CAP_FRONTEND_NOOP:
       return 1;
    case PIPE_CAP_NATIVE_FENCE_FD:
       return screen->drm_version >= ETNA_DRM_VERSION_FENCE_FD;
    case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL: /* note: not integer */
-      return DBG_ENABLED(ETNA_DBG_NIR);
+      return !DBG_ENABLED(ETNA_DBG_TGSI);
    case PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL:
       return 0;
 
@@ -181,7 +182,7 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return VIV_FEATURE(screen, chipMinorFeatures1, HALTI0);
 
    case PIPE_CAP_ALPHA_TEST:
-      if (DBG_ENABLED(ETNA_DBG_NIR))
+      if (!DBG_ENABLED(ETNA_DBG_TGSI))
          return !VIV_FEATURE(screen, chipMinorFeatures7, PE_NO_ALPHA_TEST);
       else
          return 1;
@@ -212,7 +213,7 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    /* Texturing. */
    case PIPE_CAP_TEXTURE_SHADOW_MAP:
-      return DBG_ENABLED(ETNA_DBG_NIR) && screen->specs.halti >= 2;
+      return !DBG_ENABLED(ETNA_DBG_TGSI);
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS: /* TODO: verify */
       return screen->specs.max_texture_size;
@@ -238,7 +239,7 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return VIV_FEATURE(screen, chipMinorFeatures1, HALTI0);
 
    /* Preferences */
-   case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+   case PIPE_CAP_TEXTURE_TRANSFER_MODES:
       return 0;
    case PIPE_CAP_MAX_TEXTURE_UPLOAD_MEMORY_BUDGET: {
       /* etnaviv is being run on systems as small as 256MB total RAM so
@@ -259,6 +260,28 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_MAX_VARYINGS:
       return screen->specs.max_varyings;
+
+   case PIPE_CAP_SUPPORTED_PRIM_MODES:
+   case PIPE_CAP_SUPPORTED_PRIM_MODES_WITH_RESTART: {
+      /* Generate the bitmask of supported draw primitives. */
+      uint32_t modes = 1 << PIPE_PRIM_POINTS |
+                       1 << PIPE_PRIM_LINES |
+                       1 << PIPE_PRIM_LINE_STRIP |
+                       1 << PIPE_PRIM_TRIANGLES |
+                       1 << PIPE_PRIM_TRIANGLE_FAN;
+
+      /* TODO: The bug relates only to indexed draws, but here we signal
+       * that there is no support for triangle strips at all. This should
+       * be refined.
+       */
+      if (VIV_FEATURE(screen, chipMinorFeatures2, BUG_FIXES8))
+         modes |= 1 << PIPE_PRIM_TRIANGLE_STRIP;
+
+      if (VIV_FEATURE(screen, chipMinorFeatures2, LINE_LOOP))
+         modes |= 1 << PIPE_PRIM_LINE_LOOP;
+
+      return modes;
+   }
 
    case PIPE_CAP_PCI_GROUP:
    case PIPE_CAP_PCI_BUS:
@@ -282,10 +305,18 @@ etna_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
    struct etna_screen *screen = etna_screen(pscreen);
 
    switch (param) {
+   case PIPE_CAPF_MIN_LINE_WIDTH:
+   case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+   case PIPE_CAPF_MIN_POINT_SIZE:
+   case PIPE_CAPF_MIN_POINT_SIZE_AA:
+      return 1;
+   case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+   case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+      return 0.1;
    case PIPE_CAPF_MAX_LINE_WIDTH:
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
-   case PIPE_CAPF_MAX_POINT_WIDTH:
-   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_SIZE:
+   case PIPE_CAPF_MAX_POINT_SIZE_AA:
       return 8192.0f;
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0f;
@@ -307,7 +338,7 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
                              enum pipe_shader_cap param)
 {
    struct etna_screen *screen = etna_screen(pscreen);
-   bool ubo_enable = screen->specs.halti >= 2 && DBG_ENABLED(ETNA_DBG_NIR);
+   bool ubo_enable = screen->specs.halti >= 2 && !DBG_ENABLED(ETNA_DBG_TGSI);
 
    if (DBG_ENABLED(ETNA_DBG_DEQP))
       ubo_enable = true;
@@ -366,14 +397,14 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       return 0;
    case PIPE_SHADER_CAP_INTEGERS:
-      return DBG_ENABLED(ETNA_DBG_NIR) && screen->specs.halti >= 2;
+      return !DBG_ENABLED(ETNA_DBG_TGSI) && screen->specs.halti >= 2;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
    case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
       return shader == PIPE_SHADER_FRAGMENT
                 ? screen->specs.fragment_sampler_count
                 : screen->specs.vertex_sampler_count;
    case PIPE_SHADER_CAP_PREFERRED_IR:
-      return DBG_ENABLED(ETNA_DBG_NIR) ? PIPE_SHADER_IR_NIR : PIPE_SHADER_IR_TGSI;
+      return !DBG_ENABLED(ETNA_DBG_TGSI) ? PIPE_SHADER_IR_NIR : PIPE_SHADER_IR_TGSI;
    case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
       if (ubo_enable)
          return 16384; /* 16384 so state tracker enables UBOs */
@@ -388,7 +419,7 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
       return false;
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
       return (1 << PIPE_SHADER_IR_TGSI) |
-             (DBG_ENABLED(ETNA_DBG_NIR) ? 1 << PIPE_SHADER_IR_NIR : 0);
+             (!DBG_ENABLED(ETNA_DBG_TGSI) ? 1 << PIPE_SHADER_IR_NIR : 0);
    case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
       return 32;
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
@@ -947,7 +978,6 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
 {
    struct etna_screen *screen = CALLOC_STRUCT(etna_screen);
    struct pipe_screen *pscreen;
-   drmVersionPtr version;
    uint64_t val;
 
    if (!screen)
@@ -959,16 +989,7 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
    screen->ro = ro;
    screen->refcnt = 1;
 
-   if (!screen->ro) {
-      DBG("could not create renderonly object");
-      goto fail;
-   }
-
-   version = drmGetVersion(screen->ro->gpu_fd);
-   screen->drm_version = ETNA_DRM_VERSION(version->version_major,
-                                          version->version_minor);
-   drmFreeVersion(version);
-
+   screen->drm_version = etnaviv_device_version(screen->dev);
    etna_mesa_debug = debug_get_option_etna_mesa_debug();
 
    /* Disable autodisable for correct rendering with TS */
@@ -1076,6 +1097,7 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
       .lower_fsqrt = !screen->specs.has_sin_cos_sqrt,
       .lower_sincos = !screen->specs.has_sin_cos_sqrt,
       .lower_uniforms_to_ubo = screen->specs.halti >= 2,
+      .force_indirect_unrolling = nir_var_all,
    };
 
    /* apply debug options that disable individual features */

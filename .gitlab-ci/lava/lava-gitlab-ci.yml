@@ -5,8 +5,7 @@
   interruptible: true
   variables:
     GIT_STRATEGY: none # testing doesn't build anything from source
-    DEQP_PARALLEL: 6 # should be replaced by per-machine definitions
-    DEQP_NO_SAVE_RESULTS: 1 # but why not ... ?
+    FDO_CI_CONCURRENT: 6 # should be replaced by per-machine definitions
     DEQP_VER: gles2
     # proxy used to cache data locally
     FDO_HTTP_CACHE_URI: "http://caching-proxy/cache/?uri="
@@ -19,6 +18,7 @@
     JOB_ROOTFS_OVERLAY_PATH: "${JOB_ARTIFACTS_BASE}/job-rootfs-overlay.tar.gz"
     JOB_RESULTS_PATH: "${JOB_ARTIFACTS_BASE}/results.tar.gz"
     PIGLIT_NO_WINDOW: 1
+    VISIBILITY_GROUP: "Collabora+fdo"
   script:
     - ./artifacts/lava/lava-submit.sh
   artifacts:
@@ -85,7 +85,7 @@
 
 .lava-traces-base:
   variables:
-    HWCI_TEST_SCRIPT: "/install/piglit/run.sh"
+    HWCI_TEST_SCRIPT: "/install/piglit/piglit-traces.sh"
   artifacts:
     reports:
       junit: results/junit.xml

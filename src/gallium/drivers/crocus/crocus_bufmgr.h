@@ -141,12 +141,18 @@ struct crocus_bo {
     */
    bool userptr;
 
+   /**
+    * Boolean of if this is used for scanout.
+    */
+   bool scanout;
+
    /** Pre-computed hash using _mesa_hash_pointer for cache tracking sets */
    uint32_t hash;
 };
 
 #define BO_ALLOC_ZEROED   (1 << 0)
 #define BO_ALLOC_COHERENT (1 << 1)
+#define BO_ALLOC_SCANOUT  (1 << 2)
 
 /**
  * Allocate a buffer object.
@@ -302,7 +308,6 @@ int crocus_bo_busy(struct crocus_bo *bo);
  */
 int crocus_bo_madvise(struct crocus_bo *bo, int madv);
 
-/* drm_bacon_bufmgr_gem.c */
 struct crocus_bufmgr *
 crocus_bufmgr_get_for_fd(struct intel_device_info *devinfo, int fd,
                          bool bo_reuse);

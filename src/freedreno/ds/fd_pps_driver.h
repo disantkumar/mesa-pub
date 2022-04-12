@@ -28,11 +28,13 @@ public:
    void disable_perfcnt() override;
    bool dump_perfcnt() override;
    uint64_t next() override;
+   uint32_t gpu_clock_id() const override;
+   uint64_t gpu_timestamp() const override;
 
 private:
    struct fd_device *dev;
    struct fd_pipe *pipe;
-   uint32_t gpu_id;
+   const struct fd_dev_id *dev_id;
    uint32_t max_freq;
    uint32_t next_counter_id;
    uint32_t next_countable_id;

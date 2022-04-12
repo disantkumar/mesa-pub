@@ -28,6 +28,7 @@
 #include "util/format_srgb.h"
 #include "util/half_float.h"
 #include "util/u_dump.h"
+#include "util/u_log.h"
 
 #include "freedreno_blitter.h"
 #include "freedreno_fence.h"
@@ -126,7 +127,7 @@ ok_dims(const struct pipe_resource *r, const struct pipe_box *b, int lvl)
 static bool
 ok_format(enum pipe_format pfmt)
 {
-   enum a6xx_format fmt = fd6_pipe2color(pfmt);
+   enum a6xx_format fmt = fd6_color_format(pfmt, TILE6_LINEAR);
 
    if (util_format_is_compressed(pfmt))
       return true;
@@ -250,9 +251,10 @@ emit_setup(struct fd_batch *batch)
 
 static void
 emit_blit_setup(struct fd_ringbuffer *ring, enum pipe_format pfmt,
-                bool scissor_enable, union pipe_color_union *color)
+                bool scissor_enable, union pipe_color_union *color,
+                uint32_t unknown_8c01)
 {
-   enum a6xx_format fmt = fd6_pipe2color(pfmt);
+   enum a6xx_format fmt = fd6_color_format(pfmt, TILE6_LINEAR);
    bool is_srgb = util_format_is_srgb(pfmt);
    enum a6xx_2d_ifmt ifmt = fd6_ifmt(fmt);
 
@@ -290,7 +292,7 @@ emit_blit_setup(struct fd_ringbuffer *ring, enum pipe_format pfmt,
          A6XX_SP_2D_DST_FORMAT_MASK(0xf));
 
    OUT_PKT4(ring, REG_A6XX_RB_2D_UNKNOWN_8C01, 1);
-   OUT_RING(ring, 0);
+   OUT_RING(ring, unknown_8c01);
 }
 
 /* buffers need to be handled specially since x/width can exceed the bounds
@@ -345,7 +347,7 @@ emit_blit_buffer(struct fd_context *ctx, struct fd_ringbuffer *ring,
    sshift = sbox->x & 0x3f;
    dshift = dbox->x & 0x3f;
 
-   emit_blit_setup(ring, PIPE_FORMAT_R8_UNORM, false, NULL);
+   emit_blit_setup(ring, PIPE_FORMAT_R8_UNORM, false, NULL, 0);
 
    for (unsigned off = 0; off < sbox->width; off += (0x4000 - 0x40)) {
       unsigned soff, doff, w, p;
@@ -430,7 +432,7 @@ fd6_clear_ubwc(struct fd_batch *batch, struct fd_resource *rsc) assert_dt
    struct fd_ringbuffer *ring = fd_batch_get_prologue(batch);
    union pipe_color_union color = {};
 
-   emit_blit_setup(ring, PIPE_FORMAT_R8_UNORM, false, &color);
+   emit_blit_setup(ring, PIPE_FORMAT_R8_UNORM, false, &color, 0);
 
    OUT_PKT4(ring, REG_A6XX_SP_PS_2D_SRC_INFO, 13);
    OUT_RING(ring, 0x00000000);
@@ -524,6 +526,7 @@ fd6_clear_ubwc(struct fd_batch *batch, struct fd_resource *rsc) assert_dt
    fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
    fd6_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);
    fd6_event_write(batch, ring, CACHE_FLUSH_TS, true);
+   fd_wfi(batch, ring);
    fd6_cache_inv(batch, ring);
 }
 
@@ -532,9 +535,9 @@ emit_blit_dst(struct fd_ringbuffer *ring, struct pipe_resource *prsc,
               enum pipe_format pfmt, unsigned level, unsigned layer)
 {
    struct fd_resource *dst = fd_resource(prsc);
-   enum a6xx_format fmt = fd6_pipe2color(pfmt);
+   enum a6xx_format fmt = fd6_color_format(pfmt, dst->layout.tile_mode);
    enum a6xx_tile_mode tile = fd_resource_tile_mode(prsc, level);
-   enum a3xx_color_swap swap = fd6_resource_swap(dst, pfmt);
+   enum a3xx_color_swap swap = fd6_color_swap(pfmt, dst->layout.tile_mode);
    uint32_t pitch = fd_resource_pitch(dst, level);
    bool ubwc_enabled = fd_resource_ubwc_enabled(dst, level);
    unsigned off = fd_resource_offset(dst, level, layer);
@@ -567,13 +570,13 @@ emit_blit_dst(struct fd_ringbuffer *ring, struct pipe_resource *prsc,
 
 static void
 emit_blit_src(struct fd_ringbuffer *ring, const struct pipe_blit_info *info,
-              unsigned layer, unsigned nr_samples)
+              unsigned layer, unsigned nr_samples, bool sample_0)
 {
    struct fd_resource *src = fd_resource(info->src.resource);
-   enum a6xx_format sfmt = fd6_pipe2color(info->src.format);
+   enum a6xx_format sfmt = fd6_texture_format(info->src.format, src->layout.tile_mode);
    enum a6xx_tile_mode stile =
       fd_resource_tile_mode(info->src.resource, info->src.level);
-   enum a3xx_color_swap sswap = fd6_resource_swap(src, info->src.format);
+   enum a3xx_color_swap sswap = fd6_texture_swap(info->src.format, src->layout.tile_mode);
    uint32_t pitch = fd_resource_pitch(src, info->src.level);
    bool subwc_enabled = fd_resource_ubwc_enabled(src, info->src.level);
    unsigned soff = fd_resource_offset(src, info->src.level, layer);
@@ -586,15 +589,15 @@ emit_blit_src(struct fd_ringbuffer *ring, const struct pipe_blit_info *info,
 
    enum a3xx_msaa_samples samples = fd_msaa_samples(src->b.b.nr_samples);
 
-   if (sfmt == FMT6_10_10_10_2_UNORM_DEST)
-      sfmt = FMT6_10_10_10_2_UNORM;
+   if (info->src.format == PIPE_FORMAT_A8_UNORM)
+      sfmt = FMT6_A8_UNORM;
 
    OUT_PKT4(ring, REG_A6XX_SP_PS_2D_SRC_INFO, 10);
    OUT_RING(ring, A6XX_SP_PS_2D_SRC_INFO_COLOR_FORMAT(sfmt) |
                      A6XX_SP_PS_2D_SRC_INFO_TILE_MODE(stile) |
                      A6XX_SP_PS_2D_SRC_INFO_COLOR_SWAP(sswap) |
                      A6XX_SP_PS_2D_SRC_INFO_SAMPLES(samples) |
-                     COND(samples > MSAA_ONE && (info->mask & PIPE_MASK_RGBA),
+                     COND(samples > MSAA_ONE && !sample_0,
                           A6XX_SP_PS_2D_SRC_INFO_SAMPLES_AVERAGE) |
                      COND(subwc_enabled, A6XX_SP_PS_2D_SRC_INFO_FLAGS) |
                      COND(util_format_is_srgb(info->src.format),
@@ -623,7 +626,7 @@ emit_blit_src(struct fd_ringbuffer *ring, const struct pipe_blit_info *info,
 
 static void
 emit_blit_texture(struct fd_context *ctx, struct fd_ringbuffer *ring,
-                  const struct pipe_blit_info *info)
+                  const struct pipe_blit_info *info, bool sample_0)
 {
    const struct pipe_box *sbox = &info->src.box;
    const struct pipe_box *dbox = &info->dst.box;
@@ -668,11 +671,11 @@ emit_blit_texture(struct fd_context *ctx, struct fd_ringbuffer *ring,
                         A6XX_GRAS_2D_RESOLVE_CNTL_1_Y(info->scissor.maxy - 1));
    }
 
-   emit_blit_setup(ring, info->dst.format, info->scissor_enable, NULL);
+   emit_blit_setup(ring, info->dst.format, info->scissor_enable, NULL, 0);
 
    for (unsigned i = 0; i < info->dst.box.depth; i++) {
 
-      emit_blit_src(ring, info, sbox->z + i, nr_samples);
+      emit_blit_src(ring, info, sbox->z + i, nr_samples, sample_0);
       emit_blit_dst(ring, info->dst.resource, info->dst.format, info->dst.level,
                     dbox->z + i);
 
@@ -717,7 +720,7 @@ emit_clear_color(struct fd_ringbuffer *ring, enum pipe_format pfmt,
    }
 
    OUT_PKT4(ring, REG_A6XX_RB_2D_SRC_SOLID_C0, 4);
-   switch (fd6_ifmt(fd6_pipe2color(pfmt))) {
+   switch (fd6_ifmt(fd6_color_format(pfmt, TILE6_LINEAR))) {
    case R2D_UNORM8:
    case R2D_UNORM8_SRGB:
       /* The r2d ifmt is badly named, it also covers the signed case: */
@@ -781,7 +784,7 @@ convert_color(enum pipe_format format, union pipe_color_union *pcolor)
 void
 fd6_clear_surface(struct fd_context *ctx, struct fd_ringbuffer *ring,
                   struct pipe_surface *psurf, uint32_t width, uint32_t height,
-                  union pipe_color_union *color)
+                  union pipe_color_union *color, uint32_t unknown_8c01)
 {
    if (DEBUG_BLIT) {
       fprintf(stderr, "surface clear:\ndst resource: ");
@@ -798,7 +801,7 @@ fd6_clear_surface(struct fd_context *ctx, struct fd_ringbuffer *ring,
    union pipe_color_union clear_color = convert_color(psurf->format, color);
 
    emit_clear_color(ring, psurf->format, &clear_color);
-   emit_blit_setup(ring, psurf->format, false, &clear_color);
+   emit_blit_setup(ring, psurf->format, false, &clear_color, unknown_8c01);
 
    for (unsigned i = psurf->u.tex.first_layer; i <= psurf->u.tex.last_layer;
         i++) {
@@ -826,7 +829,7 @@ fd6_clear_surface(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
 void
 fd6_resolve_tile(struct fd_batch *batch, struct fd_ringbuffer *ring,
-                 uint32_t base, struct pipe_surface *psurf)
+                 uint32_t base, struct pipe_surface *psurf, uint32_t unknown_8c01)
 {
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    uint64_t gmem_base = batch->ctx->screen->gmem_base + base;
@@ -847,7 +850,7 @@ fd6_resolve_tile(struct fd_batch *batch, struct fd_ringbuffer *ring,
    /* Enable scissor bit, which will take into account the window scissor
     * which is set per-tile
     */
-   emit_blit_setup(ring, psurf->format, true, NULL);
+   emit_blit_setup(ring, psurf->format, true, NULL, unknown_8c01);
 
    /* We shouldn't be using GMEM in the layered rendering case: */
    assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
@@ -855,7 +858,7 @@ fd6_resolve_tile(struct fd_batch *batch, struct fd_ringbuffer *ring,
    emit_blit_dst(ring, psurf->texture, psurf->format, psurf->u.tex.level,
                  psurf->u.tex.first_layer);
 
-   enum a6xx_format sfmt = fd6_pipe2color(psurf->format);
+   enum a6xx_format sfmt = fd6_color_format(psurf->format, TILE6_LINEAR);
    enum a3xx_msaa_samples samples = fd_msaa_samples(batch->framebuffer.samples);
 
    OUT_PKT4(ring, REG_A6XX_SP_PS_2D_SRC_INFO, 10);
@@ -893,11 +896,12 @@ fd6_resolve_tile(struct fd_batch *batch, struct fd_ringbuffer *ring,
     * results in sysmem, so we need to flush manually here.
     */
    fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
+   fd_wfi(batch, ring);
 }
 
 static bool
 handle_rgba_blit(struct fd_context *ctx,
-                 const struct pipe_blit_info *info) assert_dt
+                 const struct pipe_blit_info *info, bool sample_0) assert_dt
 {
    struct fd_batch *batch;
 
@@ -936,7 +940,7 @@ handle_rgba_blit(struct fd_context *ctx,
 
    DBG_BLIT(info, batch);
 
-   trace_start_blit(&batch->trace, info->src.resource->target,
+   trace_start_blit(&batch->trace, batch->draw, info->src.resource->target,
                     info->dst.resource->target);
 
    if ((info->src.resource->target == PIPE_BUFFER) &&
@@ -948,14 +952,15 @@ handle_rgba_blit(struct fd_context *ctx,
       /* I don't *think* we need to handle blits between buffer <-> !buffer */
       debug_assert(info->src.resource->target != PIPE_BUFFER);
       debug_assert(info->dst.resource->target != PIPE_BUFFER);
-      emit_blit_texture(ctx, batch->draw, info);
+      emit_blit_texture(ctx, batch->draw, info, sample_0);
    }
 
-   trace_end_blit(&batch->trace);
+   trace_end_blit(&batch->trace, batch->draw);
 
    fd6_event_write(batch, batch->draw, PC_CCU_FLUSH_COLOR_TS, true);
    fd6_event_write(batch, batch->draw, PC_CCU_FLUSH_DEPTH_TS, true);
    fd6_event_write(batch, batch->draw, CACHE_FLUSH_TS, true);
+   fd_wfi(batch, batch->draw);
    fd6_cache_inv(batch, batch->draw);
 
    fd_batch_unlock_submit(batch);
@@ -979,11 +984,14 @@ handle_rgba_blit(struct fd_context *ctx,
  */
 static bool
 do_rewritten_blit(struct fd_context *ctx,
-                  const struct pipe_blit_info *info) assert_dt
+                  const struct pipe_blit_info *info, bool sample_0) assert_dt
 {
-   bool success = handle_rgba_blit(ctx, info);
-   if (!success)
+   bool success = handle_rgba_blit(ctx, info, sample_0);
+   if (!success) {
+      if (sample_0 && !util_format_is_pure_integer(info->src.format))
+         mesa_logw("sample averaging on fallback blit when we shouldn't.");
       success = fd_blitter_blit(ctx, info);
+   }
    debug_assert(success); /* fallback should never fail! */
    return success;
 }
@@ -1015,14 +1023,14 @@ handle_zs_blit(struct fd_context *ctx,
       blit.mask = PIPE_MASK_R;
       blit.src.format = PIPE_FORMAT_R8_UINT;
       blit.dst.format = PIPE_FORMAT_R8_UINT;
-      return do_rewritten_blit(ctx, &blit);
+      return do_rewritten_blit(ctx, &blit, true);
 
    case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
       if (info->mask & PIPE_MASK_Z) {
          blit.mask = PIPE_MASK_R;
          blit.src.format = PIPE_FORMAT_R32_FLOAT;
          blit.dst.format = PIPE_FORMAT_R32_FLOAT;
-         do_rewritten_blit(ctx, &blit);
+         do_rewritten_blit(ctx, &blit, true);
       }
 
       if (info->mask & PIPE_MASK_S) {
@@ -1031,7 +1039,7 @@ handle_zs_blit(struct fd_context *ctx,
          blit.dst.format = PIPE_FORMAT_R8_UINT;
          blit.src.resource = &src->stencil->b.b;
          blit.dst.resource = &dst->stencil->b.b;
-         do_rewritten_blit(ctx, &blit);
+         do_rewritten_blit(ctx, &blit, true);
       }
 
       return true;
@@ -1040,7 +1048,7 @@ handle_zs_blit(struct fd_context *ctx,
       blit.mask = PIPE_MASK_R;
       blit.src.format = PIPE_FORMAT_R16_UNORM;
       blit.dst.format = PIPE_FORMAT_R16_UNORM;
-      return do_rewritten_blit(ctx, &blit);
+      return do_rewritten_blit(ctx, &blit, true);
 
    case PIPE_FORMAT_Z32_UNORM:
    case PIPE_FORMAT_Z32_FLOAT:
@@ -1048,7 +1056,7 @@ handle_zs_blit(struct fd_context *ctx,
       blit.mask = PIPE_MASK_R;
       blit.src.format = PIPE_FORMAT_R32_UINT;
       blit.dst.format = PIPE_FORMAT_R32_UINT;
-      return do_rewritten_blit(ctx, &blit);
+      return do_rewritten_blit(ctx, &blit, true);
 
    case PIPE_FORMAT_Z24X8_UNORM:
    case PIPE_FORMAT_Z24_UNORM_S8_UINT:
@@ -1063,11 +1071,18 @@ handle_zs_blit(struct fd_context *ctx,
        * 8888_unorm.
        */
       if (!ctx->screen->info->a6xx.has_z24uint_s8uint) {
-         if (!src->layout.ubwc)
-            blit.src.format = PIPE_FORMAT_RGBA8888_UNORM;
-         if (!dst->layout.ubwc)
-            blit.dst.format = PIPE_FORMAT_RGBA8888_UNORM;
+         if (!src->layout.ubwc && !dst->layout.ubwc) {
+            blit.src.format = PIPE_FORMAT_RGBA8888_UINT;
+            blit.dst.format = PIPE_FORMAT_RGBA8888_UINT;
+         } else {
+            if (!src->layout.ubwc)
+               blit.src.format = PIPE_FORMAT_RGBA8888_UNORM;
+            if (!dst->layout.ubwc)
+               blit.dst.format = PIPE_FORMAT_RGBA8888_UNORM;
+         }
       }
+      if (info->src.resource->nr_samples > 1 && blit.src.format != PIPE_FORMAT_RGBA8888_UINT)
+         mesa_logw("sample averaging on fallback z24s8 blit when we shouldn't.");
       return fd_blitter_blit(ctx, &blit);
 
    default:
@@ -1120,36 +1135,7 @@ handle_compressed_blit(struct fd_context *ctx,
    blit.dst.box.width = DIV_ROUND_UP(blit.dst.box.width, bw);
    blit.dst.box.height = DIV_ROUND_UP(blit.dst.box.height, bh);
 
-   return do_rewritten_blit(ctx, &blit);
-}
-
-static enum pipe_format
-snorm_copy_format(enum pipe_format format)
-{
-   switch (format) {
-   case PIPE_FORMAT_R8_SNORM:           return PIPE_FORMAT_R8_UNORM;
-   case PIPE_FORMAT_R16_SNORM:          return PIPE_FORMAT_R16_UNORM;
-   case PIPE_FORMAT_A16_SNORM:          return PIPE_FORMAT_A16_UNORM;
-   case PIPE_FORMAT_L16_SNORM:          return PIPE_FORMAT_L16_UNORM;
-   case PIPE_FORMAT_I16_SNORM:          return PIPE_FORMAT_I16_UNORM;
-   case PIPE_FORMAT_R8G8_SNORM:         return PIPE_FORMAT_R8G8_UNORM;
-   case PIPE_FORMAT_R8G8B8_SNORM:       return PIPE_FORMAT_R8G8B8_UNORM;
-   case PIPE_FORMAT_R32_SNORM:          return PIPE_FORMAT_R32_UNORM;
-   case PIPE_FORMAT_R16G16_SNORM:       return PIPE_FORMAT_R16G16_UNORM;
-   case PIPE_FORMAT_L16A16_SNORM:       return PIPE_FORMAT_L16A16_UNORM;
-   case PIPE_FORMAT_R8G8B8A8_SNORM:     return PIPE_FORMAT_R8G8B8A8_UNORM;
-   case PIPE_FORMAT_R10G10B10A2_SNORM:  return PIPE_FORMAT_R10G10B10A2_UNORM;
-   case PIPE_FORMAT_B10G10R10A2_SNORM:  return PIPE_FORMAT_B10G10R10A2_UNORM;
-   case PIPE_FORMAT_R16G16B16_SNORM:    return PIPE_FORMAT_R16G16B16_UNORM;
-   case PIPE_FORMAT_R16G16B16A16_SNORM: return PIPE_FORMAT_R16G16B16A16_UNORM;
-   case PIPE_FORMAT_R16G16B16X16_SNORM: return PIPE_FORMAT_R16G16B16X16_UNORM;
-   case PIPE_FORMAT_R32G32_SNORM:       return PIPE_FORMAT_R32G32_UNORM;
-   case PIPE_FORMAT_R32G32B32_SNORM:    return PIPE_FORMAT_R32G32B32_UNORM;
-   case PIPE_FORMAT_R32G32B32A32_SNORM: return PIPE_FORMAT_R32G32B32A32_UNORM;
-   default:
-      unreachable("unhandled snorm format");
-      return format;
-   }
+   return do_rewritten_blit(ctx, &blit, false);
 }
 
 /**
@@ -1163,11 +1149,15 @@ handle_snorm_copy_blit(struct fd_context *ctx,
                        const struct pipe_blit_info *info)
    assert_dt
 {
+   /* If we're interpolating the pixels, we can't just treat the values as unorm. */
+   if (info->filter == PIPE_TEX_FILTER_LINEAR)
+      return false;
+
    struct pipe_blit_info blit = *info;
 
-   blit.src.format = blit.dst.format = snorm_copy_format(info->src.format);
+   blit.src.format = blit.dst.format = util_format_snorm_to_unorm(info->src.format);
 
-   return do_rewritten_blit(ctx, &blit);
+   return do_rewritten_blit(ctx, &blit, false);
 }
 
 static bool
@@ -1184,7 +1174,7 @@ fd6_blit(struct fd_context *ctx, const struct pipe_blit_info *info) assert_dt
        util_format_is_snorm(info->src.format))
       return handle_snorm_copy_blit(ctx, info);
 
-   return handle_rgba_blit(ctx, info);
+   return handle_rgba_blit(ctx, info, false);
 }
 
 void

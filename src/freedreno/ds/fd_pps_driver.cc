@@ -134,12 +134,7 @@ FreedrenoDriver::init_perfcnt()
 
    dev = fd_device_new(drm_device.fd);
    pipe = fd_pipe_new(dev, FD_PIPE_3D);
-
-   if (fd_pipe_get_param(pipe, FD_GPU_ID, &val)) {
-      PERFETTO_FATAL("Could not get GPU_ID");
-      return false;
-   }
-   gpu_id = val;
+   dev_id = fd_pipe_dev_id(pipe);
 
    if (fd_pipe_get_param(pipe, FD_MAX_FREQ, &val)) {
       PERFETTO_FATAL("Could not get MAX_FREQ");
@@ -154,7 +149,7 @@ FreedrenoDriver::init_perfcnt()
       has_suspend_count = true;
    }
 
-   perfcntrs = fd_perfcntrs(gpu_id, &num_perfcntrs);
+   perfcntrs = fd_perfcntrs(fd_pipe_dev_id(pipe), &num_perfcntrs);
    if (num_perfcntrs == 0) {
       PERFETTO_FATAL("No hw counters available");
       return false;
@@ -163,12 +158,12 @@ FreedrenoDriver::init_perfcnt()
    assigned_counters.resize(num_perfcntrs);
    assigned_counters.assign(assigned_counters.size(), 0);
 
-   switch (gpu_id) {
-   case 600 ... 699:
+   switch (fd_dev_gen(dev_id)) {
+   case 6:
       setup_a6xx_counters();
       break;
    default:
-      PERFETTO_FATAL("Unsupported GPU: a%03u", gpu_id);
+      PERFETTO_FATAL("Unsupported GPU: a%03u", fd_dev_gpu_id(dev_id));
       return false;
    }
 
@@ -177,7 +172,7 @@ FreedrenoDriver::init_perfcnt()
    for (auto countable : countables)
       countable.resolve();
 
-   info = fd_dev_info(gpu_id);
+   info = fd_dev_info(dev_id);
 
    io = fd_dt_find_io();
    if (!io) {
@@ -392,6 +387,18 @@ FreedrenoDriver::counter(std::string name, Counter::Units units,
    auto counter = DerivedCounter(this, name, units, derive);
    counters.emplace_back(counter);
    return counter;
+}
+
+uint32_t
+FreedrenoDriver::gpu_clock_id() const
+{
+   return perfetto::protos::pbzero::BUILTIN_CLOCK_BOOTTIME;
+}
+
+uint64_t
+FreedrenoDriver::gpu_timestamp() const
+{
+   return perfetto::base::GetBootTimeNs().count();
 }
 
 } // namespace pps

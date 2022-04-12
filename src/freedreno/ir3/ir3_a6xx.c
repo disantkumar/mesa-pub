@@ -74,7 +74,7 @@ emit_intrinsic_store_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 
    /* src0 is offset, src1 is value:
     */
-   val = ir3_create_collect(ctx, ir3_get_src(ctx, &intr->src[0]), ncomp);
+   val = ir3_create_collect(b, ir3_get_src(ctx, &intr->src[0]), ncomp);
    offset = ir3_get_src(ctx, &intr->src[3])[0];
 
    stib = ir3_STIB(b, ir3_ssbo_to_ibo(ctx, intr->src[1]), 0, offset, 0, val, 0);
@@ -136,44 +136,44 @@ emit_intrinsic_atomic_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    if (intr->intrinsic == nir_intrinsic_ssbo_atomic_comp_swap_ir3) {
       src0 = ir3_get_src(ctx, &intr->src[4])[0];
       struct ir3_instruction *compare = ir3_get_src(ctx, &intr->src[3])[0];
-      src1 = ir3_collect(ctx, dummy, compare, data);
+      src1 = ir3_collect(b, dummy, compare, data);
    } else {
       src0 = ir3_get_src(ctx, &intr->src[3])[0];
-      src1 = ir3_collect(ctx, dummy, data);
+      src1 = ir3_collect(b, dummy, data);
    }
 
    switch (intr->intrinsic) {
    case nir_intrinsic_ssbo_atomic_add_ir3:
-      atomic = ir3_ATOMIC_ADD_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_ADD(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_ssbo_atomic_imin_ir3:
-      atomic = ir3_ATOMIC_MIN_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_MIN(b, ibo, 0, src0, 0, src1, 0);
       type = TYPE_S32;
       break;
    case nir_intrinsic_ssbo_atomic_umin_ir3:
-      atomic = ir3_ATOMIC_MIN_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_MIN(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_ssbo_atomic_imax_ir3:
-      atomic = ir3_ATOMIC_MAX_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_MAX(b, ibo, 0, src0, 0, src1, 0);
       type = TYPE_S32;
       break;
    case nir_intrinsic_ssbo_atomic_umax_ir3:
-      atomic = ir3_ATOMIC_MAX_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_MAX(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_ssbo_atomic_and_ir3:
-      atomic = ir3_ATOMIC_AND_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_AND(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_ssbo_atomic_or_ir3:
-      atomic = ir3_ATOMIC_OR_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_OR(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_ssbo_atomic_xor_ir3:
-      atomic = ir3_ATOMIC_XOR_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_XOR(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_ssbo_atomic_exchange_ir3:
-      atomic = ir3_ATOMIC_XCHG_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_XCHG(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_ssbo_atomic_comp_swap_ir3:
-      atomic = ir3_ATOMIC_CMPXCHG_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_CMPXCHG(b, ibo, 0, src0, 0, src1, 0);
       break;
    default:
       unreachable("boo");
@@ -207,7 +207,7 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    unsigned ncoords = ir3_get_image_coords(intr, NULL);
 
    ldib = ir3_LDIB(b, ir3_image_to_ibo(ctx, intr->src[0]), 0,
-                   ir3_create_collect(ctx, coords, ncoords), 0);
+                   ir3_create_collect(b, coords, ncoords), 0);
    ldib->dsts[0]->wrmask = MASK(intr->num_components);
    ldib->cat6.iim_val = intr->num_components;
    ldib->cat6.d = ncoords;
@@ -236,8 +236,8 @@ emit_intrinsic_store_image(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    /* src0 is offset, src1 is value:
     */
    stib = ir3_STIB(b, ir3_image_to_ibo(ctx, intr->src[0]), 0,
-                   ir3_create_collect(ctx, coords, ncoords), 0,
-                   ir3_create_collect(ctx, value, ncomp), 0);
+                   ir3_create_collect(b, coords, ncoords), 0,
+                   ir3_create_collect(b, value, ncomp), 0);
    stib->cat6.iim_val = ncomp;
    stib->cat6.d = ncoords;
    stib->cat6.type = ir3_get_type_for_image_intrinsic(intr);
@@ -275,52 +275,52 @@ emit_intrinsic_atomic_image(struct ir3_context *ctx, nir_intrinsic_instr *intr)
     * register) and then immediately extract the first component.
     */
    dummy = create_immed(b, 0);
-   src0 = ir3_create_collect(ctx, coords, ncoords);
+   src0 = ir3_create_collect(b, coords, ncoords);
 
    if (intr->intrinsic == nir_intrinsic_image_atomic_comp_swap ||
        intr->intrinsic == nir_intrinsic_bindless_image_atomic_comp_swap) {
       struct ir3_instruction *compare = ir3_get_src(ctx, &intr->src[4])[0];
-      src1 = ir3_collect(ctx, dummy, compare, value);
+      src1 = ir3_collect(b, dummy, compare, value);
    } else {
-      src1 = ir3_collect(ctx, dummy, value);
+      src1 = ir3_collect(b, dummy, value);
    }
 
    switch (intr->intrinsic) {
    case nir_intrinsic_image_atomic_add:
    case nir_intrinsic_bindless_image_atomic_add:
-      atomic = ir3_ATOMIC_ADD_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_ADD(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_image_atomic_imin:
    case nir_intrinsic_image_atomic_umin:
    case nir_intrinsic_bindless_image_atomic_imin:
    case nir_intrinsic_bindless_image_atomic_umin:
-      atomic = ir3_ATOMIC_MIN_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_MIN(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_image_atomic_imax:
    case nir_intrinsic_image_atomic_umax:
    case nir_intrinsic_bindless_image_atomic_imax:
    case nir_intrinsic_bindless_image_atomic_umax:
-      atomic = ir3_ATOMIC_MAX_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_MAX(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_image_atomic_and:
    case nir_intrinsic_bindless_image_atomic_and:
-      atomic = ir3_ATOMIC_AND_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_AND(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_image_atomic_or:
    case nir_intrinsic_bindless_image_atomic_or:
-      atomic = ir3_ATOMIC_OR_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_OR(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_image_atomic_xor:
    case nir_intrinsic_bindless_image_atomic_xor:
-      atomic = ir3_ATOMIC_XOR_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_XOR(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_image_atomic_exchange:
    case nir_intrinsic_bindless_image_atomic_exchange:
-      atomic = ir3_ATOMIC_XCHG_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_XCHG(b, ibo, 0, src0, 0, src1, 0);
       break;
    case nir_intrinsic_image_atomic_comp_swap:
    case nir_intrinsic_bindless_image_atomic_comp_swap:
-      atomic = ir3_ATOMIC_CMPXCHG_G(b, ibo, 0, src0, 0, src1, 0);
+      atomic = ir3_ATOMIC_B_CMPXCHG(b, ibo, 0, src0, 0, src1, 0);
       break;
    default:
       unreachable("boo");
@@ -359,6 +359,7 @@ emit_intrinsic_image_size(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    compile_assert(ctx, intr->num_components <= 3);
    resinfo->dsts[0]->wrmask = MASK(3);
    ir3_handle_bindless_cat6(resinfo, intr->src[0]);
+   ir3_handle_nonuniform(resinfo, intr);
 
    ir3_split_dest(b, dst, resinfo, 0, intr->num_components);
 }
@@ -372,15 +373,26 @@ emit_intrinsic_load_global_ir3(struct ir3_context *ctx,
    unsigned dest_components = nir_intrinsic_dest_components(intr);
    struct ir3_instruction *addr, *offset;
 
-   addr = ir3_collect(ctx, ir3_get_src(ctx, &intr->src[0])[0],
+   addr = ir3_collect(b, ir3_get_src(ctx, &intr->src[0])[0],
                       ir3_get_src(ctx, &intr->src[0])[1]);
 
-   offset = ir3_get_src(ctx, &intr->src[1])[0];
+   struct ir3_instruction *load;
 
-   struct ir3_instruction *load =
-      ir3_LDG_A(b, addr, 0, offset, 0, create_immed(b, 0), 0,
-                create_immed(b, 0), 0, create_immed(b, dest_components), 0);
-   load->cat6.type = TYPE_U32;
+   bool const_offset_in_bounds = nir_src_is_const(intr->src[1]) &&
+                                 nir_src_as_int(intr->src[1]) < (1 << 13) &&
+                                 nir_src_as_int(intr->src[1]) > -(1 << 13);
+
+   if (const_offset_in_bounds) {
+      load = ir3_LDG(b, addr, 0, create_immed(b, nir_src_as_int(intr->src[1])),
+                     0, create_immed(b, dest_components), 0);
+   } else {
+      offset = ir3_get_src(ctx, &intr->src[1])[0];
+      load =
+         ir3_LDG_A(b, addr, 0, offset, 0, create_immed(b, 0), 0,
+                   create_immed(b, 0), 0, create_immed(b, dest_components), 0);
+   }
+
+   load->cat6.type = type_uint_size(intr->dest.ssa.bit_size);
    load->dsts[0]->wrmask = MASK(dest_components);
 
    load->barrier_class = IR3_BARRIER_BUFFER_R;
@@ -397,23 +409,103 @@ emit_intrinsic_store_global_ir3(struct ir3_context *ctx,
    struct ir3_instruction *value, *addr, *offset;
    unsigned ncomp = nir_intrinsic_src_components(intr, 0);
 
-   addr = ir3_collect(ctx, ir3_get_src(ctx, &intr->src[1])[0],
+   addr = ir3_collect(b, ir3_get_src(ctx, &intr->src[1])[0],
                       ir3_get_src(ctx, &intr->src[1])[1]);
 
-   offset = ir3_get_src(ctx, &intr->src[2])[0];
+   value = ir3_create_collect(b, ir3_get_src(ctx, &intr->src[0]), ncomp);
 
-   value = ir3_create_collect(ctx, ir3_get_src(ctx, &intr->src[0]), ncomp);
+   struct ir3_instruction *stg;
 
-   struct ir3_instruction *stg =
-      ir3_STG_A(b, addr, 0, offset, 0, create_immed(b, 0), 0,
-                create_immed(b, 0), 0, value, 0, create_immed(b, ncomp), 0);
-   stg->cat6.type = TYPE_U32;
+   bool const_offset_in_bounds = nir_src_is_const(intr->src[2]) &&
+                                 nir_src_as_int(intr->src[2]) < (1 << 13) &&
+                                 nir_src_as_int(intr->src[2]) > -(1 << 13);
+
+   if (const_offset_in_bounds) {
+      stg = ir3_STG(b, addr, 0,
+                    create_immed(b, nir_src_as_int(intr->src[2])), 0,
+                    value, 0,
+                    create_immed(b, ncomp), 0);
+   } else {
+      offset = ir3_get_src(ctx, &intr->src[2])[0];
+      stg =
+         ir3_STG_A(b, addr, 0, offset, 0, create_immed(b, 0), 0,
+                   create_immed(b, 0), 0, value, 0, create_immed(b, ncomp), 0);
+   }
+
+   stg->cat6.type = type_uint_size(intr->src[0].ssa->bit_size);
    stg->cat6.iim_val = 1;
 
    array_insert(b, b->keeps, stg);
 
    stg->barrier_class = IR3_BARRIER_BUFFER_W;
    stg->barrier_conflict = IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
+}
+
+static struct ir3_instruction *
+emit_intrinsic_atomic_global(struct ir3_context *ctx, nir_intrinsic_instr *intr)
+{
+   struct ir3_block *b = ctx->block;
+   struct ir3_instruction *addr, *atomic, *src1;
+   struct ir3_instruction *value = ir3_get_src(ctx, &intr->src[1])[0];
+   type_t type = TYPE_U32;
+
+   addr = ir3_collect(b, ir3_get_src(ctx, &intr->src[0])[0],
+                      ir3_get_src(ctx, &intr->src[0])[1]);
+
+   if (intr->intrinsic == nir_intrinsic_global_atomic_comp_swap_ir3) {
+      struct ir3_instruction *compare = ir3_get_src(ctx, &intr->src[2])[0];
+      src1 = ir3_collect(b, compare, value);
+   } else {
+      src1 = value;
+   }
+
+   switch (intr->intrinsic) {
+   case nir_intrinsic_global_atomic_add_ir3:
+      atomic = ir3_ATOMIC_G_ADD(b, addr, 0, src1, 0);
+      break;
+   case nir_intrinsic_global_atomic_imin_ir3:
+      atomic = ir3_ATOMIC_G_MIN(b, addr, 0, src1, 0);
+      type = TYPE_S32;
+      break;
+   case nir_intrinsic_global_atomic_umin_ir3:
+      atomic = ir3_ATOMIC_G_MIN(b, addr, 0, src1, 0);
+      break;
+   case nir_intrinsic_global_atomic_imax_ir3:
+      atomic = ir3_ATOMIC_G_MAX(b, addr, 0, src1, 0);
+      type = TYPE_S32;
+      break;
+   case nir_intrinsic_global_atomic_umax_ir3:
+      atomic = ir3_ATOMIC_G_MAX(b, addr, 0, src1, 0);
+      break;
+   case nir_intrinsic_global_atomic_and_ir3:
+      atomic = ir3_ATOMIC_G_AND(b, addr, 0, src1, 0);
+      break;
+   case nir_intrinsic_global_atomic_or_ir3:
+      atomic = ir3_ATOMIC_G_OR(b, addr, 0, src1, 0);
+      break;
+   case nir_intrinsic_global_atomic_xor_ir3:
+      atomic = ir3_ATOMIC_G_XOR(b, addr, 0, src1, 0);
+      break;
+   case nir_intrinsic_global_atomic_exchange_ir3:
+      atomic = ir3_ATOMIC_G_XCHG(b, addr, 0, src1, 0);
+      break;
+   case nir_intrinsic_global_atomic_comp_swap_ir3:
+      atomic = ir3_ATOMIC_G_CMPXCHG(b, addr, 0, src1, 0);
+      break;
+   default:
+      unreachable("Unknown global atomic op");
+   }
+
+   atomic->cat6.iim_val = 1;
+   atomic->cat6.d = 1;
+   atomic->cat6.type = type;
+   atomic->barrier_class = IR3_BARRIER_BUFFER_W;
+   atomic->barrier_conflict = IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
+
+   /* even if nothing consume the result, we can't DCE the instruction: */
+   array_insert(b, b->keeps, atomic);
+
+   return atomic;
 }
 
 const struct ir3_context_funcs ir3_a6xx_funcs = {
@@ -426,4 +518,5 @@ const struct ir3_context_funcs ir3_a6xx_funcs = {
    .emit_intrinsic_image_size = emit_intrinsic_image_size,
    .emit_intrinsic_load_global_ir3 = emit_intrinsic_load_global_ir3,
    .emit_intrinsic_store_global_ir3 = emit_intrinsic_store_global_ir3,
+   .emit_intrinsic_atomic_global = emit_intrinsic_atomic_global,
 };

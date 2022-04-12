@@ -25,6 +25,7 @@
 #include "ac_gpu_info.h"
 
 #include "sid.h"
+#include "u_math.h"
 
 #include <assert.h>
 #include <stdlib.h>
@@ -269,11 +270,13 @@ enum ac_image_dim ac_get_image_dim(enum chip_class chip_class, enum glsl_sampler
 
 unsigned ac_get_fs_input_vgpr_cnt(const struct ac_shader_config *config,
                                   signed char *face_vgpr_index_ptr,
-                                  signed char *ancillary_vgpr_index_ptr)
+                                  signed char *ancillary_vgpr_index_ptr,
+                                  signed char *sample_coverage_vgpr_index_ptr)
 {
    unsigned num_input_vgprs = 0;
    signed char face_vgpr_index = -1;
    signed char ancillary_vgpr_index = -1;
+   signed char sample_coverage_vgpr_index = -1;
 
    if (G_0286CC_PERSP_SAMPLE_ENA(config->spi_ps_input_addr))
       num_input_vgprs += 2;
@@ -307,8 +310,10 @@ unsigned ac_get_fs_input_vgpr_cnt(const struct ac_shader_config *config,
       ancillary_vgpr_index = num_input_vgprs;
       num_input_vgprs += 1;
    }
-   if (G_0286CC_SAMPLE_COVERAGE_ENA(config->spi_ps_input_addr))
+   if (G_0286CC_SAMPLE_COVERAGE_ENA(config->spi_ps_input_addr)) {
+      sample_coverage_vgpr_index = num_input_vgprs;
       num_input_vgprs += 1;
+   }
    if (G_0286CC_POS_FIXED_PT_ENA(config->spi_ps_input_addr))
       num_input_vgprs += 1;
 
@@ -316,6 +321,8 @@ unsigned ac_get_fs_input_vgpr_cnt(const struct ac_shader_config *config,
       *face_vgpr_index_ptr = face_vgpr_index;
    if (ancillary_vgpr_index_ptr)
       *ancillary_vgpr_index_ptr = ancillary_vgpr_index;
+   if (sample_coverage_vgpr_index_ptr)
+      *sample_coverage_vgpr_index_ptr = sample_coverage_vgpr_index;
 
    return num_input_vgprs;
 }
@@ -510,4 +517,91 @@ void ac_compute_late_alloc(const struct radeon_info *info, bool ngg, bool ngg_cu
       *late_alloc_wave64 = MIN2(*late_alloc_wave64, G_00B204_SPI_SHADER_LATE_ALLOC_GS_GFX10(~0u));
    else /* VS */
       *late_alloc_wave64 = MIN2(*late_alloc_wave64, G_00B11C_LIMIT(~0u));
+}
+
+unsigned ac_compute_cs_workgroup_size(uint16_t sizes[3], bool variable, unsigned max)
+{
+   if (variable)
+      return max;
+
+   return sizes[0] * sizes[1] * sizes[2];
+}
+
+unsigned ac_compute_lshs_workgroup_size(enum chip_class chip_class, gl_shader_stage stage,
+                                        unsigned tess_num_patches,
+                                        unsigned tess_patch_in_vtx,
+                                        unsigned tess_patch_out_vtx)
+{
+   /* When tessellation is used, API VS runs on HW LS, API TCS runs on HW HS.
+    * These two HW stages are merged on GFX9+.
+    */
+
+   bool merged_shaders = chip_class >= GFX9;
+   unsigned ls_workgroup_size = tess_num_patches * tess_patch_in_vtx;
+   unsigned hs_workgroup_size = tess_num_patches * tess_patch_out_vtx;
+
+   if (merged_shaders)
+      return MAX2(ls_workgroup_size, hs_workgroup_size);
+   else if (stage == MESA_SHADER_VERTEX)
+      return ls_workgroup_size;
+   else if (stage == MESA_SHADER_TESS_CTRL)
+      return hs_workgroup_size;
+   else
+      unreachable("invalid LSHS shader stage");
+}
+
+unsigned ac_compute_esgs_workgroup_size(enum chip_class chip_class, unsigned wave_size,
+                                        unsigned es_verts, unsigned gs_inst_prims)
+{
+   /* ESGS may operate in workgroups if on-chip GS (LDS rings) are enabled.
+    *
+    * GFX6: Not possible in the HW.
+    * GFX7-8 (unmerged): possible in the HW, but not implemented in Mesa.
+    * GFX9+ (merged): implemented in Mesa.
+    */
+
+   if (chip_class <= GFX8)
+      return wave_size;
+
+   unsigned workgroup_size = MAX2(es_verts, gs_inst_prims);
+   return CLAMP(workgroup_size, 1, 256);
+}
+
+unsigned ac_compute_ngg_workgroup_size(unsigned es_verts, unsigned gs_inst_prims,
+                                       unsigned max_vtx_out, unsigned prim_amp_factor)
+{
+   /* NGG always operates in workgroups.
+    *
+    * For API VS/TES/GS:
+    * - 1 invocation per input vertex
+    * - 1 invocation per input primitive
+    *
+    * The same invocation can process both an input vertex and primitive,
+    * however 1 invocation can only output up to 1 vertex and 1 primitive.
+    */
+
+   unsigned max_vtx_in = es_verts < 256 ? es_verts : 3 * gs_inst_prims;
+   unsigned max_prim_in = gs_inst_prims;
+   unsigned max_prim_out = gs_inst_prims * prim_amp_factor;
+   unsigned workgroup_size = MAX4(max_vtx_in, max_vtx_out, max_prim_in, max_prim_out);
+
+   return CLAMP(workgroup_size, 1, 256);
+}
+
+void ac_set_reg_cu_en(void *cs, unsigned reg_offset, uint32_t value, uint32_t clear_mask,
+                      unsigned value_shift, const struct radeon_info *info,
+                      void set_sh_reg(void*, unsigned, uint32_t))
+{
+   /* Register field position and mask. */
+   uint32_t cu_en_mask = ~clear_mask;
+   unsigned cu_en_shift = ffs(cu_en_mask) - 1;
+   /* The value being set. */
+   uint32_t cu_en = (value & cu_en_mask) >> cu_en_shift;
+
+   /* AND the field by spi_cu_en. */
+   uint32_t spi_cu_en = info->spi_cu_en >> value_shift;
+   uint32_t new_value = (value & ~cu_en_mask) |
+                        (((cu_en & spi_cu_en) << cu_en_shift) & cu_en_mask);
+
+   set_sh_reg(cs, reg_offset, new_value);
 }

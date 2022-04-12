@@ -33,7 +33,6 @@
  
 
 #include "main/macros.h"
-#include "main/mtypes.h"
 #include "main/glformats.h"
 #include "main/samplerobj.h"
 #include "main/teximage.h"
@@ -61,9 +60,12 @@ st_convert_sampler(const struct st_context *st,
                    const struct gl_texture_object *texobj,
                    const struct gl_sampler_object *msamp,
                    float tex_unit_lod_bias,
-                   struct pipe_sampler_state *sampler)
+                   struct pipe_sampler_state *sampler,
+                   bool seamless_cube_map)
 {
    memcpy(sampler, &msamp->Attrib.state, sizeof(*sampler));
+
+   sampler->seamless_cube_map |= seamless_cube_map;
 
    if (texobj->_IsIntegerFormat && st->ctx->Const.ForceIntegerTexNearest) {
       sampler->min_img_filter = PIPE_TEX_FILTER_NEAREST;
@@ -98,7 +100,7 @@ st_convert_sampler(const struct st_context *st,
          texBaseFormat = GL_STENCIL_INDEX;
 
       if (st->apply_texture_swizzle_to_border_color) {
-         const struct st_texture_object *stobj = st_texture_object_const(texobj);
+         const struct gl_texture_object *stobj = st_texture_object_const(texobj);
          /* XXX: clean that up to not use the sampler view at all */
          const struct st_sampler_view *sv = st_texture_get_current_sampler_view(st, stobj);
 
@@ -156,9 +158,7 @@ st_convert_sampler_from_unit(const struct st_context *st,
    msamp = _mesa_get_samplerobj(ctx, texUnit);
 
    st_convert_sampler(st, texobj, msamp, ctx->Texture.Unit[texUnit].LodBiasQuantized,
-                      sampler);
-
-   sampler->seamless_cube_map |= ctx->Texture.CubeMapSeamless;
+                      sampler, ctx->Texture.CubeMapSeamless);
 }
 
 
@@ -218,7 +218,7 @@ update_shader_samplers(struct st_context *st,
    while (unlikely(external_samplers_used)) {
       GLuint unit = u_bit_scan(&external_samplers_used);
       GLuint extra = 0;
-      struct st_texture_object *stObj =
+      struct gl_texture_object *stObj =
             st_get_texture_object(st->ctx, prog, unit);
       struct pipe_sampler_state *sampler = samplers + unit;
 

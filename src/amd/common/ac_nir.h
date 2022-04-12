@@ -35,6 +35,19 @@
 extern "C" {
 #endif
 
+enum
+{
+   /* SPI_PS_INPUT_CNTL_i.OFFSET[0:4] */
+   AC_EXP_PARAM_OFFSET_0 = 0,
+   AC_EXP_PARAM_OFFSET_31 = 31,
+   /* SPI_PS_INPUT_CNTL_i.DEFAULT_VAL[0:1] */
+   AC_EXP_PARAM_DEFAULT_VAL_0000 = 64,
+   AC_EXP_PARAM_DEFAULT_VAL_0001,
+   AC_EXP_PARAM_DEFAULT_VAL_1110,
+   AC_EXP_PARAM_DEFAULT_VAL_1111,
+   AC_EXP_PARAM_UNDEFINED = 255, /* deprecated, use AC_EXP_PARAM_DEFAULT_VAL_0000 instead */
+};
+
 /* Forward declaration of nir_builder so we don't have to include nir_builder.h here */
 struct nir_builder;
 typedef struct nir_builder nir_builder;
@@ -91,26 +104,19 @@ bool
 ac_nir_lower_indirect_derefs(nir_shader *shader,
                              enum chip_class chip_class);
 
-typedef struct
-{
-   unsigned lds_bytes_if_culling_off;
-   bool can_cull;
-   bool passthrough;
-   bool early_prim_export;
-   uint64_t nggc_inputs_read_by_pos;
-   uint64_t nggc_inputs_read_by_others;
-} ac_nir_ngg_config;
-
-ac_nir_ngg_config
+void
 ac_nir_lower_ngg_nogs(nir_shader *shader,
                       unsigned max_num_es_vertices,
                       unsigned num_vertices_per_primitive,
                       unsigned max_workgroup_size,
                       unsigned wave_size,
-                      bool consider_culling,
-                      bool consider_passthrough,
+                      bool can_cull,
+                      bool early_prim_export,
+                      bool passthrough,
                       bool export_prim_id,
-                      bool provoking_vtx_last);
+                      bool provoking_vtx_last,
+                      bool use_edgeflags,
+                      uint32_t instance_rate_inputs);
 
 void
 ac_nir_lower_ngg_gs(nir_shader *shader,
@@ -120,6 +126,10 @@ ac_nir_lower_ngg_gs(nir_shader *shader,
                     unsigned gs_out_vtx_bytes,
                     unsigned gs_total_out_vtx_bytes,
                     bool provoking_vtx_last);
+
+void
+ac_nir_lower_ngg_ms(nir_shader *shader,
+                    unsigned wave_size);
 
 nir_ssa_def *
 ac_nir_cull_triangle(nir_builder *b,

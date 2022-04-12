@@ -24,11 +24,16 @@
 
 #include "aco_ir.h"
 
+#ifdef LLVM_AVAILABLE
+#if defined(_MSC_VER) && defined(restrict)
+#undef restrict
+#endif
 #include "llvm/ac_llvm_util.h"
 
 #include "llvm-c/Disassembler.h"
 #include <llvm/ADT/StringRef.h>
 #include <llvm/MC/MCDisassembler/MCDisassembler.h>
+#endif
 
 #include <array>
 #include <iomanip>
@@ -37,47 +42,156 @@
 namespace aco {
 namespace {
 
-/* LLVM disassembler only supports GFX8+, try to disassemble with CLRXdisasm
- * for GFX6-GFX7 if found on the system, this is better than nothing.
+std::vector<bool>
+get_referenced_blocks(Program* program)
+{
+   std::vector<bool> referenced_blocks(program->blocks.size());
+   referenced_blocks[0] = true;
+   for (Block& block : program->blocks) {
+      for (unsigned succ : block.linear_succs)
+         referenced_blocks[succ] = true;
+   }
+   return referenced_blocks;
+}
+
+void
+print_block_markers(FILE* output, Program* program, const std::vector<bool>& referenced_blocks,
+                    unsigned* next_block, unsigned pos)
+{
+   while (*next_block < program->blocks.size() && pos == program->blocks[*next_block].offset) {
+      if (referenced_blocks[*next_block])
+         fprintf(output, "BB%u:\n", *next_block);
+      (*next_block)++;
+   }
+}
+
+void
+print_instr(FILE* output, const std::vector<uint32_t>& binary, char* instr, unsigned size,
+            unsigned pos)
+{
+   fprintf(output, "%-60s ;", instr);
+
+   for (unsigned i = 0; i < size; i++)
+      fprintf(output, " %.8x", binary[pos + i]);
+   fputc('\n', output);
+}
+
+void
+print_constant_data(FILE* output, Program* program)
+{
+   if (program->constant_data.empty())
+      return;
+
+   fputs("\n/* constant data */\n", output);
+   for (unsigned i = 0; i < program->constant_data.size(); i += 32) {
+      fprintf(output, "[%.6u]", i);
+      unsigned line_size = std::min<size_t>(program->constant_data.size() - i, 32);
+      for (unsigned j = 0; j < line_size; j += 4) {
+         unsigned size = std::min<size_t>(program->constant_data.size() - (i + j), 4);
+         uint32_t v = 0;
+         memcpy(&v, &program->constant_data[i + j], size);
+         fprintf(output, " %.8x", v);
+      }
+      fputc('\n', output);
+   }
+}
+
+/**
+ * Determines the GPU type to use for CLRXdisasm
  */
+const char*
+to_clrx_device_name(chip_class cc, radeon_family family)
+{
+   switch (cc) {
+   case GFX6:
+      switch (family) {
+      case CHIP_TAHITI: return "tahiti";
+      case CHIP_PITCAIRN: return "pitcairn";
+      case CHIP_VERDE: return "capeverde";
+      case CHIP_OLAND: return "oland";
+      case CHIP_HAINAN: return "hainan";
+      default: return nullptr;
+      }
+   case GFX7:
+      switch (family) {
+      case CHIP_BONAIRE: return "bonaire";
+      case CHIP_KAVERI: return "gfx700";
+      case CHIP_HAWAII: return "hawaii";
+      default: return nullptr;
+      }
+   case GFX8:
+      switch (family) {
+      case CHIP_TONGA: return "tonga";
+      case CHIP_ICELAND: return "iceland";
+      case CHIP_CARRIZO: return "carrizo";
+      case CHIP_FIJI: return "fiji";
+      case CHIP_STONEY: return "stoney";
+      case CHIP_POLARIS10: return "polaris10";
+      case CHIP_POLARIS11: return "polaris11";
+      case CHIP_POLARIS12: return "polaris12";
+      case CHIP_VEGAM: return "polaris11";
+      default: return nullptr;
+      }
+   case GFX9:
+      switch (family) {
+      case CHIP_VEGA10: return "vega10";
+      case CHIP_VEGA12: return "vega12";
+      case CHIP_VEGA20: return "vega20";
+      case CHIP_RAVEN: return "raven";
+      default: return nullptr;
+      }
+   case GFX10:
+      switch (family) {
+      case CHIP_NAVI10: return "gfx1010";
+      case CHIP_NAVI12: return "gfx1011";
+      default: return nullptr;
+      }
+   case GFX10_3:
+      return nullptr;
+   default: unreachable("Invalid chip class!"); return nullptr;
+   }
+}
+
 bool
-print_asm_gfx6_gfx7(Program* program, std::vector<uint32_t>& binary, FILE* output)
+get_branch_target(char** output, Program* program, const std::vector<bool>& referenced_blocks,
+                  char** line_start)
+{
+   unsigned pos;
+   if (sscanf(*line_start, ".L%d_0", &pos) != 1)
+      return false;
+   pos /= 4;
+   *line_start = strchr(*line_start, '_') + 2;
+
+   for (Block& block : program->blocks) {
+      if (referenced_blocks[block.index] && block.offset == pos) {
+         *output += sprintf(*output, "BB%u", block.index);
+         return true;
+      }
+   }
+   return false;
+}
+
+bool
+print_asm_clrx(Program* program, std::vector<uint32_t>& binary, unsigned exec_size, FILE* output)
 {
 #ifdef _WIN32
    return true;
 #else
    char path[] = "/tmp/fileXXXXXX";
    char line[2048], command[128];
-   const char* gpu_type;
    FILE* p;
    int fd;
+
+   const char* gpu_type = to_clrx_device_name(program->chip_class, program->family);
 
    /* Dump the binary into a temporary file. */
    fd = mkstemp(path);
    if (fd < 0)
       return true;
 
-   for (uint32_t w : binary) {
-      if (write(fd, &w, sizeof(w)) == -1)
+   for (unsigned i = 0; i < exec_size; i++) {
+      if (write(fd, &binary[i], 4) == -1)
          goto fail;
-   }
-
-   /* Determine the GPU type for CLRXdisasm. Use the family for GFX6 chips
-    * because it doesn't allow to use gfx600 directly.
-    */
-   switch (program->chip_class) {
-   case GFX6:
-      switch (program->family) {
-      case CHIP_TAHITI: gpu_type = "tahiti"; break;
-      case CHIP_PITCAIRN: gpu_type = "pitcairn"; break;
-      case CHIP_VERDE: gpu_type = "capeverde"; break;
-      case CHIP_OLAND: gpu_type = "oland"; break;
-      case CHIP_HAINAN: gpu_type = "hainan"; break;
-      default: unreachable("Invalid GFX6 family!");
-      }
-      break;
-   case GFX7: gpu_type = "gfx700"; break;
-   default: unreachable("Invalid chip class!");
    }
 
    sprintf(command, "clrxdisasm --gpuType=%s -r %s", gpu_type, path);
@@ -90,11 +204,57 @@ print_asm_gfx6_gfx7(Program* program, std::vector<uint32_t>& binary, FILE* outpu
          goto fail;
       }
 
+      std::vector<bool> referenced_blocks = get_referenced_blocks(program);
+      unsigned next_block = 0;
+
+      char prev_instr[2048];
+      unsigned prev_pos = 0;
       do {
-         fputs(line, output);
+         char* line_start = line;
+         if (strncmp(line_start, "/*", 2))
+            continue;
+
+         unsigned pos;
+         if (sscanf(line_start, "/*%x*/", &pos) != 1)
+            continue;
+         pos /= 4u; /* get the dword position */
+
+         while (strncmp(line_start, "*/", 2))
+            line_start++;
+         line_start += 2;
+
+         while (line_start[0] == ' ')
+            line_start++;
+         *strchr(line_start, '\n') = 0;
+
+         if (*line_start == 0)
+            continue; /* not an instruction, only a comment */
+
+         if (pos != prev_pos) {
+            /* Print the previous instruction, now that we know the encoding size. */
+            print_instr(output, binary, prev_instr, pos - prev_pos, prev_pos);
+            prev_pos = pos;
+         }
+
+         print_block_markers(output, program, referenced_blocks, &next_block, pos);
+
+         char* dest = prev_instr;
+         *(dest++) = '\t';
+         while (*line_start) {
+            if (!strncmp(line_start, ".L", 2) &&
+                get_branch_target(&dest, program, referenced_blocks, &line_start))
+               continue;
+            *(dest++) = *(line_start++);
+         }
+         *(dest++) = 0;
       } while (fgets(line, sizeof(line), p));
 
+      if (prev_pos != exec_size)
+         print_instr(output, binary, prev_instr, exec_size - prev_pos, prev_pos);
+
       pclose(p);
+
+      print_constant_data(output, program);
    }
 
    return false;
@@ -106,16 +266,11 @@ fail:
 #endif
 }
 
+#ifdef LLVM_AVAILABLE
 std::pair<bool, size_t>
 disasm_instr(chip_class chip, LLVMDisasmContextRef disasm, uint32_t* binary, unsigned exec_size,
              size_t pos, char* outline, unsigned outline_size)
 {
-   /* mask out src2 on v_writelane_b32 */
-   if (((chip == GFX8 || chip == GFX9) && (binary[pos] & 0xffff8000) == 0xd28a0000) ||
-       (chip >= GFX10 && (binary[pos] & 0xffff8000) == 0xd7610000)) {
-      binary[pos + 1] = binary[pos + 1] & 0xF803FFFF;
-   }
-
    size_t l =
       LLVMDisasmInstruction(disasm, (uint8_t*)&binary[pos], (exec_size - pos) * sizeof(uint32_t),
                             pos * 4, outline, outline_size);
@@ -152,23 +307,11 @@ disasm_instr(chip_class chip, LLVMDisasmContextRef disasm, uint32_t* binary, uns
 
    return std::make_pair(invalid, size);
 }
-} /* end namespace */
 
 bool
-print_asm(Program* program, std::vector<uint32_t>& binary, unsigned exec_size, FILE* output)
+print_asm_llvm(Program* program, std::vector<uint32_t>& binary, unsigned exec_size, FILE* output)
 {
-   if (program->chip_class <= GFX7) {
-      /* Do not abort if clrxdisasm isn't found. */
-      print_asm_gfx6_gfx7(program, binary, output);
-      return false;
-   }
-
-   std::vector<bool> referenced_blocks(program->blocks.size());
-   referenced_blocks[0] = true;
-   for (Block& block : program->blocks) {
-      for (unsigned succ : block.linear_succs)
-         referenced_blocks[succ] = true;
-   }
+   std::vector<bool> referenced_blocks = get_referenced_blocks(program);
 
    std::vector<llvm::SymbolInfoTy> symbols;
    std::vector<std::array<char, 16>> block_names;
@@ -213,22 +356,14 @@ print_asm(Program* program, std::vector<uint32_t>& binary, unsigned exec_size, F
          repeat_count = 0;
       }
 
-      while (next_block < program->blocks.size() && pos == program->blocks[next_block].offset) {
-         if (referenced_blocks[next_block])
-            fprintf(output, "BB%u:\n", next_block);
-         next_block++;
-      }
+      print_block_markers(output, program, referenced_blocks, &next_block, pos);
 
       char outline[1024];
       std::pair<bool, size_t> res = disasm_instr(program->chip_class, disasm, binary.data(),
                                                  exec_size, pos, outline, sizeof(outline));
       invalid |= res.first;
 
-      fprintf(output, "%-60s ;", outline);
-
-      for (unsigned i = 0; i < res.second; i++)
-         fprintf(output, " %.8x", binary[pos + i]);
-      fputc('\n', output);
+      print_instr(output, binary, outline, res.second, pos);
 
       prev_size = res.second;
       prev_pos = pos;
@@ -238,22 +373,44 @@ print_asm(Program* program, std::vector<uint32_t>& binary, unsigned exec_size, F
 
    LLVMDisasmDispose(disasm);
 
-   if (program->constant_data.size()) {
-      fputs("\n/* constant data */\n", output);
-      for (unsigned i = 0; i < program->constant_data.size(); i += 32) {
-         fprintf(output, "[%.6u]", i);
-         unsigned line_size = std::min<size_t>(program->constant_data.size() - i, 32);
-         for (unsigned j = 0; j < line_size; j += 4) {
-            unsigned size = std::min<size_t>(program->constant_data.size() - (i + j), 4);
-            uint32_t v = 0;
-            memcpy(&v, &program->constant_data[i + j], size);
-            fprintf(output, " %.8x", v);
-         }
-         fputc('\n', output);
-      }
-   }
+   print_constant_data(output, program);
 
    return invalid;
+}
+#endif /* LLVM_AVAILABLE */
+
+} /* end namespace */
+
+bool
+check_print_asm_support(Program* program)
+{
+#ifdef LLVM_AVAILABLE
+   if (program->chip_class >= GFX8) {
+      /* LLVM disassembler only supports GFX8+ */
+      return true;
+   }
+#endif
+
+#ifndef _WIN32
+   /* Check if CLRX disassembler binary is available and can disassemble the program */
+   return to_clrx_device_name(program->chip_class, program->family) &&
+          system("clrxdisasm --version") == 0;
+#else
+   return false;
+#endif
+}
+
+/* Returns true on failure */
+bool
+print_asm(Program* program, std::vector<uint32_t>& binary, unsigned exec_size, FILE* output)
+{
+#ifdef LLVM_AVAILABLE
+   if (program->chip_class >= GFX8) {
+      return print_asm_llvm(program, binary, exec_size, output);
+   }
+#endif
+
+   return print_asm_clrx(program, binary, exec_size, output);
 }
 
 } // namespace aco

@@ -185,8 +185,6 @@ struct crocus_screen {
    /** PCI ID for our GPU device */
    int pci_id;
 
-   bool no_hw;
-
    struct crocus_vtable vtbl;
 
    /** Global program_string_id counter (see get_program_string_id()) */
@@ -203,16 +201,14 @@ struct crocus_screen {
       bool always_flush_cache;
    } driconf;
 
-   unsigned subslice_total;
-
    uint64_t aperture_bytes;
+   uint64_t aperture_threshold;
 
    struct intel_device_info devinfo;
    struct isl_device isl_dev;
    struct crocus_bufmgr *bufmgr;
    struct brw_compiler *compiler;
    struct crocus_monitor_config *monitor_cfg;
-   bool has_swizzling;
 
    const struct intel_l3_config *l3_config_3d;
    const struct intel_l3_config *l3_config_cs;

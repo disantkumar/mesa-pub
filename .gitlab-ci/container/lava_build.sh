@@ -27,19 +27,22 @@ if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
     KERNEL_ARCH="arm64"
     DEFCONFIG="arch/arm64/configs/defconfig"
     DEVICE_TREES="arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb"
-    DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-gxl-s905x-libretech-cc.dtb"
+    DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-gxl-s805x-libretech-ac.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/allwinner/sun50i-h6-pine-h64.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-gxm-khadas-vim2.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8016-sbc.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/qcom/apq8096-db820c.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/amlogic/meson-g12b-a311d-khadas-vim3.dtb"
     DEVICE_TREES+=" arch/arm64/boot/dts/mediatek/mt8183-kukui-jacuzzi-juniper-sku16.dtb"
+    DEVICE_TREES+=" arch/arm64/boot/dts/qcom/sc7180-trogdor-lazor-limozeen-nots.dtb"
     KERNEL_IMAGE_NAME="Image"
 elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     GCC_ARCH="arm-linux-gnueabihf"
     KERNEL_ARCH="arm"
     DEFCONFIG="arch/arm/configs/multi_v7_defconfig"
-    DEVICE_TREES="arch/arm/boot/dts/rk3288-veyron-jaq.dtb arch/arm/boot/dts/sun8i-h3-libretech-all-h3-cc.dtb"
+    DEVICE_TREES="arch/arm/boot/dts/rk3288-veyron-jaq.dtb"
+    DEVICE_TREES+=" arch/arm/boot/dts/sun8i-h3-libretech-all-h3-cc.dtb"
+    DEVICE_TREES+=" arch/arm/boot/dts/imx6q-cubox-i.dtb"
     KERNEL_IMAGE_NAME="zImage"
     . .gitlab-ci/container/create-cross-file.sh armhf
 else
@@ -48,6 +51,7 @@ else
     DEFCONFIG="arch/x86/configs/x86_64_defconfig"
     DEVICE_TREES=""
     KERNEL_IMAGE_NAME="bzImage"
+    ARCH_PACKAGES="libva-dev"
 fi
 
 # Determine if we're in a cross build.
@@ -69,6 +73,7 @@ fi
 
 apt-get update
 apt-get install -y --no-remove \
+                   ${ARCH_PACKAGES} \
                    automake \
                    bc \
                    cmake \
@@ -77,8 +82,12 @@ apt-get install -y --no-remove \
                    glslang-tools \
                    libdrm-dev \
                    libegl1-mesa-dev \
+                   libfontconfig-dev \
                    libgbm-dev \
+                   libgl-dev \
                    libgles2-mesa-dev \
+                   libglu1-mesa-dev \
+                   libglx-dev \
                    libpng-dev \
                    libssl-dev \
                    libudev-dev \
@@ -88,11 +97,14 @@ apt-get install -y --no-remove \
                    libx11-xcb-dev \
                    libxcb-dri2-0-dev \
                    libxkbcommon-dev \
+                   ninja-build \
                    patch \
+                   python-is-python3 \
                    python3-distutils \
                    python3-mako \
                    python3-numpy \
                    python3-serial \
+                   unzip \
                    wget
 
 
@@ -127,8 +139,7 @@ rm -rf /apitrace
 ############### Build dEQP runner
 . .gitlab-ci/container/build-deqp-runner.sh
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin
-mv /usr/local/bin/deqp-runner /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/.
-mv /usr/local/bin/piglit-runner /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/.
+mv /usr/local/bin/*-runner /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/.
 
 
 ############### Build dEQP
@@ -137,10 +148,22 @@ DEQP_TARGET=surfaceless . .gitlab-ci/container/build-deqp.sh
 mv /deqp /lava-files/rootfs-${DEBIAN_ARCH}/.
 
 
+############### Build SKQP
+if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
+    SKQP_ARCH="arm64" . .gitlab-ci/container/build-skqp.sh
+    mv /skqp /lava-files/rootfs-${DEBIAN_ARCH}/.
+fi
+
+
 ############### Build piglit
 PIGLIT_OPTS="-DPIGLIT_BUILD_DMA_BUF_TESTS=ON" . .gitlab-ci/container/build-piglit.sh
 mv /piglit /lava-files/rootfs-${DEBIAN_ARCH}/.
 
+############### Build libva tests
+if [[ "$DEBIAN_ARCH" = "amd64" ]]; then
+    . .gitlab-ci/container/build-va-tools.sh
+    mv /va/bin/* /lava-files/rootfs-${DEBIAN_ARCH}/usr/bin/
+fi
 
 ############### Build libdrm
 EXTRA_MESON_ARGS+=" -D prefix=/libdrm"
@@ -151,6 +174,7 @@ EXTRA_MESON_ARGS+=" -D prefix=/libdrm"
 
 ############### Delete rust, since the tests won't be compiling anything.
 rm -rf /root/.cargo
+rm -rf /root/.rustup
 
 ############### Create rootfs
 set +e
@@ -177,6 +201,8 @@ rm /lava-files/rootfs-${DEBIAN_ARCH}/create-rootfs.sh
 # created.
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH
 find /libdrm/ -name lib\*\.so\* | xargs cp -t /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH/.
+mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/libdrm/
+cp -Rp /libdrm/share /lava-files/rootfs-${DEBIAN_ARCH}/libdrm/share
 rm -rf /libdrm
 
 
@@ -194,7 +220,7 @@ popd
 . .gitlab-ci/container/container_post_build.sh
 
 ############### Upload the files!
-ci-fairy minio login $CI_JOB_JWT
+ci-fairy minio login --token-file "${CI_JOB_JWT_FILE}"
 FILES_TO_UPLOAD="lava-rootfs.tgz \
                  $KERNEL_IMAGE_NAME"
 

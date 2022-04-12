@@ -51,7 +51,7 @@ void ir3_assert_handler(const char *expr, const char *file, int line,
       }                                                                        \
    } while (0)
 /* size of largest OPC field of all the instruction categories: */
-#define NOPC_BITS 6
+#define NOPC_BITS 7
 
 #define _OPC(cat, opc) (((cat) << NOPC_BITS) | opc)
 
@@ -80,6 +80,7 @@ typedef enum {
    OPC_DBG             = _OPC(0, 22),
    OPC_SHPS            = _OPC(0, 23),   /* shader prologue start */
    OPC_SHPE            = _OPC(0, 24),   /* shader prologue end */
+   OPC_GETLAST         = _OPC(0, 25),
 
    OPC_PREDT           = _OPC(0, 29),   /* predicated true */
    OPC_PREDF           = _OPC(0, 30),   /* predicated false */
@@ -178,6 +179,7 @@ typedef enum {
    OPC_CBITS_B         = _OPC(2, 61),
    OPC_SHB             = _OPC(2, 62),
    OPC_MSAD            = _OPC(2, 63),
+   OPC_FLAT_B          = _OPC(2, 64),
 
    /* category 3: */
    OPC_MAD_U16         = _OPC(3, 0),
@@ -196,7 +198,15 @@ typedef enum {
    OPC_SEL_F32         = _OPC(3, 13),
    OPC_SAD_S16         = _OPC(3, 14),
    OPC_SAD_S32         = _OPC(3, 15),
-   OPC_SHLG_B16        = _OPC(3, 16),
+   OPC_SHRM            = _OPC(3, 16),
+   OPC_SHLM            = _OPC(3, 17),
+   OPC_SHRG            = _OPC(3, 18),
+   OPC_SHLG            = _OPC(3, 19),
+   OPC_ANDG            = _OPC(3, 20),
+   OPC_DP2ACC          = _OPC(3, 21),
+   OPC_DP4ACC          = _OPC(3, 22),
+   OPC_WMM             = _OPC(3, 23),
+   OPC_WMM_ACCU        = _OPC(3, 24),
 
    /* category 4: */
    OPC_RCP             = _OPC(4, 0),
@@ -244,9 +254,14 @@ typedef enum {
    OPC_DSYPP_1         = _OPC(5, 25),
    OPC_RGETPOS         = _OPC(5, 26),
    OPC_RGETINFO        = _OPC(5, 27),
+   OPC_BRCST_ACTIVE    = _OPC(5, 28),
+   OPC_QUAD_SHUFFLE_BRCST  = _OPC(5, 29),
+   OPC_QUAD_SHUFFLE_HORIZ  = _OPC(5, 30),
+   OPC_QUAD_SHUFFLE_VERT   = _OPC(5, 31),
+   OPC_QUAD_SHUFFLE_DIAG   = _OPC(5, 32),
    /* cat5 meta instructions, placed above the cat5 opc field's size */
-   OPC_DSXPP_MACRO     = _OPC(5, 32),
-   OPC_DSYPP_MACRO     = _OPC(5, 33),
+   OPC_DSXPP_MACRO     = _OPC(5, 35),
+   OPC_DSYPP_MACRO     = _OPC(5, 36),
 
    /* category 6: */
    OPC_LDG             = _OPC(6, 0),        /* load-global */
@@ -285,6 +300,7 @@ typedef enum {
    OPC_ENDLS           = _OPC(6, 35), /* ??? */
    OPC_GETSPID         = _OPC(6, 36), /* SP ID */
    OPC_GETWID          = _OPC(6, 37), /* wavefront ID */
+   OPC_GETFIBERID      = _OPC(6, 38), /* fiber ID */
 
    /* Logical opcodes for things that differ in a6xx+ */
    OPC_STC             = _OPC(6, 40),
@@ -305,8 +321,35 @@ typedef enum {
    OPC_ATOMIC_B_OR       = _OPC(6, 53),
    OPC_ATOMIC_B_XOR      = _OPC(6, 54),
 
-   OPC_LDG_A           = _OPC(6, 55),
-   OPC_STG_A           = _OPC(6, 56),
+   OPC_ATOMIC_S_ADD      = _OPC(6, 55),
+   OPC_ATOMIC_S_SUB      = _OPC(6, 56),
+   OPC_ATOMIC_S_XCHG     = _OPC(6, 57),
+   OPC_ATOMIC_S_INC      = _OPC(6, 58),
+   OPC_ATOMIC_S_DEC      = _OPC(6, 59),
+   OPC_ATOMIC_S_CMPXCHG  = _OPC(6, 60),
+   OPC_ATOMIC_S_MIN      = _OPC(6, 61),
+   OPC_ATOMIC_S_MAX      = _OPC(6, 62),
+   OPC_ATOMIC_S_AND      = _OPC(6, 63),
+   OPC_ATOMIC_S_OR       = _OPC(6, 64),
+   OPC_ATOMIC_S_XOR      = _OPC(6, 65),
+
+   OPC_ATOMIC_G_ADD      = _OPC(6, 66),
+   OPC_ATOMIC_G_SUB      = _OPC(6, 67),
+   OPC_ATOMIC_G_XCHG     = _OPC(6, 68),
+   OPC_ATOMIC_G_INC      = _OPC(6, 69),
+   OPC_ATOMIC_G_DEC      = _OPC(6, 70),
+   OPC_ATOMIC_G_CMPXCHG  = _OPC(6, 71),
+   OPC_ATOMIC_G_MIN      = _OPC(6, 72),
+   OPC_ATOMIC_G_MAX      = _OPC(6, 73),
+   OPC_ATOMIC_G_AND      = _OPC(6, 74),
+   OPC_ATOMIC_G_OR       = _OPC(6, 75),
+   OPC_ATOMIC_G_XOR      = _OPC(6, 76),
+
+   OPC_LDG_A           = _OPC(6, 77),
+   OPC_STG_A           = _OPC(6, 78),
+
+   OPC_SPILL_MACRO     = _OPC(6, 79),
+   OPC_RELOAD_MACRO    = _OPC(6, 80),
 
    /* category 7: */
    OPC_BAR             = _OPC(7, 0),
@@ -379,6 +422,32 @@ type_size(type_t type)
    }
 }
 
+static inline type_t
+type_uint_size(unsigned bit_size)
+{
+   switch (bit_size) {
+   case 8:  return TYPE_U8;
+   case 1:  /* 1b bools are treated as normal half-regs */
+   case 16: return TYPE_U16;
+   case 32: return TYPE_U32;
+   default:
+      ir3_assert(0); /* invalid size */
+      return 0;
+   }
+}
+
+static inline type_t
+type_float_size(unsigned bit_size)
+{
+   switch (bit_size) {
+   case 16: return TYPE_F16;
+   case 32: return TYPE_F32;
+   default:
+      ir3_assert(0); /* invalid size */
+      return 0;
+   }
+}
+
 static inline int
 type_float(type_t type)
 {
@@ -404,26 +473,6 @@ typedef enum {
    ROUND_NEG_INF = 3,
 } round_t;
 
-typedef union PACKED {
-   /* normal gpr or const src register: */
-   struct PACKED {
-      uint32_t comp : 2;
-      uint32_t num  : 10;
-   };
-   /* for immediate val: */
-   int32_t iim_val : 11;
-   /* to make compiler happy: */
-   uint32_t dummy32;
-   uint32_t dummy10 : 10;
-   int32_t idummy10 : 10;
-   uint32_t dummy11 : 11;
-   uint32_t dummy12 : 12;
-   uint32_t dummy13 : 13;
-   uint32_t dummy8  : 8;
-   int32_t idummy13 : 13;
-   int32_t idummy8  : 8;
-} reg_t;
-
 /* comp:
  *   0 - x
  *   1 - y
@@ -444,12 +493,6 @@ regid(int num, int comp)
 #define REG_A0 61 /* address register */
 #define REG_P0 62 /* predicate register */
 
-static inline int
-reg_special(reg_t reg)
-{
-   return (reg.num == REG_A0) || (reg.num == REG_P0);
-}
-
 typedef enum {
    BRANCH_PLAIN = 0, /* br */
    BRANCH_OR = 1,    /* brao */
@@ -460,280 +503,17 @@ typedef enum {
    BRANCH_X = 6,     /* brax ??? */
 } brtype_t;
 
-typedef struct PACKED {
-   /* dword0: */
-   union PACKED {
-      struct PACKED {
-         int16_t immed   : 16;
-         uint32_t dummy1 : 16;
-      } a3xx;
-      struct PACKED {
-         int32_t immed   : 20;
-         uint32_t dummy1 : 12;
-      } a4xx;
-      struct PACKED {
-         int32_t immed : 32;
-      } a5xx;
-   };
-
-   /* dword1: */
-   uint32_t idx     : 5; /* brac.N index */
-   uint32_t brtype  : 3; /* branch type, see brtype_t */
-   uint32_t repeat  : 3;
-   uint32_t dummy3  : 1;
-   uint32_t ss      : 1;
-   uint32_t inv2    : 1;
-   uint32_t comp2   : 2;
-   uint32_t eq      : 1;
-   uint32_t opc_hi  : 1; /* at least one bit */
-   uint32_t dummy4  : 2;
-   uint32_t inv1    : 1;
-   uint32_t comp1   : 2; /* component for first src */
-   uint32_t opc     : 4;
-   uint32_t jmp_tgt : 1;
-   uint32_t sync    : 1;
-   uint32_t opc_cat : 3;
-} instr_cat0_t;
-
-typedef struct PACKED {
-   /* dword0: */
-   union PACKED {
-      /* for normal src register: */
-      struct PACKED {
-         uint32_t src : 11;
-         /* at least low bit of pad must be zero or it will
-          * look like a address relative src
-          */
-         uint32_t pad : 21;
-      };
-      /* for address relative: */
-      struct PACKED {
-         int32_t off        : 10;
-         uint32_t src_rel_c : 1;
-         uint32_t src_rel   : 1;
-         uint32_t unknown   : 20;
-      };
-      /* for immediate: */
-      int32_t iim_val;
-      uint32_t uim_val;
-      float fim_val;
-   };
-
-   /* dword1: */
-   uint32_t dst      : 8;
-   uint32_t repeat   : 3;
-   uint32_t src_r    : 1;
-   uint32_t ss       : 1;
-   uint32_t ul       : 1;
-   uint32_t dst_type : 3;
-   uint32_t dst_rel  : 1;
-   uint32_t src_type : 3;
-   uint32_t src_c    : 1;
-   uint32_t src_im   : 1;
-   uint32_t even     : 1;
-   uint32_t pos_inf  : 1;
-   uint32_t opc      : 2;
-   uint32_t jmp_tgt  : 1;
-   uint32_t sync     : 1;
-   uint32_t opc_cat  : 3;
-} instr_cat1_t;
-
-typedef struct PACKED {
-   /* dword0: */
-   union PACKED {
-      struct PACKED {
-         uint32_t src1          : 11;
-         uint32_t must_be_zero1 : 2;
-         uint32_t src1_im       : 1; /* immediate */
-         uint32_t src1_neg      : 1; /* negate */
-         uint32_t src1_abs      : 1; /* absolute value */
-      };
-      struct PACKED {
-         uint32_t src1         : 10;
-         uint32_t src1_c       : 1; /* relative-const */
-         uint32_t src1_rel     : 1; /* relative address */
-         uint32_t must_be_zero : 1;
-         uint32_t dummy        : 3;
-      } rel1;
-      struct PACKED {
-         uint32_t src1   : 12;
-         uint32_t src1_c : 1; /* const */
-         int32_t dummy   : 3;
-      } c1;
-   };
-
-   union PACKED {
-      struct PACKED {
-         uint32_t src2          : 11;
-         uint32_t must_be_zero2 : 2;
-         uint32_t src2_im       : 1; /* immediate */
-         uint32_t src2_neg      : 1; /* negate */
-         uint32_t src2_abs      : 1; /* absolute value */
-      };
-      struct PACKED {
-         uint32_t src2         : 10;
-         uint32_t src2_c       : 1; /* relative-const */
-         uint32_t src2_rel     : 1; /* relative address */
-         uint32_t must_be_zero : 1;
-         uint32_t dummy        : 3;
-      } rel2;
-      struct PACKED {
-         uint32_t src2   : 12;
-         uint32_t src2_c : 1; /* const */
-         uint32_t dummy  : 3;
-      } c2;
-   };
-
-   /* dword1: */
-   uint32_t dst      : 8;
-   uint32_t repeat   : 2;
-   uint32_t sat      : 1;
-   uint32_t src1_r   : 1; /* doubles as nop0 if repeat==0 */
-   uint32_t ss       : 1;
-   uint32_t ul       : 1; /* dunno */
-   uint32_t dst_half : 1; /* or widen/narrow.. ie. dst hrN <-> rN */
-   uint32_t ei       : 1;
-   uint32_t cond     : 3;
-   uint32_t src2_r   : 1; /* doubles as nop1 if repeat==0 */
-   uint32_t full     : 1; /* not half */
-   uint32_t opc      : 6;
-   uint32_t jmp_tgt  : 1;
-   uint32_t sync     : 1;
-   uint32_t opc_cat  : 3;
-} instr_cat2_t;
-
-typedef struct PACKED {
-   /* dword0: */
-   union PACKED {
-      struct PACKED {
-         uint32_t src1          : 11;
-         uint32_t must_be_zero1 : 2;
-         uint32_t src2_c        : 1;
-         uint32_t src1_neg      : 1;
-         uint32_t src2_r        : 1; /* doubles as nop1 if repeat==0 */
-      };
-      struct PACKED {
-         uint32_t src1         : 10;
-         uint32_t src1_c       : 1;
-         uint32_t src1_rel     : 1;
-         uint32_t must_be_zero : 1;
-         uint32_t dummy        : 3;
-      } rel1;
-      struct PACKED {
-         uint32_t src1   : 12;
-         uint32_t src1_c : 1;
-         uint32_t dummy  : 3;
-      } c1;
-   };
-
-   union PACKED {
-      struct PACKED {
-         uint32_t src3          : 11;
-         uint32_t must_be_zero2 : 2;
-         uint32_t src3_r        : 1;
-         uint32_t src2_neg      : 1;
-         uint32_t src3_neg      : 1;
-      };
-      struct PACKED {
-         uint32_t src3         : 10;
-         uint32_t src3_c       : 1;
-         uint32_t src3_rel     : 1;
-         uint32_t must_be_zero : 1;
-         uint32_t dummy        : 3;
-      } rel2;
-      struct PACKED {
-         uint32_t src3   : 12;
-         uint32_t src3_c : 1;
-         uint32_t dummy  : 3;
-      } c2;
-   };
-
-   /* dword1: */
-   uint32_t dst      : 8;
-   uint32_t repeat   : 2;
-   uint32_t sat      : 1;
-   uint32_t src1_r   : 1; /* doubles as nop0 if repeat==0 */
-   uint32_t ss       : 1;
-   uint32_t ul       : 1;
-   uint32_t dst_half : 1; /* or widen/narrow.. ie. dst hrN <-> rN */
-   uint32_t src2     : 8;
-   uint32_t opc      : 4;
-   uint32_t jmp_tgt  : 1;
-   uint32_t sync     : 1;
-   uint32_t opc_cat  : 3;
-} instr_cat3_t;
-
-static inline bool
-instr_cat3_full(instr_cat3_t *cat3)
-{
-   switch (_OPC(3, cat3->opc)) {
-   case OPC_MAD_F16:
-   case OPC_MAD_U16:
-   case OPC_MAD_S16:
-   case OPC_SEL_B16:
-   case OPC_SEL_S16:
-   case OPC_SEL_F16:
-   case OPC_SAD_S16:
-   case OPC_SAD_S32: // really??
-      return false;
-   default:
-      return true;
-   }
-}
-
-typedef struct PACKED {
-   /* dword0: */
-   union PACKED {
-      struct PACKED {
-         uint32_t src           : 11;
-         uint32_t must_be_zero1 : 2;
-         uint32_t src_im        : 1; /* immediate */
-         uint32_t src_neg       : 1; /* negate */
-         uint32_t src_abs       : 1; /* absolute value */
-      };
-      struct PACKED {
-         uint32_t src          : 10;
-         uint32_t src_c        : 1; /* relative-const */
-         uint32_t src_rel      : 1; /* relative address */
-         uint32_t must_be_zero : 1;
-         uint32_t dummy        : 3;
-      } rel;
-      struct PACKED {
-         uint32_t src   : 12;
-         uint32_t src_c : 1; /* const */
-         uint32_t dummy : 3;
-      } c;
-   };
-   uint32_t dummy1 : 16; /* seem to be ignored */
-
-   /* dword1: */
-   uint32_t dst      : 8;
-   uint32_t repeat   : 2;
-   uint32_t sat      : 1;
-   uint32_t src_r    : 1;
-   uint32_t ss       : 1;
-   uint32_t ul       : 1;
-   uint32_t dst_half : 1; /* or widen/narrow.. ie. dst hrN <-> rN */
-   uint32_t dummy2   : 5; /* seem to be ignored */
-   uint32_t full     : 1; /* not half */
-   uint32_t opc      : 6;
-   uint32_t jmp_tgt  : 1;
-   uint32_t sync     : 1;
-   uint32_t opc_cat  : 3;
-} instr_cat4_t;
-
 /* With is_bindless_s2en = 1, this determines whether bindless is enabled and
  * if so, how to get the (base, index) pair for both sampler and texture.
  * There is a single base embedded in the instruction, which is always used
  * for the texture.
  */
 typedef enum {
-   /* Use traditional GL binding model, get texture and sampler index
-    * from src3 which is not presumed to be uniform. This is
-    * backwards-compatible with earlier generations, where this field was
-    * always 0 and nonuniform-indexed sampling always worked.
+   /* Use traditional GL binding model, get texture and sampler index from src3
+    * which is presumed to be uniform on a4xx+ (a3xx doesn't have the other
+    * modes, but does handle non-uniform indexing).
     */
-   CAT5_NONUNIFORM = 0,
+   CAT5_UNIFORM = 0,
 
    /* The sampler base comes from the low 3 bits of a1.x, and the sampler
     * and texture index come from src3 which is presumed to be uniform.
@@ -752,9 +532,9 @@ typedef enum {
    CAT5_BINDLESS_A1_NONUNIFORM = 3,
 
    /* Use traditional GL binding model, get texture and sampler index
-    * from src3 which is presumed to be uniform.
+    * from src3 which is *not* presumed to be uniform.
     */
-   CAT5_UNIFORM = 4,
+   CAT5_NONUNIFORM = 4,
 
    /* The texture and sampler share the same base, and the sampler and
     * texture index come from src3 which is presumed to be uniform.
@@ -772,186 +552,6 @@ typedef enum {
     */
    CAT5_BINDLESS_A1_IMM = 7,
 } cat5_desc_mode_t;
-
-typedef struct PACKED {
-   /* dword0: */
-   union PACKED {
-      /* normal case: */
-      struct PACKED {
-         uint32_t full   : 1; /* not half */
-         uint32_t src1   : 8;
-         uint32_t src2   : 8;
-         uint32_t dummy1 : 4; /* seem to be ignored */
-         uint32_t samp   : 4;
-         uint32_t tex    : 7;
-      } norm;
-      /* s2en case: */
-      struct PACKED {
-         uint32_t full      : 1; /* not half */
-         uint32_t src1      : 8;
-         uint32_t src2      : 8;
-         uint32_t dummy1    : 2;
-         uint32_t base_hi   : 2;
-         uint32_t src3      : 8;
-         uint32_t desc_mode : 3;
-      } s2en_bindless;
-      /* same in either case: */
-      // XXX I think, confirm this
-      struct PACKED {
-         uint32_t full : 1; /* not half */
-         uint32_t src1 : 8;
-         uint32_t src2 : 8;
-         uint32_t pad  : 15;
-      };
-   };
-
-   /* dword1: */
-   uint32_t dst     : 8;
-   uint32_t wrmask  : 4; /* write-mask */
-   uint32_t type    : 3;
-   uint32_t base_lo : 1; /* used with bindless */
-   uint32_t is_3d   : 1;
-
-   uint32_t is_a             : 1;
-   uint32_t is_s             : 1;
-   uint32_t is_s2en_bindless : 1;
-   uint32_t is_o             : 1;
-   uint32_t is_p             : 1;
-
-   uint32_t opc     : 5;
-   uint32_t jmp_tgt : 1;
-   uint32_t sync    : 1;
-   uint32_t opc_cat : 3;
-} instr_cat5_t;
-
-/* dword0 encoding for src_off: [src1 + off], src3: */
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t mustbe1 : 1;
-   int32_t off      : 13; /* src2 */
-   uint32_t src1    : 8;
-   uint32_t src1_im : 1;
-   uint32_t src3_im : 1;
-   uint32_t src3    : 8;
-
-   /* dword1: */
-   uint32_t dword1;
-} instr_cat6a_t;
-
-/* dword0 encoding for !src_off: [src1], src2 */
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t mustbe0 : 1;
-   uint32_t src1    : 8;
-   uint32_t pad     : 5;
-   uint32_t ignore0 : 8;
-   uint32_t src1_im : 1;
-   uint32_t src2_im : 1;
-   uint32_t src2    : 8;
-
-   /* dword1: */
-   uint32_t dword1;
-} instr_cat6b_t;
-
-/* dword1 encoding for dst_off: */
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t dw0_pad1 : 9;
-   int32_t off_high  : 5;
-   uint32_t dw0_pad2 : 18;
-
-   uint32_t off     : 8;
-   uint32_t mustbe1 : 1;
-   uint32_t dst     : 8;
-   uint32_t pad1    : 15;
-} instr_cat6c_t;
-
-/* dword1 encoding for !dst_off: */
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t dword0;
-
-   uint32_t dst     : 8;
-   uint32_t mustbe0 : 1;
-   uint32_t idx     : 8;
-   uint32_t pad0    : 15;
-} instr_cat6d_t;
-
-/* ldgb and atomics..
- *
- * ldgb:      pad0=0, pad3=1
- * atomic .g: pad0=1, pad3=1
- *        .l: pad0=1, pad3=0
- */
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t pad0      : 1;
-   uint32_t src3      : 8;
-   uint32_t d         : 2;
-   uint32_t typed     : 1;
-   uint32_t type_size : 2;
-   uint32_t src1      : 8;
-   uint32_t src1_im   : 1;
-   uint32_t src2_im   : 1;
-   uint32_t src2      : 8;
-
-   /* dword1: */
-   uint32_t dst         : 8;
-   uint32_t mustbe0     : 1;
-   uint32_t src_ssbo    : 8;
-   uint32_t pad2        : 3; // type
-   uint32_t g           : 1;
-   uint32_t src_ssbo_im : 1;
-   uint32_t pad4        : 10; // opc/jmp_tgt/sync/opc_cat
-} instr_cat6ldgb_t;
-
-/* stgb, pad0=0, pad3=2
- */
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t mustbe1   : 1; // ???
-   uint32_t src1      : 8;
-   uint32_t d         : 2;
-   uint32_t typed     : 1;
-   uint32_t type_size : 2;
-   uint32_t pad0      : 9;
-   uint32_t src2_im   : 1;
-   uint32_t src2      : 8;
-
-   /* dword1: */
-   uint32_t src3     : 8;
-   uint32_t src3_im  : 1;
-   uint32_t dst_ssbo : 8;
-   uint32_t pad2     : 3; // type
-   uint32_t pad3     : 2;
-   uint32_t pad4     : 10; // opc/jmp_tgt/sync/opc_cat
-} instr_cat6stgb_t;
-
-typedef union PACKED {
-   instr_cat6a_t a;
-   instr_cat6b_t b;
-   instr_cat6c_t c;
-   instr_cat6d_t d;
-   instr_cat6ldgb_t ldgb;
-   instr_cat6stgb_t stgb;
-   struct PACKED {
-      /* dword0: */
-      uint32_t src_off : 1;
-      uint32_t pad1    : 31;
-
-      /* dword1: */
-      uint32_t pad2    : 8;
-      uint32_t dst_off : 1;
-      uint32_t pad3    : 8;
-      uint32_t type    : 3;
-      uint32_t g       : 1; /* or in some cases it means dst immed */
-      uint32_t pad4    : 1;
-      uint32_t opc     : 5;
-      uint32_t jmp_tgt : 1;
-      uint32_t sync    : 1;
-      uint32_t opc_cat : 3;
-   };
-} instr_cat6_t;
 
 /* Similar to cat5_desc_mode_t, describes how the descriptor is loaded.
  */
@@ -979,130 +579,6 @@ typedef enum {
    CAT6_BINDLESS_NONUNIFORM = 6,
 } cat6_desc_mode_t;
 
-/**
- * For atomic ops (which return a value):
- *
- *    pad1=1, pad3=6, pad5=3
- *    src1    - vecN offset/coords
- *    src2.x  - is actually dest register
- *    src2.y  - is 'data' except for cmpxchg where src2.y is 'compare'
- *              and src2.z is 'data'
- *
- * For stib (which does not return a value):
- *    pad1=0, pad3=6, pad5=2
- *    src1    - vecN offset/coords
- *    src2    - value to store
- *
- * For ldib:
- *    pad1=1, pad3=6, pad5=2
- *    src1    - vecN offset/coords
- *
- * for ldc (load from UBO using descriptor):
- *    pad1=0, pad3=4, pad5=2
- *
- * pad2 and pad5 are only observed to be 0.
- */
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t pad1      : 1;
-   uint32_t base      : 3;
-   uint32_t pad2      : 2;
-   uint32_t desc_mode : 3;
-   uint32_t d         : 2;
-   uint32_t typed     : 1;
-   uint32_t type_size : 2;
-   uint32_t opc       : 6;
-   uint32_t pad3      : 4;
-   uint32_t src1      : 8; /* coordinate/offset */
-
-   /* dword1: */
-   uint32_t src2    : 8; /* or the dst for load instructions */
-   uint32_t pad4    : 1; // mustbe0 ??
-   uint32_t ssbo    : 8; /* ssbo/image binding point */
-   uint32_t type    : 3;
-   uint32_t pad5    : 7;
-   uint32_t jmp_tgt : 1;
-   uint32_t sync    : 1;
-   uint32_t opc_cat : 3;
-} instr_cat6_a6xx_t;
-
-typedef struct PACKED {
-   /* dword0: */
-   uint32_t pad1 : 32;
-
-   /* dword1: */
-   uint32_t pad2    : 12;
-   uint32_t ss      : 1; /* maybe in the encoding, but blob only uses (sy) */
-   uint32_t pad3    : 6;
-   uint32_t w       : 1; /* write */
-   uint32_t r       : 1; /* read */
-   uint32_t l       : 1; /* local */
-   uint32_t g       : 1; /* global */
-   uint32_t opc     : 4; /* presumed, but only a couple known OPCs */
-   uint32_t jmp_tgt : 1; /* (jp) */
-   uint32_t sync    : 1; /* (sy) */
-   uint32_t opc_cat : 3;
-} instr_cat7_t;
-
-typedef union PACKED {
-   instr_cat0_t cat0;
-   instr_cat1_t cat1;
-   instr_cat2_t cat2;
-   instr_cat3_t cat3;
-   instr_cat4_t cat4;
-   instr_cat5_t cat5;
-   instr_cat6_t cat6;
-   instr_cat6_a6xx_t cat6_a6xx;
-   instr_cat7_t cat7;
-   struct PACKED {
-      /* dword0: */
-      uint32_t pad1 : 32;
-
-      /* dword1: */
-      uint32_t pad2 : 12;
-      uint32_t ss   : 1; /* cat1-cat4 (cat0??) and cat7 (?) */
-      uint32_t ul   : 1; /* cat2-cat4 (and cat1 in blob.. which may be bug??) */
-      uint32_t pad3 : 13;
-      uint32_t jmp_tgt : 1;
-      uint32_t sync    : 1;
-      uint32_t opc_cat : 3;
-   };
-} instr_t;
-
-static inline uint32_t
-instr_repeat(instr_t *instr)
-{
-   switch (instr->opc_cat) {
-   case 0:
-      return instr->cat0.repeat;
-   case 1:
-      return instr->cat1.repeat;
-   case 2:
-      return instr->cat2.repeat;
-   case 3:
-      return instr->cat3.repeat;
-   case 4:
-      return instr->cat4.repeat;
-   default:
-      return 0;
-   }
-}
-
-static inline bool
-instr_sat(instr_t *instr)
-{
-   switch (instr->opc_cat) {
-   case 2:
-      return instr->cat2.sat;
-   case 3:
-      return instr->cat3.sat;
-   case 4:
-      return instr->cat4.sat;
-   default:
-      return false;
-   }
-}
-
 static inline bool
 is_sat_compatible(opc_t opc)
 {
@@ -1123,58 +599,6 @@ is_sat_compatible(opc_t opc)
       return false;
    default:
       return true;
-   }
-}
-
-/* We can probably drop the gpu_id arg, but keeping it for now so we can
- * assert if we see something we think should be new encoding on an older
- * gpu.
- */
-static inline bool
-is_cat6_legacy(instr_t *instr, unsigned gpu_id)
-{
-   instr_cat6_a6xx_t *cat6 = &instr->cat6_a6xx;
-
-   if (gpu_id < 600)
-      return true;
-
-   /* At least one of these two bits is pad in all the possible
-    * "legacy" cat6 encodings, and a analysis of all the pre-a6xx
-    * cmdstream traces I have indicates that the pad bit is zero
-    * in all cases.  So we can use this to detect new encoding:
-    */
-   if ((cat6->pad3 & 0x4) && (cat6->pad5 & 0x2)) {
-      ir3_assert(instr->cat6.opc == 0);
-      return false;
-   }
-
-   return true;
-}
-
-static inline uint32_t
-instr_opc(instr_t *instr, unsigned gpu_id)
-{
-   switch (instr->opc_cat) {
-   case 0:
-      return instr->cat0.opc | instr->cat0.opc_hi << 4;
-   case 1:
-      return instr->cat1.opc;
-   case 2:
-      return instr->cat2.opc;
-   case 3:
-      return instr->cat3.opc;
-   case 4:
-      return instr->cat4.opc;
-   case 5:
-      return instr->cat5.opc;
-   case 6:
-      if (!is_cat6_legacy(instr, gpu_id))
-         return instr->cat6_a6xx.opc;
-      return instr->cat6.opc;
-   case 7:
-      return instr->cat7.opc;
-   default:
-      return 0;
    }
 }
 
@@ -1207,7 +631,7 @@ is_madsh(opc_t opc)
 }
 
 static inline bool
-is_atomic(opc_t opc)
+is_local_atomic(opc_t opc)
 {
    switch (opc) {
    case OPC_ATOMIC_ADD:
@@ -1225,6 +649,76 @@ is_atomic(opc_t opc)
    default:
       return false;
    }
+}
+
+static inline bool
+is_global_a3xx_atomic(opc_t opc)
+{
+   switch (opc) {
+   case OPC_ATOMIC_S_ADD:
+   case OPC_ATOMIC_S_SUB:
+   case OPC_ATOMIC_S_XCHG:
+   case OPC_ATOMIC_S_INC:
+   case OPC_ATOMIC_S_DEC:
+   case OPC_ATOMIC_S_CMPXCHG:
+   case OPC_ATOMIC_S_MIN:
+   case OPC_ATOMIC_S_MAX:
+   case OPC_ATOMIC_S_AND:
+   case OPC_ATOMIC_S_OR:
+   case OPC_ATOMIC_S_XOR:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static inline bool
+is_global_a6xx_atomic(opc_t opc)
+{
+   switch (opc) {
+   case OPC_ATOMIC_G_ADD:
+   case OPC_ATOMIC_G_SUB:
+   case OPC_ATOMIC_G_XCHG:
+   case OPC_ATOMIC_G_INC:
+   case OPC_ATOMIC_G_DEC:
+   case OPC_ATOMIC_G_CMPXCHG:
+   case OPC_ATOMIC_G_MIN:
+   case OPC_ATOMIC_G_MAX:
+   case OPC_ATOMIC_G_AND:
+   case OPC_ATOMIC_G_OR:
+   case OPC_ATOMIC_G_XOR:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static inline bool
+is_bindless_atomic(opc_t opc)
+{
+   switch (opc) {
+   case OPC_ATOMIC_B_ADD:
+   case OPC_ATOMIC_B_SUB:
+   case OPC_ATOMIC_B_XCHG:
+   case OPC_ATOMIC_B_INC:
+   case OPC_ATOMIC_B_DEC:
+   case OPC_ATOMIC_B_CMPXCHG:
+   case OPC_ATOMIC_B_MIN:
+   case OPC_ATOMIC_B_MAX:
+   case OPC_ATOMIC_B_AND:
+   case OPC_ATOMIC_B_OR:
+   case OPC_ATOMIC_B_XOR:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static inline bool
+is_atomic(opc_t opc)
+{
+   return is_local_atomic(opc) || is_global_a3xx_atomic(opc) ||
+          is_global_a6xx_atomic(opc) || is_bindless_atomic(opc);
 }
 
 static inline bool

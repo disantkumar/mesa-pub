@@ -26,7 +26,6 @@
 #include "pipe/p_screen.h"
 #include "state_tracker/st_texture.h"
 #include "state_tracker/st_context.h"
-#include "state_tracker/st_cb_fbo.h"
 #include "main/texobj.h"
 
 #include "dri_helpers.h"
@@ -253,6 +252,22 @@ dri2_lookup_egl_image(struct dri_screen *screen, void *handle)
    return img;
 }
 
+boolean
+dri2_validate_egl_image(struct dri_screen *screen, void *handle)
+{
+   const __DRIimageLookupExtension *loader = screen->sPriv->dri2.image;
+
+   return loader->validateEGLImage(handle, screen->sPriv->loaderPrivate);
+}
+
+__DRIimage *
+dri2_lookup_egl_image_validated(struct dri_screen *screen, void *handle)
+{
+   const __DRIimageLookupExtension *loader = screen->sPriv->dri2.image;
+
+   return loader->lookupEGLImageValidated(handle, screen->sPriv->loaderPrivate);
+}
+
 __DRIimage *
 dri2_create_image_from_renderbuffer2(__DRIcontext *context,
 				     int renderbuffer, void *loaderPrivate,
@@ -284,7 +299,7 @@ dri2_create_image_from_renderbuffer2(__DRIcontext *context,
       return NULL;
    }
 
-   tex = st_get_renderbuffer_resource(rb);
+   tex = rb->texture;
    if (!tex) {
       *error = __DRI_IMAGE_ERROR_BAD_PARAMETER;
       return NULL;

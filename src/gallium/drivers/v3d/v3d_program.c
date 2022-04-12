@@ -297,7 +297,7 @@ v3d_uncompiled_shader_create(struct pipe_context *pctx,
         } else {
                 assert(type == PIPE_SHADER_IR_TGSI);
 
-                if (V3D_DEBUG & V3D_DEBUG_TGSI) {
+                if (unlikely(V3D_DEBUG & V3D_DEBUG_TGSI)) {
                         fprintf(stderr, "prog %d TGSI:\n",
                                 so->program_id);
                         tgsi_dump(ir, 0);
@@ -328,8 +328,8 @@ v3d_uncompiled_shader_create(struct pipe_context *pctx,
         so->base.type = PIPE_SHADER_IR_NIR;
         so->base.ir.nir = s;
 
-        if (V3D_DEBUG & (V3D_DEBUG_NIR |
-                         v3d_debug_flag_for_shader_stage(s->info.stage))) {
+        if (unlikely(V3D_DEBUG & (V3D_DEBUG_NIR |
+                                  v3d_debug_flag_for_shader_stage(s->info.stage)))) {
                 fprintf(stderr, "%s prog %d NIR:\n",
                         gl_shader_stage_name(s->info.stage),
                         so->program_id);
@@ -337,7 +337,7 @@ v3d_uncompiled_shader_create(struct pipe_context *pctx,
                 fprintf(stderr, "\n");
         }
 
-        if (V3D_DEBUG & V3D_DEBUG_PRECOMPILE)
+        if (unlikely(V3D_DEBUG & V3D_DEBUG_PRECOMPILE))
                 v3d_shader_precompile(v3d, so);
 
         return so;
@@ -457,10 +457,16 @@ v3d_setup_shared_key(struct v3d_context *v3d, struct v3d_key *key,
                 if (!sampler)
                         continue;
 
+                assert(sampler->target == PIPE_BUFFER || sampler_state);
+
+                unsigned compare_mode = sampler_state ?
+                        sampler_state->compare_mode :
+                        PIPE_TEX_COMPARE_NONE;
+
                 key->sampler[i].return_size =
                         v3d_get_tex_return_size(devinfo,
                                                 sampler->format,
-                                                sampler_state->compare_mode);
+                                                compare_mode);
 
                 /* For 16-bit, we set up the sampler to always return 2
                  * channels (meaning no recompiles for most statechanges),
@@ -576,9 +582,10 @@ v3d_update_compiled_fs(struct v3d_context *v3d, uint8_t prim_mode)
                  */
                 if (key->logicop_func != PIPE_LOGICOP_COPY) {
                         key->color_fmt[i].format = cbuf->format;
-                        key->color_fmt[i].swizzle =
-                                v3d_get_format_swizzle(&v3d->screen->devinfo,
-                                                       cbuf->format);
+                        memcpy(key->color_fmt[i].swizzle,
+                               v3d_get_format_swizzle(&v3d->screen->devinfo,
+                                                       cbuf->format),
+                               sizeof(key->color_fmt[i].swizzle));
                 }
 
                 const struct util_format_description *desc =
@@ -600,9 +607,8 @@ v3d_update_compiled_fs(struct v3d_context *v3d, uint8_t prim_mode)
         if (key->is_points) {
                 key->point_sprite_mask =
                         v3d->rasterizer->base.sprite_coord_enable;
-                key->point_coord_upper_left =
-                        (v3d->rasterizer->base.sprite_coord_mode ==
-                         PIPE_SPRITE_COORD_UPPER_LEFT);
+                /* this is handled by lower_wpos_pntc */
+                key->point_coord_upper_left = false;
         }
 
         struct v3d_compiled_shader *old_fs = v3d->prog.fs;

@@ -81,6 +81,8 @@ struct gbm_dri_device {
    const __DRIextension **driver_extensions;
 
    __DRIimage *(*lookup_image)(__DRIscreen *screen, void *image, void *data);
+   GLboolean (*validate_image)(void *image, void *data);
+   __DRIimage *(*lookup_image_validated)(void *image, void *data);
    void *lookup_user_data;
 
    __DRIbuffer *(*get_buffers)(__DRIdrawable * driDrawable,
@@ -174,7 +176,7 @@ gbm_dri_bo_map_dumb(struct gbm_dri_bo *bo)
    if (ret)
       return NULL;
 
-   bo->map = mmap(0, bo->size, PROT_WRITE,
+   bo->map = mmap(NULL, bo->size, PROT_WRITE,
                   MAP_SHARED, bo->base.gbm->v0.fd, map_arg.offset);
    if (bo->map == MAP_FAILED) {
       bo->map = NULL;

@@ -142,7 +142,7 @@ tu_gralloc_info_other(struct tu_device *device,
        */
 
       if (gralloc_info->handle->numInts < 2) {
-         return vk_errorf(device->instance, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "VkNativeBufferANDROID::handle::numInts is %d, "
                           "expected at least 2 for qcom gralloc",
                           gralloc_info->handle->numFds);
@@ -150,7 +150,7 @@ tu_gralloc_info_other(struct tu_device *device,
 
       uint32_t gmsm = ('g' << 24) | ('m' << 16) | ('s' << 8) | 'm';
       if (handle_data[0] != gmsm) {
-         return vk_errorf(device->instance, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+         return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                           "private_handle_t::magic is %x, expected %x",
                           handle_data[0], gmsm);
       }
@@ -164,7 +164,7 @@ tu_gralloc_info_other(struct tu_device *device,
        */
       *dma_buf = handle_fds[0];
    } else {
-      return vk_errorf(device->instance, VK_ERROR_INVALID_EXTERNAL_HANDLE,
+      return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
                        "VkNativeBufferANDROID::handle::numFds is %d, "
                        "expected 1 (gbm_gralloc) or 2 (qcom gralloc)",
                        gralloc_info->handle->numFds);
@@ -358,7 +358,7 @@ format_supported_with_usage(VkDevice device_h, VkFormat format,
    result = tu_GetPhysicalDeviceImageFormatProperties2(
       phys_dev_h, &image_format_info, &image_format_props);
    if (result != VK_SUCCESS) {
-      return vk_errorf(device->instance, result,
+      return vk_errorf(device, result,
                        "tu_GetPhysicalDeviceImageFormatProperties2 failed "
                        "inside %s",
                        __func__);
@@ -385,7 +385,7 @@ setup_gralloc0_usage(struct tu_device *device, VkFormat format,
     * gralloc swapchains.
     */
    if (imageUsage != 0) {
-      return vk_errorf(device->instance, VK_ERROR_FORMAT_NOT_SUPPORTED,
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "unsupported VkImageUsageFlags(0x%x) for gralloc "
                        "swapchain",
                        imageUsage);
@@ -471,43 +471,3 @@ tu_GetSwapchainGrallocUsage2ANDROID(VkDevice device_h,
    return VK_SUCCESS;
 }
 #endif
-
-VKAPI_ATTR VkResult VKAPI_CALL
-tu_AcquireImageANDROID(VkDevice device,
-                       VkImage image_h,
-                       int nativeFenceFd,
-                       VkSemaphore semaphore,
-                       VkFence fence)
-{
-   VkResult semaphore_result = VK_SUCCESS, fence_result = VK_SUCCESS;
-
-   if (semaphore != VK_NULL_HANDLE) {
-      int semaphore_fd =
-         nativeFenceFd >= 0 ? os_dupfd_cloexec(nativeFenceFd) : nativeFenceFd;
-      semaphore_result = tu_ImportSemaphoreFdKHR(
-         device, &(VkImportSemaphoreFdInfoKHR) {
-                    .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
-                    .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
-                    .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
-                    .fd = semaphore_fd,
-                    .semaphore = semaphore,
-                 });
-   }
-
-   if (fence != VK_NULL_HANDLE) {
-      int fence_fd = nativeFenceFd >= 0 ? os_dupfd_cloexec(nativeFenceFd) : nativeFenceFd;
-      fence_result = tu_ImportFenceFdKHR(
-         device, &(VkImportFenceFdInfoKHR) {
-                    .sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR,
-                    .flags = VK_FENCE_IMPORT_TEMPORARY_BIT,
-                    .fd = fence_fd,
-                    .fence = fence,
-                 });
-   }
-
-   close(nativeFenceFd);
-
-   if (semaphore_result != VK_SUCCESS)
-      return semaphore_result;
-   return fence_result;
-}

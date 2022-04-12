@@ -126,13 +126,13 @@ vn_cmd_fix_image_memory_barrier(const struct vn_command_buffer *cmd,
        out_barrier->newLayout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
       return;
 
-   assert(img->is_wsi);
+   assert(img->wsi.is_wsi);
 
    if (VN_PRESENT_SRC_INTERNAL_LAYOUT == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
       return;
 
    /* prime blit src or no layout transition */
-   if (img->prime_blit_buffer != VK_NULL_HANDLE ||
+   if (img->wsi.is_prime_blit_src ||
        out_barrier->oldLayout == out_barrier->newLayout) {
       if (out_barrier->oldLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)
          out_barrier->oldLayout = VN_PRESENT_SRC_INTERNAL_LAYOUT;
@@ -542,6 +542,7 @@ vn_AllocateCommandBuffers(VkDevice device,
             cmd = vn_command_buffer_from_handle(pCommandBuffers[j]);
             vn_cs_encoder_fini(&cmd->cs);
             list_del(&cmd->head);
+            vn_object_base_fini(&cmd->base);
             vk_free(alloc, cmd);
          }
          memset(pCommandBuffers, 0,
@@ -559,7 +560,8 @@ vn_AllocateCommandBuffers(VkDevice device,
       list_addtail(&cmd->head, &pool->command_buffers);
 
       cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-      vn_cs_encoder_init_indirect(&cmd->cs, dev->instance, 16 * 1024);
+      vn_cs_encoder_init(&cmd->cs, dev->instance,
+                         VN_CS_ENCODER_STORAGE_SHMEM_POOL, 16 * 1024);
 
       VkCommandBuffer cmd_handle = vn_command_buffer_to_handle(cmd);
       pCommandBuffers[i] = cmd_handle;
@@ -621,6 +623,7 @@ VkResult
 vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                       const VkCommandBufferBeginInfo *pBeginInfo)
 {
+   VN_TRACE_FUNC();
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
    struct vn_instance *instance = cmd->device->instance;
@@ -628,12 +631,24 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 
    vn_cs_encoder_reset(&cmd->cs);
 
+   /* TODO: add support for VK_KHR_dynamic_rendering */
    VkCommandBufferBeginInfo local_begin_info;
-   if (pBeginInfo->pInheritanceInfo &&
-       cmd->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
-      local_begin_info = *pBeginInfo;
-      local_begin_info.pInheritanceInfo = NULL;
-      pBeginInfo = &local_begin_info;
+   VkCommandBufferInheritanceInfo local_inheritance_info;
+   if (pBeginInfo->pInheritanceInfo) {
+      if (cmd->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
+         local_begin_info = *pBeginInfo;
+         local_begin_info.pInheritanceInfo = NULL;
+         pBeginInfo = &local_begin_info;
+      } else if (!(pBeginInfo->flags &
+                   VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
+         local_inheritance_info = *pBeginInfo->pInheritanceInfo;
+         local_inheritance_info.framebuffer = VK_NULL_HANDLE;
+         local_inheritance_info.renderPass = VK_NULL_HANDLE;
+         local_inheritance_info.subpass = 0;
+         local_begin_info = *pBeginInfo;
+         local_begin_info.pInheritanceInfo = &local_inheritance_info;
+         pBeginInfo = &local_begin_info;
+      }
    }
 
    cmd_size = vn_sizeof_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
@@ -659,16 +674,41 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    return VK_SUCCESS;
 }
 
+static VkResult
+vn_cmd_submit(struct vn_command_buffer *cmd)
+{
+   struct vn_instance *instance = cmd->device->instance;
+
+   if (cmd->state != VN_COMMAND_BUFFER_STATE_RECORDING)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   vn_cs_encoder_commit(&cmd->cs);
+   if (vn_cs_encoder_get_fatal(&cmd->cs)) {
+      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
+      vn_cs_encoder_reset(&cmd->cs);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   vn_instance_wait_roundtrip(instance, cmd->cs.current_buffer_roundtrip);
+   VkResult result = vn_instance_ring_submit(instance, &cmd->cs);
+   if (result != VK_SUCCESS) {
+      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
+      return result;
+   }
+
+   vn_cs_encoder_reset(&cmd->cs);
+
+   return VK_SUCCESS;
+}
+
 VkResult
 vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
 {
+   VN_TRACE_FUNC();
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
    struct vn_instance *instance = cmd->device->instance;
    size_t cmd_size;
-
-   if (cmd->state != VN_COMMAND_BUFFER_STATE_RECORDING)
-      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    cmd_size = vn_sizeof_vkEndCommandBuffer(commandBuffer);
    if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size)) {
@@ -677,21 +717,12 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
    }
 
    vn_encode_vkEndCommandBuffer(&cmd->cs, 0, commandBuffer);
-   vn_cs_encoder_commit(&cmd->cs);
 
-   if (vn_cs_encoder_get_fatal(&cmd->cs)) {
-      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
-      return vn_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
-   }
-
-   vn_instance_wait_roundtrip(instance, cmd->cs.current_buffer_roundtrip);
-   VkResult result = vn_instance_ring_submit(instance, &cmd->cs);
+   VkResult result = vn_cmd_submit(cmd);
    if (result != VK_SUCCESS) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
       return vn_error(instance, result);
    }
-
-   vn_cs_encoder_reset(&cmd->cs);
 
    cmd->state = VN_COMMAND_BUFFER_STATE_EXECUTABLE;
 
@@ -1218,8 +1249,9 @@ vn_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
        VN_PRESENT_SRC_INTERNAL_LAYOUT != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
       srcImageLayout = VN_PRESENT_SRC_INTERNAL_LAYOUT;
 
+      /* sanity check */
       const struct vn_image *img = vn_image_from_handle(srcImage);
-      prime_blit = img->is_wsi && img->prime_blit_buffer == dstBuffer;
+      prime_blit = img->wsi.is_wsi && img->wsi.is_prime_blit_src;
       assert(prime_blit);
    }
 

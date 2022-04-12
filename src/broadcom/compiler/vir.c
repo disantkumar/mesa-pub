@@ -243,6 +243,19 @@ vir_set_cond(struct qinst *inst, enum v3d_qpu_cond cond)
         }
 }
 
+enum v3d_qpu_cond
+vir_get_cond(struct qinst *inst)
+{
+        assert(inst->qpu.type == V3D_QPU_INSTR_TYPE_ALU);
+
+        if (vir_is_add(inst))
+                return inst->qpu.flags.ac;
+        else if (vir_is_mul(inst))
+                return inst->qpu.flags.mc;
+        else /* NOP */
+                return V3D_QPU_COND_NONE;
+}
+
 void
 vir_set_pf(struct v3d_compile *c, struct qinst *inst, enum v3d_qpu_pf pf)
 {
@@ -550,7 +563,8 @@ vir_compile_init(const struct v3d_compiler *compiler,
         c->fallback_scheduler = fallback_scheduler;
         c->disable_tmu_pipelining = disable_tmu_pipelining;
         c->disable_constant_ubo_load_sorting = disable_constant_ubo_load_sorting;
-        c->disable_loop_unrolling = disable_loop_unrolling;
+        c->disable_loop_unrolling = V3D_DEBUG & V3D_DEBUG_NO_LOOP_UNROLL
+                ? true : disable_loop_unrolling;
 
         s = nir_shader_clone(c, s);
         c->s = s;
@@ -793,6 +807,7 @@ v3d_fs_set_prog_data(struct v3d_compile *c,
 {
         v3d_set_fs_prog_data_inputs(c, prog_data);
         prog_data->writes_z = c->writes_z;
+        prog_data->writes_z_from_fep = c->writes_z_from_fep;
         prog_data->disable_ez = !c->s->info.fs.early_fragment_tests;
         prog_data->uses_center_w = c->uses_center_w;
         prog_data->uses_implicit_point_line_varyings =
@@ -923,8 +938,11 @@ v3d_nir_lower_gs_early(struct v3d_compile *c)
         NIR_PASS_V(c->s, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
                    type_size_vec4,
                    (nir_lower_io_options)0);
-        /* clean up nir_lower_io's deref_var remains */
+        /* clean up nir_lower_io's deref_var remains and do a constant folding pass
+         * on the code it generated.
+         */
         NIR_PASS_V(c->s, nir_opt_dce);
+        NIR_PASS_V(c->s, nir_opt_constant_folding);
 }
 
 static void
@@ -970,14 +988,6 @@ v3d_nir_lower_fs_early(struct v3d_compile *c)
                 NIR_PASS_V(c->s, nir_lower_global_vars_to_local);
                 /* The lowering pass can introduce new sysval reads */
                 nir_shader_gather_info(c->s, nir_shader_get_entrypoint(c->s));
-        }
-
-        /* If the shader has no non-TLB side effects, we can promote it to
-         * enabling early_fragment_tests even if the user didn't.
-         */
-        if (!(c->s->info.num_images ||
-              c->s->info.num_ssbos)) {
-                c->s->info.fs.early_fragment_tests = true;
         }
 }
 
@@ -1191,7 +1201,7 @@ v3d_nir_sort_constant_ubo_load(nir_block *block, nir_intrinsic_instr *ref)
                  * reference offset, since otherwise we would not be able to
                  * skip the unifa write for them. See ntq_emit_load_ubo_unifa.
                  */
-                if (abs(ref_offset - offset) > MAX_UNIFA_SKIP_DISTANCE)
+                if (abs((int)(ref_offset - offset)) > MAX_UNIFA_SKIP_DISTANCE)
                         continue;
 
                 /* We will move this load if its offset is smaller than ref's
@@ -1500,6 +1510,8 @@ v3d_attempt_compile(struct v3d_compile *c)
 
         NIR_PASS_V(c->s, nir_lower_wrmasks, should_split_wrmask, c->s);
 
+        NIR_PASS_V(c->s, v3d_nir_lower_load_store_bitsize, c);
+
         NIR_PASS_V(c->s, v3d_nir_lower_subgroup_intrinsics, c);
 
         v3d_optimize_nir(c, c->s);
@@ -1757,7 +1769,7 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
         int ret = v3d_shaderdb_dump(c, &shaderdb);
         if (ret >= 0) {
                 if (V3D_DEBUG & V3D_DEBUG_SHADERDB)
-                        fprintf(stderr, "SHADER-DB: %s\n", shaderdb);
+                        fprintf(stderr, "SHADER-DB-%s - %s\n", s->info.name, shaderdb);
 
                 c->debug_output(shaderdb, c->debug_output_data);
                 free(shaderdb);
@@ -1864,6 +1876,24 @@ try_opt_ldunif(struct v3d_compile *c, uint32_t index, struct qreg *unif)
 {
         uint32_t count = 20;
         struct qinst *prev_inst = NULL;
+        assert(c->cur_block);
+
+#ifdef DEBUG
+        /* We can only reuse a uniform if it was emitted in the same block,
+         * so callers must make sure the current instruction is being emitted
+         * in the current block.
+         */
+        bool found = false;
+        vir_for_each_inst(inst, c->cur_block) {
+                if (&inst->link == c->cursor.link) {
+                        found = true;
+                        break;
+                }
+        }
+
+        assert(found || &c->cur_block->instructions == c->cursor.link);
+#endif
+
         list_for_each_entry_from_rev(struct qinst, inst, c->cursor.link->prev,
                                      &c->cur_block->instructions, link) {
                 if ((inst->qpu.sig.ldunif || inst->qpu.sig.ldunifrf) &&

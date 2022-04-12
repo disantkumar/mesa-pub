@@ -38,40 +38,20 @@ __gen_combine_address(__attribute__((unused)) void *data,
 #include "genxml/genX_pack.h"
 
 #include "isl_priv.h"
-
-#if GFX_VER >= 8
-static const uint8_t isl_encode_halign[] = {
-    [4] = HALIGN4,
-    [8] = HALIGN8,
-    [16] = HALIGN16,
-};
-#elif GFX_VER >= 7
-static const uint8_t isl_encode_halign[] = {
-    [4] = HALIGN_4,
-    [8] = HALIGN_8,
-};
-#endif
-
-#if GFX_VER >= 8
-static const uint8_t isl_encode_valign[] = {
-    [4] = VALIGN4,
-    [8] = VALIGN8,
-    [16] = VALIGN16,
-};
-#elif GFX_VER >= 6
-static const uint8_t isl_encode_valign[] = {
-    [2] = VALIGN_2,
-    [4] = VALIGN_4,
-};
-#endif
+#include "isl_genX_helpers.h"
 
 #if GFX_VER >= 8
 static const uint8_t isl_encode_tiling[] = {
    [ISL_TILING_LINEAR]  = LINEAR,
    [ISL_TILING_X]       = XMAJOR,
+#if GFX_VERx10 >= 125
+   [ISL_TILING_4]       = TILE4,
+   [ISL_TILING_64]      = TILE64,
+#else
    [ISL_TILING_Y0]      = YMAJOR,
    [ISL_TILING_Yf]      = YMAJOR,
    [ISL_TILING_Ys]      = YMAJOR,
+#endif
 #if GFX_VER <= 11
    [ISL_TILING_W]       = WMAJOR,
 #endif
@@ -140,109 +120,39 @@ get_surftype(enum isl_surf_dim dim, isl_surf_usage_flags_t usage)
    }
 }
 
-/**
- * Get the horizontal and vertical alignment in the units expected by the
- * hardware.  Note that this does NOT give you the actual hardware enum values
- * but an index into the isl_encode_[hv]align arrays above.
- */
-UNUSED static struct isl_extent3d
-get_image_alignment(const struct isl_surf *surf)
+#if GFX_VERx10 >= 125
+static uint8_t
+get_media_compression_format(enum isl_format format,
+                             enum isl_format lowered_format)
 {
-   if (GFX_VER >= 9) {
-      if (isl_tiling_is_std_y(surf->tiling) ||
-          surf->dim_layout == ISL_DIM_LAYOUT_GFX9_1D) {
-         /* The hardware ignores the alignment values. Anyway, the surface's
-          * true alignment is likely outside the enum range of HALIGN* and
-          * VALIGN*.
-          */
-         return isl_extent3d(4, 4, 1);
-      } else {
-         /* In Skylake, RENDER_SUFFACE_STATE.SurfaceVerticalAlignment is in units
-          * of surface elements (not pixels nor samples). For compressed formats,
-          * a "surface element" is defined as a compression block.  For example,
-          * if SurfaceVerticalAlignment is VALIGN_4 and SurfaceFormat is an ETC2
-          * format (ETC2 has a block height of 4), then the vertical alignment is
-          * 4 compression blocks or, equivalently, 16 pixels.
-          */
-         return isl_surf_get_image_alignment_el(surf);
-      }
-   } else {
-      /* Pre-Skylake, RENDER_SUFFACE_STATE.SurfaceVerticalAlignment is in
-       * units of surface samples.  For example, if SurfaceVerticalAlignment
-       * is VALIGN_4 and the surface is singlesampled, then for any surface
-       * format (compressed or not) the vertical alignment is
-       * 4 pixels.
-       */
-      return isl_surf_get_image_alignment_sa(surf);
-   }
-}
+   const uint32_t plane_bpb = isl_format_get_layout(lowered_format)->bpb;
 
-#if GFX_VER >= 8
-static uint32_t
-get_qpitch(const struct isl_surf *surf)
-{
-   switch (surf->dim_layout) {
+   /* From Bspec 43868, Enumeration_MediaCompressionFormat:
+    *
+    *    Luma P010 has MSB of 0 while chroma P010 has MSB of 1.
+    *    Luma P016 has MSB of 0 while chroma P016 has MSB of 1.
+    *    Luma NV12 has MSB of 0 while chroma NV12 has MSB of 1.
+    */
+   switch (format) {
+   case ISL_FORMAT_PLANAR_420_8: /* NV12 */
+      assert(plane_bpb == 8 || plane_bpb == 16);
+      assert((isl_format_get_aux_map_encoding(format) & 0xf0) == 0);
+
+      /* drm_fourcc.h defines the chroma plane of NV12 as 16-bpb */
+      return (plane_bpb == 16) << 4 | isl_format_get_aux_map_encoding(format);
+   case ISL_FORMAT_PLANAR_420_10:
+   case ISL_FORMAT_PLANAR_420_12:
+   case ISL_FORMAT_PLANAR_420_16:
+      assert(plane_bpb == 16 || plane_bpb == 32);
+      assert((isl_format_get_aux_map_encoding(format) & 0xf0) == 0);
+
+      /* drm_fourcc.h defines the chroma plane of P01X as 32-bpb */
+      return (plane_bpb == 32) << 4 | isl_format_get_aux_map_encoding(format);
    default:
-      unreachable("Bad isl_surf_dim");
-   case ISL_DIM_LAYOUT_GFX4_2D:
-      if (GFX_VER >= 9) {
-         if (surf->dim == ISL_SURF_DIM_3D && surf->tiling == ISL_TILING_W) {
-            /* This is rather annoying and completely undocumented.  It
-             * appears that the hardware has a bug (or undocumented feature)
-             * regarding stencil buffers most likely related to the way
-             * W-tiling is handled as modified Y-tiling.  If you bind a 3-D
-             * stencil buffer normally, and use texelFetch on it, the z or
-             * array index will get implicitly multiplied by 2 for no obvious
-             * reason.  The fix appears to be to divide qpitch by 2 for
-             * W-tiled surfaces.
-             */
-            return isl_surf_get_array_pitch_el_rows(surf) / 2;
-         } else {
-            return isl_surf_get_array_pitch_el_rows(surf);
-         }
-      } else {
-         /* From the Broadwell PRM for RENDER_SURFACE_STATE.QPitch
-          *
-          *    "This field must be set to an integer multiple of the Surface
-          *    Vertical Alignment. For compressed textures (BC*, FXT1,
-          *    ETC*, and EAC* Surface Formats), this field is in units of
-          *    rows in the uncompressed surface, and must be set to an
-          *    integer multiple of the vertical alignment parameter "j"
-          *    defined in the Common Surface Formats section."
-          */
-         return isl_surf_get_array_pitch_sa_rows(surf);
-      }
-   case ISL_DIM_LAYOUT_GFX9_1D:
-      /* QPitch is usually expressed as rows of surface elements (where
-       * a surface element is an compression block or a single surface
-       * sample). Skylake 1D is an outlier.
-       *
-       * From the Skylake BSpec >> Memory Views >> Common Surface
-       * Formats >> Surface Layout and Tiling >> 1D Surfaces:
-       *
-       *    Surface QPitch specifies the distance in pixels between array
-       *    slices.
-       */
-      return isl_surf_get_array_pitch_el(surf);
-   case ISL_DIM_LAYOUT_GFX4_3D:
-      /* QPitch doesn't make sense for ISL_DIM_LAYOUT_GFX4_3D since it uses a
-       * different pitch at each LOD.  Also, the QPitch field is ignored for
-       * these surfaces.  From the Broadwell PRM documentation for QPitch:
-       *
-       *    This field specifies the distance in rows between array slices. It
-       *    is used only in the following cases:
-       *     - Surface Array is enabled OR
-       *     - Number of Mulitsamples is not NUMSAMPLES_1 and Multisampled
-       *       Surface Storage Format set to MSFMT_MSS OR
-       *     - Surface Type is SURFTYPE_CUBE
-       *
-       * None of the three conditions above can possibly apply to a 3D surface
-       * so it is safe to just set QPitch to 0.
-       */
-      return 0;
+      return isl_format_get_aux_map_encoding(format);
    }
 }
-#endif /* GFX_VER >= 8 */
+#endif
 
 void
 isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
@@ -470,10 +380,11 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 
 #if GFX_VER >= 6
-   const struct isl_extent3d image_align = get_image_alignment(info->surf);
-   s.SurfaceVerticalAlignment = isl_encode_valign[image_align.height];
+   const struct isl_extent3d image_align =
+      isl_get_image_alignment(info->surf);
+   s.SurfaceVerticalAlignment = isl_encode_valign(image_align.height);
 #if GFX_VER >= 7
-   s.SurfaceHorizontalAlignment = isl_encode_halign[image_align.width];
+   s.SurfaceHorizontalAlignment = isl_encode_halign(image_align.width);
 #endif
 #endif
 
@@ -485,7 +396,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    }
 
 #if GFX_VER >= 8
-   s.SurfaceQPitch = get_qpitch(info->surf) >> 2;
+   s.SurfaceQPitch = isl_get_qpitch(info->surf) >> 2;
 #elif GFX_VER == 7
    s.SurfaceArraySpacing = info->surf->array_pitch_span ==
                            ISL_ARRAY_PITCH_SPAN_COMPACT;
@@ -493,6 +404,14 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 
 #if GFX_VER >= 8
    assert(GFX_VER < 12 || info->surf->tiling != ISL_TILING_W);
+
+   /* From the SKL+ PRMs, RENDER_SURFACE_STATE:TileMode,
+    *
+    *    If Surface Format is ASTC*, this field must be TILEMODE_YMAJOR.
+    */
+   if (isl_format_get_layout(info->view->format)->txc == ISL_TXC_ASTC)
+      assert(info->surf->tiling == ISL_TILING_Y0);
+
    s.TileMode = isl_encode_tiling[info->surf->tiling];
 #else
    s.TiledSurface = info->surf->tiling != ISL_TILING_LINEAR,
@@ -666,6 +585,15 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
          }
       }
 
+#if GFX_VERx10 >= 125
+      if (info->aux_usage == ISL_AUX_USAGE_MC) {
+         s.CompressionFormat =
+            get_media_compression_format(info->mc_format, info->surf->format);
+      } else {
+         s.CompressionFormat =
+            isl_get_render_compression_format(info->surf->format);
+      }
+#endif
 #if GFX_VER >= 12
       s.MemoryCompressionEnable = info->aux_usage == ISL_AUX_USAGE_MC;
 #endif
@@ -717,7 +645,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
     *    This bit must be set for the following surface types: BC2_UNORM
     *    BC3_UNORM BC5_UNORM BC5_SNORM BC7_UNORM
     */
-   if (GFX_VER >= 9 || dev->info->is_cherryview) {
+   if (GFX_VER >= 9 || dev->info->platform == INTEL_PLATFORM_CHV) {
       switch (info->view->format) {
       case ISL_FORMAT_BC2_UNORM:
       case ISL_FORMAT_BC3_UNORM:
@@ -836,21 +764,15 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
 
    uint32_t num_elements = buffer_size / info->stride_B;
 
-   if (GFX_VER >= 7) {
+   assert(num_elements > 0);
+   if (info->format == ISL_FORMAT_RAW) {
+      assert(num_elements <= dev->max_buffer_size);
+   } else {
       /* From the IVB PRM, SURFACE_STATE::Height,
        *
        *    For typed buffer and structured buffer surfaces, the number
-       *    of entries in the buffer ranges from 1 to 2^27. For raw buffer
-       *    surfaces, the number of entries in the buffer is the number of bytes
-       *    which can range from 1 to 2^30.
+       *    of entries in the buffer ranges from 1 to 2^27.
        */
-      if (info->format == ISL_FORMAT_RAW) {
-         assert(num_elements <= (1ull << 30));
-         assert(num_elements > 0);
-      } else {
-         assert(num_elements <= (1ull << 27));
-      }
-   } else {
       assert(num_elements <= (1ull << 27));
    }
 
@@ -879,9 +801,11 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    s.SurfacePitch = info->stride_B - 1;
 
 #if GFX_VER >= 6
-   s.SurfaceVerticalAlignment = isl_encode_valign[4];
-#if GFX_VER >= 7
-   s.SurfaceHorizontalAlignment = isl_encode_halign[4];
+   s.SurfaceVerticalAlignment = isl_encode_valign(4);
+#if GFX_VERx10 >= 125
+   s.SurfaceHorizontalAlignment = isl_encode_halign(128);
+#elif GFX_VER >= 7
+   s.SurfaceHorizontalAlignment = isl_encode_halign(4);
    s.SurfaceArray = false;
 #endif
 #endif
@@ -947,7 +871,7 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
 }
 
 void
-isl_genX(null_fill_state)(void *state,
+isl_genX(null_fill_state)(const struct isl_device *dev, void *state,
                           const struct isl_null_fill_state_info *restrict info)
 {
    struct GENX(RENDER_SURFACE_STATE) s = {
@@ -961,11 +885,16 @@ isl_genX(null_fill_state)(void *state,
 #if GFX_VER >= 7
       .SurfaceArray = info->size.depth > 1,
 #endif
-#if GFX_VER >= 8
+#if GFX_VERx10 >= 125
+      .TileMode = TILE4,
+#elif GFX_VER >= 8
       .TileMode = YMAJOR,
 #else
       .TiledSurface = true,
       .TileWalk = TILEWALK_YMAJOR,
+#endif
+#if GFX_VER >= 6
+      .MOCS = isl_mocs(dev, 0, false),
 #endif
 #if GFX_VER == 7
       /* According to PRMs: "Volume 4 Part 1: Subsystem and Cores – Shared

@@ -41,6 +41,8 @@
 #include "brw_reg.h"
 #include "brw_disasm_info.h"
 
+#include "util/bitset.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -246,6 +248,7 @@ ALU3(CSEL)
 ALU1(F32TO16)
 ALU1(F16TO32)
 ALU2(ADD)
+ALU3(ADD3)
 ALU2(AVG)
 ALU2(MUL)
 ALU1(FRC)
@@ -260,6 +263,7 @@ ALU2(DP4)
 ALU2(DPH)
 ALU2(DP3)
 ALU2(DP2)
+ALU3(DP4A)
 ALU2(LINE)
 ALU2(PLN)
 ALU3(MAD)
@@ -373,6 +377,13 @@ brw_urb_desc_msg_type(ASSERTED const struct intel_device_info *devinfo,
    return GET_BITS(desc, 3, 0);
 }
 
+static inline uint32_t
+brw_urb_fence_desc(const struct intel_device_info *devinfo)
+{
+   assert(devinfo->has_lsc);
+   return brw_urb_desc(devinfo, GFX125_URB_OPCODE_FENCE, false, false, 0);
+}
+
 /**
  * Construct a message descriptor immediate with the specified sampler
  * function controls.
@@ -387,13 +398,25 @@ brw_sampler_desc(const struct intel_device_info *devinfo,
 {
    const unsigned desc = (SET_BITS(binding_table_index, 7, 0) |
                           SET_BITS(sampler, 11, 8));
+
+   /* From the CHV Bspec: Shared Functions - Message Descriptor -
+    * Sampling Engine:
+    *
+    *   SIMD Mode[2]  29    This field is the upper bit of the 3-bit
+    *                       SIMD Mode field.
+    */
+   if (devinfo->ver >= 8)
+      return desc | SET_BITS(msg_type, 16, 12) |
+             SET_BITS(simd_mode & 0x3, 18, 17) |
+             SET_BITS(simd_mode >> 2, 29, 29) |
+             SET_BITS(return_format, 30, 30);
    if (devinfo->ver >= 7)
       return (desc | SET_BITS(msg_type, 16, 12) |
               SET_BITS(simd_mode, 18, 17));
    else if (devinfo->ver >= 5)
       return (desc | SET_BITS(msg_type, 15, 12) |
               SET_BITS(simd_mode, 17, 16));
-   else if (devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return desc | SET_BITS(msg_type, 15, 12);
    else
       return (desc | SET_BITS(return_format, 13, 12) |
@@ -420,7 +443,7 @@ brw_sampler_desc_msg_type(const struct intel_device_info *devinfo, uint32_t desc
 {
    if (devinfo->ver >= 7)
       return GET_BITS(desc, 16, 12);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return GET_BITS(desc, 15, 12);
    else
       return GET_BITS(desc, 15, 14);
@@ -431,7 +454,9 @@ brw_sampler_desc_simd_mode(const struct intel_device_info *devinfo,
                            uint32_t desc)
 {
    assert(devinfo->ver >= 5);
-   if (devinfo->ver >= 7)
+   if (devinfo->ver >= 8)
+      return GET_BITS(desc, 18, 17) | GET_BITS(desc, 29, 29) << 2;
+   else if (devinfo->ver >= 7)
       return GET_BITS(desc, 18, 17);
    else
       return GET_BITS(desc, 17, 16);
@@ -441,8 +466,11 @@ static  inline unsigned
 brw_sampler_desc_return_format(ASSERTED const struct intel_device_info *devinfo,
                                uint32_t desc)
 {
-   assert(devinfo->ver == 4 && !devinfo->is_g4x);
-   return GET_BITS(desc, 13, 12);
+   assert(devinfo->verx10 == 40 || devinfo->ver >= 8);
+   if (devinfo->ver >= 8)
+      return GET_BITS(desc, 30, 30);
+   else
+      return GET_BITS(desc, 13, 12);
 }
 
 /**
@@ -513,7 +541,7 @@ brw_dp_read_desc(const struct intel_device_info *devinfo,
 {
    if (devinfo->ver >= 6)
       return brw_dp_desc(devinfo, binding_table_index, msg_type, msg_control);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return (SET_BITS(binding_table_index, 7, 0) |
               SET_BITS(msg_control, 10, 8) |
               SET_BITS(msg_type, 13, 11) |
@@ -531,7 +559,7 @@ brw_dp_read_desc_msg_type(const struct intel_device_info *devinfo,
 {
    if (devinfo->ver >= 6)
       return brw_dp_desc_msg_type(devinfo, desc);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return GET_BITS(desc, 13, 11);
    else
       return GET_BITS(desc, 13, 12);
@@ -543,7 +571,7 @@ brw_dp_read_desc_msg_control(const struct intel_device_info *devinfo,
 {
    if (devinfo->ver >= 6)
       return brw_dp_desc_msg_control(devinfo, desc);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return GET_BITS(desc, 10, 8);
    else
       return GET_BITS(desc, 11, 8);
@@ -770,7 +798,7 @@ brw_dp_dword_scattered_rw_desc(const struct intel_device_info *devinfo,
    } else {
       if (devinfo->ver >= 7) {
          msg_type = GFX7_DATAPORT_DC_DWORD_SCATTERED_READ;
-      } else if (devinfo->ver > 4 || devinfo->is_g4x) {
+      } else if (devinfo->verx10 >= 45) {
          msg_type = G45_DATAPORT_READ_MESSAGE_DWORD_SCATTERED_READ;
       } else {
          msg_type = BRW_DATAPORT_READ_MESSAGE_DWORD_SCATTERED_READ;
@@ -1167,6 +1195,12 @@ lsc_opcode_has_cmask(enum lsc_opcode opcode)
    return opcode == LSC_OP_LOAD_CMASK || opcode == LSC_OP_STORE_CMASK;
 }
 
+static inline bool
+lsc_opcode_has_transpose(enum lsc_opcode opcode)
+{
+   return opcode == LSC_OP_LOAD || opcode == LSC_OP_STORE;
+}
+
 static inline uint32_t
 lsc_data_size_bytes(enum lsc_data_size data_size)
 {
@@ -1250,6 +1284,8 @@ lsc_msg_desc(UNUSED const struct intel_device_info *devinfo,
    unsigned src0_length =
       DIV_ROUND_UP(lsc_addr_size_bytes(addr_sz) * num_coordinates * simd_size,
                    REG_SIZE);
+
+   assert(!transpose || lsc_opcode_has_transpose(opcode));
 
    unsigned msg_desc =
       SET_BITS(opcode, 5, 0) |
@@ -1639,10 +1675,6 @@ void gfx7_block_read_scratch(struct brw_codegen *p,
                              int num_regs,
                              unsigned offset);
 
-void brw_shader_time_add(struct brw_codegen *p,
-                         struct brw_reg payload,
-                         uint32_t surf_index);
-
 /**
  * Return the generation-specific jump distance scaling factor.
  *
@@ -1749,6 +1781,7 @@ brw_memory_fence(struct brw_codegen *p,
                  struct brw_reg src,
                  enum opcode send_op,
                  enum brw_message_target sfid,
+                 uint32_t desc,
                  bool commit_enable,
                  unsigned bti);
 

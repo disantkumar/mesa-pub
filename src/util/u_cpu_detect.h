@@ -35,6 +35,7 @@
 #ifndef _UTIL_CPU_DETECT_H
 #define _UTIL_CPU_DETECT_H
 
+#include <stdbool.h>
 
 #include "pipe/p_config.h"
 #include "util/u_thread.h"
@@ -50,7 +51,10 @@ enum cpu_family {
    CPU_AMD_ZEN1_ZEN2,
    CPU_AMD_ZEN_HYGON,
    CPU_AMD_ZEN3,
+   CPU_AMD_ZEN_NEXT,
    CPU_AMD_LAST,
+
+   CPU_S390X,
 };
 
 typedef uint32_t util_affinity_mask[UTIL_MAX_CPUS / 32];
@@ -101,6 +105,7 @@ struct util_cpu_caps_t {
    unsigned has_vsx:1;
    unsigned has_daz:1;
    unsigned has_neon:1;
+   unsigned has_msa:1;
 
    unsigned has_avx512f:1;
    unsigned has_avx512dq:1;

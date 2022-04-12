@@ -6,7 +6,7 @@ git config --global user.email "mesa@example.com"
 git config --global user.name "Mesa CI"
 git clone \
     https://github.com/KhronosGroup/VK-GL-CTS.git \
-    -b vulkan-cts-1.2.6.2 \
+    -b vulkan-cts-1.2.7.2 \
     --depth 1 \
     /VK-GL-CTS
 pushd /VK-GL-CTS
@@ -43,8 +43,10 @@ mv /deqp/modules/egl/deqp-egl-x11 /deqp/modules/egl/deqp-egl
 
 # Copy out the mustpass lists we want.
 mkdir /deqp/mustpass
-cp /VK-GL-CTS/external/vulkancts/mustpass/master/vk-default.txt \
-   /deqp/mustpass/vk-master.txt
+for mustpass in $(< /VK-GL-CTS/external/vulkancts/mustpass/master/vk-default.txt) ; do
+    cat /VK-GL-CTS/external/vulkancts/mustpass/master/$mustpass \
+        >> /deqp/mustpass/vk-master.txt
+done
 
 cp \
     /deqp/external/openglcts/modules/gl_cts/data/mustpass/gles/aosp_mustpass/3.2.6.x/*.txt \
@@ -66,7 +68,11 @@ cp /deqp/executor/testlog-to-* /deqp/executor.save
 rm -rf /deqp/executor
 mv /deqp/executor.save /deqp/executor
 
+# Remove other mustpass files, since we saved off the ones we wanted to conventient locations above.
 rm -rf /deqp/external/openglcts/modules/gl_cts/data/mustpass
+rm -rf /deqp/external/vulkancts/modules/vulkan/vk-master*
+rm -rf /deqp/external/vulkancts/modules/vulkan/vk-default
+
 rm -rf /deqp/external/openglcts/modules/cts-runner
 rm -rf /deqp/modules/internal
 rm -rf /deqp/execserver

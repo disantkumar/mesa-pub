@@ -53,6 +53,11 @@ enum pan_special_varying {
         PAN_VARY_MAX,
 };
 
+/* Maximum number of attribute descriptors required for varyings. These include
+ * up to MAX_VARYING source level varyings plus a descriptor each non-GENERAL
+ * special varying */
+#define PAN_MAX_VARYINGS (MAX_VARYING + PAN_VARY_MAX - 1)
+
 /* Define the general compiler entry point */
 
 #define MAX_SYSVAL_COUNT 32
@@ -82,6 +87,7 @@ enum {
         PAN_SYSVAL_RT_CONVERSION = 13,
         PAN_SYSVAL_VERTEX_INSTANCE_OFFSETS = 14,
         PAN_SYSVAL_DRAWID = 15,
+        PAN_SYSVAL_BLEND_CONSTANTS = 16,
 };
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
@@ -106,11 +112,17 @@ struct panfrost_sysvals {
         unsigned sysval_count;
 };
 
-/* Technically Midgard could go up to 92 in a pathological case but we don't
- * take advantage of that. Likewise Bifrost's FAU encoding can address 128
- * words but actual implementations (G72, G76) are capped at 64 */
-
-#define PAN_MAX_PUSH 64
+/* Architecturally, Bifrost/Valhall can address 128 FAU slots of 64-bits each.
+ * In practice, the maximum number of FAU slots is limited by implementation.
+ * All known Bifrost and Valhall devices limit to 64 FAU slots. Therefore the
+ * maximum number of 32-bit words is 128, since there are 2 words per FAU slot.
+ *
+ * Midgard can push at most 92 words, so this bound suffices. The Midgard
+ * compiler pushes less than this, as Midgard uses register-mapped uniforms
+ * instead of FAU, preventing large numbers of uniforms to be pushed for
+ * nontrivial programs.
+ */
+#define PAN_MAX_PUSH 128
 
 /* Architectural invariants (Midgard and Bifrost): UBO must be <= 2^16 bytes so
  * an offset to a word must be < 2^16. There are less than 2^8 UBOs */
@@ -152,10 +164,19 @@ struct panfrost_compile_inputs {
         } blend;
         unsigned sysval_ubo;
         bool shaderdb;
+        bool no_idvs;
         bool no_ubo_to_push;
 
         enum pipe_format rt_formats[8];
+        uint8_t raw_fmt_mask;
         unsigned nr_cbufs;
+
+        union {
+                struct {
+                        bool static_rt_conv;
+                        uint32_t rt_conv[8];
+                } bifrost;
+        };
 };
 
 struct pan_shader_varying {
@@ -190,6 +211,9 @@ struct pan_shader_info {
         unsigned tls_size;
         unsigned wls_size;
 
+        /* Bit mask of preloaded registers */
+        uint64_t preload;
+
         union {
                 struct {
                         bool reads_frag_coord;
@@ -201,10 +225,6 @@ struct pan_shader_info {
                         bool writes_stencil;
                         bool writes_coverage;
                         bool sidefx;
-                        bool reads_sample_id;
-                        bool reads_sample_pos;
-                        bool reads_sample_mask_in;
-                        bool reads_helper_invocation;
                         bool sample_shading;
                         bool early_fragment_tests;
                         bool can_early_z, can_fpk;
@@ -214,6 +234,27 @@ struct pan_shader_info {
 
                 struct {
                         bool writes_point_size;
+
+                        /* Set if Index-Driven Vertex Shading is in use */
+                        bool idvs;
+
+                        /* If IDVS is used, whether a varying shader is used */
+                        bool secondary_enable;
+
+                        /* If a varying shader is used, the varying shader's
+                         * offset in the program binary
+                         */
+                        unsigned secondary_offset;
+
+                        /* If IDVS is in use, number of work registers used by
+                         * the varying shader
+                         */
+                        unsigned secondary_work_reg_count;
+
+                        /* If IDVS is in use, bit mask of preloaded registers
+                         * used by the varying shader
+                         */
+                        uint64_t secondary_preload;
                 } vs;
         };
 
@@ -229,9 +270,9 @@ struct pan_shader_info {
 
         struct {
                 unsigned input_count;
-                struct pan_shader_varying input[MAX_VARYING];
+                struct pan_shader_varying input[PAN_MAX_VARYINGS];
                 unsigned output_count;
-                struct pan_shader_varying output[MAX_VARYING];
+                struct pan_shader_varying output[PAN_MAX_VARYINGS];
         } varyings;
 
         struct panfrost_sysvals sysvals;
@@ -363,8 +404,8 @@ bool pan_has_dest_mod(nir_dest **dest, nir_op op);
 #define PAN_WRITEOUT_C 1
 #define PAN_WRITEOUT_Z 2
 #define PAN_WRITEOUT_S 4
+#define PAN_WRITEOUT_2 8
 
-bool pan_nir_reorder_writeout(nir_shader *nir);
 bool pan_nir_lower_zs_store(nir_shader *nir);
 
 bool pan_nir_lower_64bit_intrin(nir_shader *shader);

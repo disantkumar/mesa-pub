@@ -285,6 +285,13 @@ drisw_copy_sub_buffer(__DRIdrawable *dPriv, int x, int y,
 
       ctx->st->flush(ctx->st, ST_FLUSH_FRONT, NULL, NULL, NULL);
 
+      if (drawable->stvis.samples > 1) {
+         /* Resolve the back buffer. */
+         dri_pipe_blit(ctx->st->pipe,
+                       drawable->textures[ST_ATTACHMENT_BACK_LEFT],
+                       drawable->msaa_textures[ST_ATTACHMENT_BACK_LEFT]);
+      }
+
       u_box_2d(x, dPriv->h - y - h, w, h, &box);
       drisw_present_texture(ctx->st->pipe, dPriv, ptex, &box);
    }
@@ -522,9 +529,8 @@ drisw_init_screen(__DRIscreen * sPriv)
    }
 
    if (pipe_loader_sw_probe_dri(&screen->dev, lf)) {
-      dri_init_options(screen);
-
       pscreen = pipe_loader_create_screen(screen->dev);
+      dri_init_options(screen);
    }
 
    if (!pscreen)
@@ -541,6 +547,15 @@ drisw_init_screen(__DRIscreen * sPriv)
    else
       sPriv->extensions = drisw_screen_extensions;
    screen->lookup_egl_image = dri2_lookup_egl_image;
+
+   const __DRIimageLookupExtension *image = sPriv->dri2.image;
+   if (image &&
+       image->base.version >= 2 &&
+       image->validateEGLImage &&
+       image->lookupEGLImageValidated) {
+      screen->validate_egl_image = dri2_validate_egl_image;
+      screen->lookup_egl_image_validated = dri2_lookup_egl_image_validated;
+   }
 
    return configs;
 fail:

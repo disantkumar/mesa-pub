@@ -18,7 +18,7 @@ if [ -n "$CROSS" ]; then
 else
     STRIP="strip"
 fi
-if [ -z "$ARTIFACTS_DEBUG_SYMBOLS"]; then
+if [ -z "$ARTIFACTS_DEBUG_SYMBOLS" ]; then
     find install -name \*.so -exec $STRIP {} \;
 fi
 
@@ -31,13 +31,13 @@ cp -Rp .gitlab-ci/piglit install/
 cp -Rp .gitlab-ci/fossils.yml install/
 cp -Rp .gitlab-ci/fossils install/
 cp -Rp .gitlab-ci/fossilize-runner.sh install/
-cp -Rp .gitlab-ci/deqp-runner.sh install/
-cp -Rp .gitlab-ci/crosvm-runner.sh install/
 cp -Rp .gitlab-ci/crosvm-init.sh install/
-cp -Rp .gitlab-ci/deqp-*.txt install/
+cp -Rp .gitlab-ci/*.txt install/
 cp -Rp .gitlab-ci/report-flakes.py install/
 cp -Rp .gitlab-ci/vkd3d-proton install/
+cp -Rp .gitlab-ci/*-runner.sh install/
 find . -path \*/ci/\*.txt \
+    -o -path \*/ci/\*.toml \
     -o -path \*/ci/\*traces\*.yml \
     | xargs -I '{}' cp -p '{}' install/
 
@@ -52,6 +52,6 @@ if [ -n "$MINIO_ARTIFACT_NAME" ]; then
     # Pass needed files to the test stage
     MINIO_ARTIFACT_NAME="$MINIO_ARTIFACT_NAME.tar.gz"
     gzip -c artifacts/install.tar > ${MINIO_ARTIFACT_NAME}
-    ci-fairy minio login $CI_JOB_JWT
+    ci-fairy minio login --token-file "${CI_JOB_JWT_FILE}"
     ci-fairy minio cp ${MINIO_ARTIFACT_NAME} minio://${PIPELINE_ARTIFACTS_BASE}/${MINIO_ARTIFACT_NAME}
 fi

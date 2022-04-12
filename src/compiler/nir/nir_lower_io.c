@@ -152,13 +152,20 @@ nir_is_arrayed_io(const nir_variable *var, gl_shader_stage stage)
    if (var->data.patch || !glsl_type_is_array(var->type))
       return false;
 
+   if (stage == MESA_SHADER_MESH) {
+      /* NV_mesh_shader: this is flat array for the whole workgroup. */
+      if (var->data.location == VARYING_SLOT_PRIMITIVE_INDICES)
+         return false;
+   }
+
    if (var->data.mode == nir_var_shader_in)
       return stage == MESA_SHADER_GEOMETRY ||
              stage == MESA_SHADER_TESS_CTRL ||
              stage == MESA_SHADER_TESS_EVAL;
 
    if (var->data.mode == nir_var_shader_out)
-      return stage == MESA_SHADER_TESS_CTRL;
+      return stage == MESA_SHADER_TESS_CTRL ||
+             stage == MESA_SHADER_MESH;
 
    return false;
 }
@@ -255,7 +262,8 @@ emit_load(struct lower_io_state *state,
    case nir_var_shader_in:
       if (nir->info.stage == MESA_SHADER_FRAGMENT &&
           nir->options->use_interpolated_input_intrinsics &&
-          var->data.interpolation != INTERP_MODE_FLAT) {
+          var->data.interpolation != INTERP_MODE_FLAT &&
+          !var->data.per_primitive) {
          if (var->data.interpolation == INTERP_MODE_EXPLICIT) {
             assert(array_index != NULL);
             op = nir_intrinsic_load_input_vertex;
@@ -281,8 +289,9 @@ emit_load(struct lower_io_state *state,
       }
       break;
    case nir_var_shader_out:
-      op = array_index ? nir_intrinsic_load_per_vertex_output :
-                         nir_intrinsic_load_output;
+      op = !array_index            ? nir_intrinsic_load_output :
+           var->data.per_primitive ? nir_intrinsic_load_per_primitive_output :
+                                     nir_intrinsic_load_per_vertex_output;
       break;
    case nir_var_uniform:
       op = nir_intrinsic_load_uniform;
@@ -302,6 +311,9 @@ emit_load(struct lower_io_state *state,
    if (load->intrinsic == nir_intrinsic_load_uniform)
       nir_intrinsic_set_range(load,
                               state->type_size(var->type, var->data.bindless));
+
+   if (nir_intrinsic_has_access(load))
+      nir_intrinsic_set_access(load, var->data.access);
 
    nir_intrinsic_set_dest_type(load, dest_type);
 
@@ -393,8 +405,9 @@ emit_store(struct lower_io_state *state, nir_ssa_def *data,
 
    assert(var->data.mode == nir_var_shader_out);
    nir_intrinsic_op op =
-      array_index ? nir_intrinsic_store_per_vertex_output :
-                    nir_intrinsic_store_output;
+      !array_index            ? nir_intrinsic_store_output :
+      var->data.per_primitive ? nir_intrinsic_store_per_primitive_output :
+                                nir_intrinsic_store_per_vertex_output;
 
    nir_intrinsic_instr *store =
       nir_intrinsic_instr_create(state->builder.shader, op);
@@ -407,6 +420,9 @@ emit_store(struct lower_io_state *state, nir_ssa_def *data,
    nir_intrinsic_set_src_type(store, src_type);
 
    nir_intrinsic_set_write_mask(store, write_mask);
+
+   if (nir_intrinsic_has_access(store))
+      nir_intrinsic_set_access(store, var->data.access);
 
    if (array_index)
       store->src[1] = nir_src_for_ssa(array_index);
@@ -434,6 +450,14 @@ emit_store(struct lower_io_state *state, nir_ssa_def *data,
       var->data.precision == GLSL_PRECISION_MEDIUM ||
       var->data.precision == GLSL_PRECISION_LOW;
    semantics.per_view = var->data.per_view;
+   semantics.invariant = var->data.invariant;
+
+   /* NV_mesh_shader: prevent assigning several slots to primitive indices. */
+   if (b->shader->info.stage == MESA_SHADER_MESH &&
+       var->data.location == VARYING_SLOT_PRIMITIVE_INDICES &&
+       !nir_is_arrayed_io(var, b->shader->info.stage))
+      semantics.num_slots = 1;
+
    nir_intrinsic_set_io_semantics(store, semantics);
 
    nir_builder_instr_insert(b, &store->instr);
@@ -550,7 +574,7 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
    if (intrin->intrinsic == nir_intrinsic_interp_deref_at_sample ||
        intrin->intrinsic == nir_intrinsic_interp_deref_at_offset ||
        intrin->intrinsic == nir_intrinsic_interp_deref_at_vertex)
-      nir_src_copy(&bary_setup->src[0], &intrin->src[1], bary_setup);
+      nir_src_copy(&bary_setup->src[0], &intrin->src[1]);
 
    nir_builder_instr_insert(b, &bary_setup->instr);
 
@@ -786,16 +810,12 @@ build_addr_iadd(nir_builder *b, nir_ssa_def *addr,
    case nir_address_format_64bit_bounded_global:
       assert(addr->num_components == 4);
       assert(addr->bit_size == offset->bit_size);
-      return nir_vec4(b, nir_channel(b, addr, 0),
-                         nir_channel(b, addr, 1),
-                         nir_channel(b, addr, 2),
-                         nir_iadd(b, nir_channel(b, addr, 3), offset));
+      return nir_vector_insert_imm(b, addr, nir_iadd(b, nir_channel(b, addr, 3), offset), 3);
 
    case nir_address_format_32bit_index_offset:
       assert(addr->num_components == 2);
       assert(addr->bit_size == offset->bit_size);
-      return nir_vec2(b, nir_channel(b, addr, 0),
-                         nir_iadd(b, nir_channel(b, addr, 1), offset));
+      return nir_vector_insert_imm(b, addr, nir_iadd(b, nir_channel(b, addr, 1), offset), 1);
 
    case nir_address_format_32bit_index_offset_pack64:
       assert(addr->num_components == 1);
@@ -807,8 +827,7 @@ build_addr_iadd(nir_builder *b, nir_ssa_def *addr,
    case nir_address_format_vec2_index_32bit_offset:
       assert(addr->num_components == 3);
       assert(offset->bit_size == 32);
-      return nir_vec3(b, nir_channel(b, addr, 0), nir_channel(b, addr, 1),
-                         nir_iadd(b, nir_channel(b, addr, 2), offset));
+      return nir_vector_insert_imm(b, addr, nir_iadd(b, nir_channel(b, addr, 2), offset), 2);
 
    case nir_address_format_62bit_generic:
       assert(addr->num_components == 1);
@@ -953,6 +972,44 @@ build_runtime_addr_mode_check(nir_builder *b, nir_ssa_def *addr,
    default:
       unreachable("Unsupported address mode");
    }
+}
+
+unsigned
+nir_address_format_bit_size(nir_address_format addr_format)
+{
+   switch (addr_format) {
+   case nir_address_format_32bit_global:              return 32;
+   case nir_address_format_64bit_global:              return 64;
+   case nir_address_format_64bit_global_32bit_offset: return 32;
+   case nir_address_format_64bit_bounded_global:      return 32;
+   case nir_address_format_32bit_index_offset:        return 32;
+   case nir_address_format_32bit_index_offset_pack64: return 64;
+   case nir_address_format_vec2_index_32bit_offset:   return 32;
+   case nir_address_format_62bit_generic:             return 64;
+   case nir_address_format_32bit_offset:              return 32;
+   case nir_address_format_32bit_offset_as_64bit:     return 64;
+   case nir_address_format_logical:                   return 32;
+   }
+   unreachable("Invalid address format");
+}
+
+unsigned
+nir_address_format_num_components(nir_address_format addr_format)
+{
+   switch (addr_format) {
+   case nir_address_format_32bit_global:              return 1;
+   case nir_address_format_64bit_global:              return 1;
+   case nir_address_format_64bit_global_32bit_offset: return 4;
+   case nir_address_format_64bit_bounded_global:      return 4;
+   case nir_address_format_32bit_index_offset:        return 2;
+   case nir_address_format_32bit_index_offset_pack64: return 1;
+   case nir_address_format_vec2_index_32bit_offset:   return 3;
+   case nir_address_format_62bit_generic:             return 1;
+   case nir_address_format_32bit_offset:              return 1;
+   case nir_address_format_32bit_offset_as_64bit:     return 1;
+   case nir_address_format_logical:                   return 1;
+   }
+   unreachable("Invalid address format");
 }
 
 static nir_ssa_def *
@@ -2130,6 +2187,8 @@ nir_lower_explicit_io_impl(nir_function_impl *impl, nir_variable_mode modes,
    if (progress) {
       nir_metadata_preserve(impl, nir_metadata_block_index |
                                   nir_metadata_dominance);
+   } else {
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;
@@ -2223,6 +2282,8 @@ nir_lower_vars_to_explicit_types_impl(nir_function_impl *impl,
                                   nir_metadata_dominance |
                                   nir_metadata_live_ssa_defs |
                                   nir_metadata_loop_analysis);
+   } else {
+      nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    return progress;
@@ -2476,6 +2537,7 @@ nir_get_io_offset_src(nir_intrinsic_instr *instr)
    case nir_intrinsic_load_input_vertex:
    case nir_intrinsic_load_per_vertex_input:
    case nir_intrinsic_load_per_vertex_output:
+   case nir_intrinsic_load_per_primitive_output:
    case nir_intrinsic_load_interpolated_input:
    case nir_intrinsic_store_output:
    case nir_intrinsic_store_shared:
@@ -2498,6 +2560,7 @@ nir_get_io_offset_src(nir_intrinsic_instr *instr)
       return &instr->src[1];
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_store_per_vertex_output:
+   case nir_intrinsic_store_per_primitive_output:
       return &instr->src[2];
    default:
       return NULL;
@@ -2508,13 +2571,15 @@ nir_get_io_offset_src(nir_intrinsic_instr *instr)
  * Return the vertex index source for a load/store per_vertex intrinsic.
  */
 nir_src *
-nir_get_io_vertex_index_src(nir_intrinsic_instr *instr)
+nir_get_io_arrayed_index_src(nir_intrinsic_instr *instr)
 {
    switch (instr->intrinsic) {
    case nir_intrinsic_load_per_vertex_input:
    case nir_intrinsic_load_per_vertex_output:
+   case nir_intrinsic_load_per_primitive_output:
       return &instr->src[0];
    case nir_intrinsic_store_per_vertex_output:
+   case nir_intrinsic_store_per_primitive_output:
       return &instr->src[1];
    default:
       return NULL;
@@ -2636,14 +2701,17 @@ is_output(nir_intrinsic_instr *intrin)
 {
    return intrin->intrinsic == nir_intrinsic_load_output ||
           intrin->intrinsic == nir_intrinsic_load_per_vertex_output ||
+          intrin->intrinsic == nir_intrinsic_load_per_primitive_output ||
           intrin->intrinsic == nir_intrinsic_store_output ||
-          intrin->intrinsic == nir_intrinsic_store_per_vertex_output;
+          intrin->intrinsic == nir_intrinsic_store_per_vertex_output ||
+          intrin->intrinsic == nir_intrinsic_store_per_primitive_output;
 }
 
 static bool is_dual_slot(nir_intrinsic_instr *intrin)
 {
    if (intrin->intrinsic == nir_intrinsic_store_output ||
-       intrin->intrinsic == nir_intrinsic_store_per_vertex_output) {
+       intrin->intrinsic == nir_intrinsic_store_per_vertex_output ||
+       intrin->intrinsic == nir_intrinsic_store_per_primitive_output) {
       return nir_src_bit_size(intrin->src[0]) == 64 &&
              nir_src_num_components(intrin->src[0]) >= 3;
    }
@@ -2674,6 +2742,15 @@ add_const_offset_to_base_block(nir_block *block, nir_builder *b,
 
       if (((modes & nir_var_shader_in) && is_input(intrin)) ||
           ((modes & nir_var_shader_out) && is_output(intrin))) {
+         nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
+
+         /* NV_mesh_shader: ignore MS primitive indices. */
+         if (b->shader->info.stage == MESA_SHADER_MESH &&
+             sem.location == VARYING_SLOT_PRIMITIVE_INDICES &&
+             !(b->shader->info.per_primitive_outputs &
+               BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_INDICES)))
+            continue;
+
          nir_src *offset = nir_get_io_offset_src(intrin);
 
          /* TODO: Better handling of per-view variables here */
@@ -2683,7 +2760,6 @@ add_const_offset_to_base_block(nir_block *block, nir_builder *b,
 
             nir_intrinsic_set_base(intrin, nir_intrinsic_base(intrin) + off);
 
-            nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
             sem.location += off;
             /* non-indirect indexing should reduce num_slots */
             sem.num_slots = is_dual_slot(intrin) ? 2 : 1;

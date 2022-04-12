@@ -93,7 +93,7 @@ hud_draw_colored_prims(struct hud_context *hud, unsigned prim,
    u_upload_unmap(hud->pipe->stream_uploader);
    vbuffer.stride = 2 * sizeof(float);
 
-   cso_set_vertex_buffers(cso, 0, 1, &vbuffer);
+   cso_set_vertex_buffers(cso, 0, 1, 0, false, &vbuffer);
    pipe_resource_reference(&vbuffer.buffer.resource, NULL);
    cso_set_fragment_shader_handle(hud->cso, hud->fs_color);
    cso_draw_arrays(cso, prim, 0, num_vertices);
@@ -541,7 +541,7 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
    cso_set_vertex_shader_handle(cso, hud->vs_color);
    cso_set_vertex_elements(cso, &hud->velems);
    cso_set_render_condition(cso, NULL, FALSE, 0);
-   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 1, 0,
+   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 1, 0, false,
                            &hud->font_sampler_view);
    cso_set_samplers(cso, PIPE_SHADER_FRAGMENT, 1, sampler_states);
    pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, false, &hud->constbuf);
@@ -562,7 +562,7 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
 
       pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, false, &hud->constbuf);
 
-      cso_set_vertex_buffers(cso, 0, 1, &hud->bg.vbuf);
+      cso_set_vertex_buffers(cso, 0, 1, 0, false, &hud->bg.vbuf);
       cso_draw_arrays(cso, PIPE_PRIM_QUADS, 0, hud->bg.num_vertices);
    }
    pipe_resource_reference(&hud->bg.vbuf.buffer.resource, NULL);
@@ -570,7 +570,7 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
    /* draw accumulated vertices for text */
    if (hud->text.num_vertices) {
       cso_set_vertex_shader_handle(cso, hud->vs_text);
-      cso_set_vertex_buffers(cso, 0, 1, &hud->text.vbuf);
+      cso_set_vertex_buffers(cso, 0, 1, 0, false, &hud->text.vbuf);
       cso_set_fragment_shader_handle(hud->cso, hud->fs_text);
       cso_draw_arrays(cso, PIPE_PRIM_QUADS, 0, hud->text.num_vertices);
    }
@@ -594,7 +594,7 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
 
    if (hud->whitelines.num_vertices) {
       cso_set_vertex_shader_handle(cso, hud->vs_color);
-      cso_set_vertex_buffers(cso, 0, 1, &hud->whitelines.vbuf);
+      cso_set_vertex_buffers(cso, 0, 1, 0, false, &hud->whitelines.vbuf);
       cso_set_fragment_shader_handle(hud->cso, hud->fs_color);
       cso_draw_arrays(cso, PIPE_PRIM_LINES, 0, hud->whitelines.num_vertices);
    }
@@ -609,12 +609,7 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
    }
 
 done:
-   cso_restore_state(cso);
-
-   /* Unbind resources that we have bound. */
-   pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, false, NULL);
-   pipe->set_vertex_buffers(pipe, 0, 0, 1, false, NULL);
-   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 0, 1, NULL);
+   cso_restore_state(cso, CSO_UNBIND_FS_SAMPLERVIEW0 | CSO_UNBIND_VS_CONSTANTS | CSO_UNBIND_VERTEX_BUFFER0);
 
    /* restore states not restored by cso */
    if (hud->st) {

@@ -52,8 +52,9 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info)
 
    apply_dst_clears(ctx, info, false);
    zink_fb_clears_apply_region(ctx, info->src.resource, zink_rect_from_box(&info->src.box));
-   struct zink_batch *batch = zink_batch_no_rp(ctx);
 
+   struct zink_batch *batch = &ctx->batch;
+   zink_batch_no_rp(ctx);
    zink_batch_reference_resource_rw(batch, src, false);
    zink_batch_reference_resource_rw(batch, dst, true);
 
@@ -96,7 +97,7 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info)
    region.extent.width = info->dst.box.width;
    region.extent.height = info->dst.box.height;
    region.extent.depth = info->dst.box.depth;
-   vkCmdResolveImage(batch->state->cmdbuf, src->obj->image, src->layout,
+   VKCTX(CmdResolveImage)(batch->state->cmdbuf, src->obj->image, src->layout,
                      dst->obj->image, dst->layout,
                      1, &region);
 
@@ -157,7 +158,9 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info)
 
    apply_dst_clears(ctx, info, false);
    zink_fb_clears_apply_region(ctx, info->src.resource, zink_rect_from_box(&info->src.box));
-   struct zink_batch *batch = zink_batch_no_rp(ctx);
+
+   struct zink_batch *batch = &ctx->batch;
+   zink_batch_no_rp(ctx);
    zink_batch_reference_resource_rw(batch, src, false);
    zink_batch_reference_resource_rw(batch, dst, true);
 
@@ -173,7 +176,10 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info)
    region.srcOffsets[1].x = info->src.box.x + info->src.box.width;
    region.srcOffsets[1].y = info->src.box.y + info->src.box.height;
 
-   switch (src->base.b.target) {
+   enum pipe_texture_target src_target = src->base.b.target;
+   if (src->need_2D_zs)
+      src_target = src_target == PIPE_TEXTURE_1D ? PIPE_TEXTURE_2D : PIPE_TEXTURE_2D_ARRAY;
+   switch (src_target) {
    case PIPE_TEXTURE_CUBE:
    case PIPE_TEXTURE_CUBE_ARRAY:
    case PIPE_TEXTURE_2D_ARRAY:
@@ -208,7 +214,10 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info)
    assert(region.dstOffsets[0].x != region.dstOffsets[1].x);
    assert(region.dstOffsets[0].y != region.dstOffsets[1].y);
 
-   switch (dst->base.b.target) {
+   enum pipe_texture_target dst_target = dst->base.b.target;
+   if (dst->need_2D_zs)
+      dst_target = dst_target == PIPE_TEXTURE_1D ? PIPE_TEXTURE_2D : PIPE_TEXTURE_2D_ARRAY;
+   switch (dst_target) {
    case PIPE_TEXTURE_CUBE:
    case PIPE_TEXTURE_CUBE_ARRAY:
    case PIPE_TEXTURE_2D_ARRAY:
@@ -235,7 +244,7 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info)
    }
    assert(region.dstOffsets[0].z != region.dstOffsets[1].z);
 
-   vkCmdBlitImage(batch->state->cmdbuf, src->obj->image, src->layout,
+   VKCTX(CmdBlitImage)(batch->state->cmdbuf, src->obj->image, src->layout,
                   dst->obj->image, dst->layout,
                   1, &region,
                   zink_filter(info->filter));
@@ -250,6 +259,11 @@ zink_blit(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    const struct util_format_description *src_desc = util_format_description(info->src.format);
    const struct util_format_description *dst_desc = util_format_description(info->dst.format);
+
+   if (info->render_condition_enable &&
+       unlikely(!zink_screen(pctx->screen)->info.have_EXT_conditional_rendering && !zink_check_conditional_render(ctx)))
+      return;
+
    if (src_desc == dst_desc ||
        src_desc->nr_channels != 4 || src_desc->layout != UTIL_FORMAT_LAYOUT_PLAIN ||
        (src_desc->nr_channels == 4 && src_desc->channel[3].type != UTIL_FORMAT_TYPE_VOID)) {
@@ -277,7 +291,7 @@ zink_blit(struct pipe_context *pctx,
           !ctx->render_condition_active)
          new_info.render_condition_enable = false;
 
-      if (util_try_blit_via_copy_region(pctx, &new_info))
+      if (util_try_blit_via_copy_region(pctx, &new_info, ctx->render_condition_active))
          return;
    }
 
@@ -321,7 +335,7 @@ zink_blit_begin(struct zink_context *ctx, enum zink_blit_flags flags)
       util_blitter_save_blend(ctx->blitter, ctx->gfx_pipeline_state.blend_state);
       util_blitter_save_depth_stencil_alpha(ctx->blitter, ctx->dsa_state);
       util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
-      util_blitter_save_sample_mask(ctx->blitter, ctx->gfx_pipeline_state.sample_mask);
+      util_blitter_save_sample_mask(ctx->blitter, ctx->gfx_pipeline_state.sample_mask, 0);
       util_blitter_save_scissor(ctx->blitter, ctx->vp_state.scissor_states);
       /* also util_blitter_save_window_rectangles when we have that? */
 
@@ -349,12 +363,18 @@ bool
 zink_blit_region_fills(struct u_rect region, unsigned width, unsigned height)
 {
    struct u_rect intersect = {0, width, 0, height};
+   struct u_rect r = {
+      MIN2(region.x0, region.x1),
+      MAX2(region.x0, region.x1),
+      MIN2(region.y0, region.y1),
+      MAX2(region.y0, region.y1),
+   };
 
-   if (!u_rect_test_intersection(&region, &intersect))
+   if (!u_rect_test_intersection(&r, &intersect))
       /* is this even a thing? */
       return false;
 
-   u_rect_find_intersection(&region, &intersect);
+   u_rect_find_intersection(&r, &intersect);
    if (intersect.x0 != 0 || intersect.y0 != 0 ||
        intersect.x1 != width || intersect.y1 != height)
       return false;
@@ -365,11 +385,23 @@ zink_blit_region_fills(struct u_rect region, unsigned width, unsigned height)
 bool
 zink_blit_region_covers(struct u_rect region, struct u_rect covers)
 {
+   struct u_rect r = {
+      MIN2(region.x0, region.x1),
+      MAX2(region.x0, region.x1),
+      MIN2(region.y0, region.y1),
+      MAX2(region.y0, region.y1),
+   };
+   struct u_rect c = {
+      MIN2(covers.x0, covers.x1),
+      MAX2(covers.x0, covers.x1),
+      MIN2(covers.y0, covers.y1),
+      MAX2(covers.y0, covers.y1),
+   };
    struct u_rect intersect;
-   if (!u_rect_test_intersection(&region, &covers))
+   if (!u_rect_test_intersection(&r, &c))
       return false;
 
-    u_rect_union(&intersect, &region, &covers);
-    return intersect.x0 == covers.x0 && intersect.y0 == covers.y0 &&
-           intersect.x1 == covers.x1 && intersect.y1 == covers.y1;
+    u_rect_union(&intersect, &r, &c);
+    return intersect.x0 == c.x0 && intersect.y0 == c.y0 &&
+           intersect.x1 == c.x1 && intersect.y1 == c.y1;
 }

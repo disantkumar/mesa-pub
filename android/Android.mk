@@ -32,6 +32,7 @@ MESA_VK_LIB_SUFFIX_amd := radeon
 MESA_VK_LIB_SUFFIX_intel := intel
 MESA_VK_LIB_SUFFIX_freedreno := freedreno
 MESA_VK_LIB_SUFFIX_broadcom := broadcom
+MESA_VK_LIB_SUFFIX_panfrost := panfrost
 MESA_VK_LIB_SUFFIX_virtio-experimental := virtio
 MESA_VK_LIB_SUFFIX_swrast := lvp
 
@@ -41,9 +42,12 @@ LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ li
 LOCAL_STATIC_LIBRARIES := libexpat libarect libelf
 LOCAL_HEADER_LIBRARIES := libnativebase_headers hwvulkan_headers libbacktrace_headers
 MESON_GEN_PKGCONFIGS := backtrace cutils expat hardware libdrm:$(LIBDRM_VERSION) nativewindow sync zlib:1.2.11 libelf
+LOCAL_CFLAGS += $(BOARD_MESA3D_CFLAGS)
 
-ifneq ($(filter swr swrast,$(BOARD_MESA3D_GALLIUM_DRIVERS) $(BOARD_MESA3D_VULKAN_DRIVERS)),)
+ifneq ($(filter swrast,$(BOARD_MESA3D_GALLIUM_DRIVERS) $(BOARD_MESA3D_VULKAN_DRIVERS)),)
+ifeq ($(BOARD_MESA3D_FORCE_SOFTPIPE),)
 MESON_GEN_LLVM_STUB := true
+endif
 endif
 
 ifneq ($(filter zink,$(BOARD_MESA3D_GALLIUM_DRIVERS)),)
@@ -73,11 +77,15 @@ LOCAL_SHARED_LIBRARIES += libdrm_nouveau
 MESON_GEN_PKGCONFIGS += libdrm_nouveau:$(LIBDRM_VERSION)
 endif
 
+ifneq ($(filter d3d12,$(BOARD_MESA3D_GALLIUM_DRIVERS)),)
+LOCAL_HEADER_LIBRARIES += DirectX-Headers
+LOCAL_STATIC_LIBRARIES += DirectX-Guids
+MESON_GEN_PKGCONFIGS += DirectX-Headers
+endif
+
 ifneq ($(MESON_GEN_LLVM_STUB),)
-MESON_LLVM_VERSION := 11.0.0
-# Required for swr gallium target
-MESON_LLVM_IRBUILDER_PATH := external/llvm-project/llvm/include/llvm/IR/IRBuilder.h
-LOCAL_SHARED_LIBRARIES += libLLVM11
+MESON_LLVM_VERSION := 12.0.0
+LOCAL_SHARED_LIBRARIES += libLLVM12
 endif
 
 ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 30; echo $$?), 0)

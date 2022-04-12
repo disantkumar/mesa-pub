@@ -30,6 +30,8 @@
 #include "../r600_pipe.h"
 #include "../r600_shader.h"
 
+#include "util/u_prim.h"
+
 #include "sfn_instruction_tex.h"
 
 #include "sfn_shader_vertex.h"
@@ -478,9 +480,13 @@ r600_map_atomic(nir_intrinsic_op op)
 }
 
 static bool
-r600_lower_deref_instr(nir_builder *b, nir_intrinsic_instr *instr,
-                       nir_shader *shader)
+r600_lower_deref_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
 {
+   if (instr_->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *instr = nir_instr_as_intrinsic(instr_);
+
    nir_intrinsic_op op = r600_map_atomic(instr->intrinsic);
    if (nir_num_intrinsics == op)
       return false;
@@ -528,8 +534,6 @@ r600_lower_deref_instr(nir_builder *b, nir_intrinsic_instr *instr,
 static bool
 r600_nir_lower_atomics(nir_shader *shader)
 {
-   bool progress = false;
-
    /* First re-do the offsets, in Hardware we start at zero for each new
     * binding, and we use an offset of one per counter */
    int current_binding = -1;
@@ -548,32 +552,10 @@ r600_nir_lower_atomics(nir_shader *shader)
       }
    }
 
-   nir_foreach_function(function, shader) {
-      if (!function->impl)
-         continue;
-
-      bool impl_progress = false;
-
-      nir_builder build;
-      nir_builder_init(&build, function->impl);
-
-      nir_foreach_block(block, function->impl) {
-         nir_foreach_instr_safe(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-
-            impl_progress |= r600_lower_deref_instr(&build,
-                                                    nir_instr_as_intrinsic(instr), shader);
-         }
-      }
-
-      if (impl_progress) {
-         nir_metadata_preserve(function->impl, nir_metadata_block_index | nir_metadata_dominance);
-         progress = true;
-      }
-   }
-
-   return progress;
+   return nir_shader_instructions_pass(shader, r600_lower_deref_instr,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
+                                       NULL);
 }
 using r600::r600_nir_lower_int_tg4;
 using r600::r600_lower_scratch_addresses;
@@ -921,7 +903,7 @@ int r600_shader_from_nir(struct r600_context *rctx,
        sh->info.stage == MESA_SHADER_TESS_EVAL ||
        (sh->info.stage == MESA_SHADER_VERTEX && key->vs.as_ls)) {
       auto prim_type = sh->info.stage == MESA_SHADER_TESS_EVAL ?
-                          sh->info.tess.primitive_mode: key->tcs.prim_mode;
+	 u_tess_prim_from_shader(sh->info.tess._primitive_mode) : key->tcs.prim_mode;
       NIR_PASS_V(sh, r600_lower_tess_io, static_cast<pipe_prim_type>(prim_type));
    }
 
@@ -929,9 +911,9 @@ int r600_shader_from_nir(struct r600_context *rctx,
       NIR_PASS_V(sh, r600_append_tcs_TF_emission,
                  (pipe_prim_type)key->tcs.prim_mode);
 
-   if (sh->info.stage == MESA_SHADER_TESS_EVAL)
-      NIR_PASS_V(sh, r600_lower_tess_coord,
-                 static_cast<pipe_prim_type>(sh->info.tess.primitive_mode));
+   if (sh->info.stage == MESA_SHADER_TESS_EVAL) {
+      NIR_PASS_V(sh, r600_lower_tess_coord, u_tess_prim_from_shader(sh->info.tess._primitive_mode));
+   }
 
    NIR_PASS_V(sh, nir_lower_ubo_vec4);
    if (lower_64bit)

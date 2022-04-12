@@ -46,6 +46,7 @@
 #include "r300_fs.h"
 #include "r300_texture.h"
 #include "r300_vs.h"
+#include "nir/nir_to_tgsi.h"
 
 /* r300_state: Functions used to initialize state context by translating
  * Gallium state objects into semi-native r300 state objects. */
@@ -1034,15 +1035,33 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
 static void* r300_create_fs_state(struct pipe_context* pipe,
                                   const struct pipe_shader_state* shader)
 {
+    struct r300_context* r300 = r300_context(pipe);
     struct r300_fragment_shader* fs = NULL;
 
     fs = (struct r300_fragment_shader*)CALLOC_STRUCT(r300_fragment_shader);
 
     /* Copy state directly into shader. */
     fs->state = *shader;
-    fs->state.tokens = tgsi_dup_tokens(shader->tokens);
 
-    return (void*)fs;
+    if (fs->state.type == PIPE_SHADER_IR_NIR) {
+       fs->state.tokens = nir_to_tgsi(shader->ir.nir, pipe->screen);
+    } else {
+       assert(fs->state.type == PIPE_SHADER_IR_TGSI);
+       /* we need to keep a local copy of the tokens */
+       fs->state.tokens = tgsi_dup_tokens(fs->state.tokens);
+    }
+
+    /* Precompile the fragment shader at creation time to avoid jank at runtime.
+     * In most cases we won't have anything in the key at draw time.
+     *
+     * TODO: precompile state for shadow samplers (but this needs a decision for
+     * the default shadow compare and texture swizzle values).
+     */
+    struct r300_fragment_program_external_state precompile_state;
+    memset(&precompile_state, 0, sizeof(precompile_state));
+    r300_pick_fragment_shader(r300, fs, &precompile_state);
+
+    return (void *)fs;
 }
 
 void r300_mark_fs_code_dirty(struct r300_context *r300)
@@ -1143,6 +1162,7 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
 
     rs->rs.sprite_coord_enable = state->point_quad_rasterization *
                                  state->sprite_coord_enable;
+    r300_context(pipe)->is_point = false;
 
     /* Override some states for Draw. */
     rs->rs_draw.sprite_coord_enable = 0; /* We can do this in HW. */
@@ -1173,7 +1193,7 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
          * Clamp to [0, max FB size] */
         float min_psiz = util_get_min_point_size(state);
         float max_psiz = pipe->screen->get_paramf(pipe->screen,
-                                        PIPE_CAPF_MAX_POINT_WIDTH);
+                                        PIPE_CAPF_MAX_POINT_SIZE);
         point_minmax =
             (pack_float_16_6x(min_psiz) << R300_GA_POINT_MINMAX_MIN_SHIFT) |
             (pack_float_16_6x(max_psiz) << R300_GA_POINT_MINMAX_MAX_SHIFT);
@@ -1519,6 +1539,7 @@ static void r300_set_sampler_views(struct pipe_context* pipe,
                                    enum pipe_shader_type shader,
                                    unsigned start, unsigned count,
                                    unsigned unbind_num_trailing_slots,
+                                   bool take_ownership,
                                    struct pipe_sampler_view** views)
 {
     struct r300_context* r300 = r300_context(pipe);
@@ -1529,13 +1550,16 @@ static void r300_set_sampler_views(struct pipe_context* pipe,
     unsigned tex_units = r300->screen->caps.num_tex_units;
     boolean dirty_tex = FALSE;
 
-    if (shader != PIPE_SHADER_FRAGMENT)
-       return;
-
     assert(start == 0);  /* non-zero not handled yet */
 
-    if (count > tex_units) {
-        return;
+    if (shader != PIPE_SHADER_FRAGMENT || count > tex_units) {
+       if (take_ownership) {
+          for (unsigned i = 0; i < count; i++) {
+             struct pipe_sampler_view *view = views[i];
+             pipe_sampler_view_reference(&view, NULL);
+          }
+       }
+       return;
     }
 
     /* Calculate the real number of views. */
@@ -1545,9 +1569,15 @@ static void r300_set_sampler_views(struct pipe_context* pipe,
     }
 
     for (i = 0; i < count; i++) {
-        pipe_sampler_view_reference(
-                (struct pipe_sampler_view**)&state->sampler_views[i],
-                views[i]);
+        if (take_ownership) {
+            pipe_sampler_view_reference(
+                    (struct pipe_sampler_view**)&state->sampler_views[i], NULL);
+            state->sampler_views[i] = (struct r300_sampler_view*)views[i];
+        } else {
+            pipe_sampler_view_reference(
+                    (struct pipe_sampler_view**)&state->sampler_views[i],
+                    views[i]);
+        }
 
         if (!views[i]) {
             continue;
@@ -1811,7 +1841,7 @@ static void r300_vertex_psc(struct r300_vertex_element_state *velems)
 
         if (i & 1) {
             vstream->vap_prog_stream_cntl[i >> 1] |= type << 16;
-            vstream->vap_prog_stream_cntl_ext[i >> 1] |= swizzle << 16;
+            vstream->vap_prog_stream_cntl_ext[i >> 1] |= (uint32_t)swizzle << 16;
         } else {
             vstream->vap_prog_stream_cntl[i >> 1] |= type;
             vstream->vap_prog_stream_cntl_ext[i >> 1] |= swizzle;
@@ -1904,7 +1934,14 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
 
     /* Copy state directly into shader. */
     vs->state = *shader;
-    vs->state.tokens = tgsi_dup_tokens(shader->tokens);
+
+    if (vs->state.type == PIPE_SHADER_IR_NIR) {
+       vs->state.tokens = nir_to_tgsi(shader->ir.nir, pipe->screen);
+    } else {
+       assert(vs->state.type == PIPE_SHADER_IR_TGSI);
+       /* we need to keep a local copy of the tokens */
+       vs->state.tokens = tgsi_dup_tokens(vs->state.tokens);
+    }
 
     if (r300->screen->caps.has_tcl) {
         r300_init_vs_outputs(r300, vs);

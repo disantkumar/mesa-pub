@@ -23,10 +23,11 @@
  * SOFTWARE.
  */
 
-#include "main/mtypes.h"
+#include "main/glheader.h"
 #include "compiler/nir_types.h"
 #include "compiler/nir/nir_builder.h"
 #include "util/u_debug.h"
+#include "util/fast_idiv_by_const.h"
 #include "agx_compile.h"
 #include "agx_compiler.h"
 #include "agx_builder.h"
@@ -88,6 +89,49 @@ agx_emit_load_const(agx_builder *b, nir_load_const_instr *instr)
                   nir_const_value_as_uint(instr->value[0], bit_size));
 }
 
+/* Emit code dividing P by Q */
+static agx_index
+agx_udiv_const(agx_builder *b, agx_index P, uint32_t Q)
+{
+   /* P / 1 = P */
+   if (Q == 1) {
+      return P;
+   }
+
+   /* P / UINT32_MAX = 0, unless P = UINT32_MAX when it's one */
+   if (Q == UINT32_MAX) {
+      agx_index max = agx_mov_imm(b, 32, UINT32_MAX);
+      agx_index one = agx_mov_imm(b, 32, 1);
+      return agx_icmpsel(b, P, max, one, agx_zero(), AGX_ICOND_UEQ);
+   }
+
+   /* P / 2^N = P >> N */
+   if (util_is_power_of_two_or_zero(Q)) {
+      return agx_ushr(b, P, agx_mov_imm(b, 32, util_logbase2(Q)));
+   }
+
+   /* Fall back on multiplication by a magic number */
+   struct util_fast_udiv_info info = util_compute_fast_udiv_info(Q, 32, 32);
+   agx_index preshift = agx_mov_imm(b, 32, info.pre_shift);
+   agx_index increment = agx_mov_imm(b, 32, info.increment);
+   agx_index postshift = agx_mov_imm(b, 32, info.post_shift);
+   agx_index multiplier = agx_mov_imm(b, 32, info.multiplier);
+   agx_index multiplied = agx_temp(b->shader, AGX_SIZE_64);
+   agx_index n = P;
+
+   if (info.pre_shift != 0) n = agx_ushr(b, n, preshift);
+   if (info.increment != 0) n = agx_iadd(b, n, increment, 0);
+
+   /* 64-bit multiplication, zero extending 32-bit x 32-bit, get the top word */
+   agx_imad_to(b, multiplied, agx_abs(n), agx_abs(multiplier), agx_zero(), 0);
+   n = agx_temp(b->shader, AGX_SIZE_32);
+   agx_p_extract_to(b, n, multiplied, 1);
+
+   if (info.post_shift != 0) n = agx_ushr(b, n, postshift);
+
+   return n;
+}
+
 /* AGX appears to lack support for vertex attributes. Lower to global loads. */
 static agx_instr *
 agx_emit_load_attr(agx_builder *b, nir_intrinsic_instr *instr)
@@ -102,10 +146,21 @@ agx_emit_load_attr(agx_builder *b, nir_intrinsic_instr *instr)
 
    /* address = base + (stride * vertex_id) + src_offset */
    unsigned buf = attrib.buf;
-   agx_index stride = agx_mov_imm(b, 32, key->vs.vbuf_strides[buf]);
+   unsigned stride = key->vs.vbuf_strides[buf];
+   unsigned shift = agx_format_shift(attrib.format);
+
+   agx_index shifted_stride = agx_mov_imm(b, 32, stride >> shift);
    agx_index src_offset = agx_mov_imm(b, 32, attrib.src_offset);
-   agx_index vertex_id = agx_register(10, AGX_SIZE_32); // TODO: RA
-   agx_index offset = agx_imad(b, vertex_id, stride, src_offset, 0);
+
+   agx_index vertex_id = agx_register(10, AGX_SIZE_32);
+   agx_index instance_id = agx_register(12, AGX_SIZE_32);
+
+   /* A nonzero divisor requires dividing the instance ID. A zero divisor
+    * specifies per-instance data. */
+   agx_index element_id = (attrib.divisor == 0) ? vertex_id :
+                          agx_udiv_const(b, instance_id, attrib.divisor);
+
+   agx_index offset = agx_imad(b, element_id, shifted_stride, src_offset, 0);
 
    /* Each VBO has a 64-bit = 4 x 16-bit address, lookup the base address as a sysval */
    unsigned num_vbos = key->vs.num_vbufs;
@@ -223,6 +278,15 @@ agx_emit_fragment_out(agx_builder *b, nir_intrinsic_instr *instr)
 	   agx_writeout(b, 0x000C);
    }
 
+   if (b->shader->nir->info.fs.uses_discard) {
+      /* If the shader uses discard, the sample mask must be written by the
+       * shader on all exeuction paths. If we've reached the end of the shader,
+       * we are therefore still active and need to write a full sample mask.
+       * TODO: interactions with MSAA and gl_SampleMask writes
+       */
+      agx_sample_mask(b, agx_immediate(1));
+   }
+
    b->shader->did_writeout = true;
    return agx_st_tile(b, agx_src_index(&instr->src[0]),
              b->shader->key->fs.tib_formats[rt]);
@@ -271,17 +335,6 @@ agx_emit_load_ubo(agx_builder *b, nir_intrinsic_instr *instr)
    if (!kernel_input && !nir_src_is_const(instr->src[0]))
       unreachable("todo: indirect UBO access");
 
-   /* Constant offsets for device_load are 16-bit */
-   bool offset_is_const = nir_src_is_const(*offset);
-   assert(offset_is_const && "todo: indirect UBO access");
-   int32_t const_offset = offset_is_const ? nir_src_as_int(*offset) : 0;
-
-   /* Offsets are shifted by the type size, so divide that out */
-   unsigned bytes = nir_dest_bit_size(instr->dest) / 8;
-   assert((const_offset & (bytes - 1)) == 0);
-   const_offset = const_offset / bytes;
-   int16_t const_as_16 = const_offset;
-
    /* UBO blocks are specified (kernel inputs are always 0) */
    uint32_t block = kernel_input ? 0 : nir_src_as_uint(instr->src[0]);
 
@@ -299,9 +352,7 @@ agx_emit_load_ubo(agx_builder *b, nir_intrinsic_instr *instr)
    assert(instr->num_components <= 4);
 
    agx_device_load_to(b, agx_dest_index(&instr->dest),
-                      base,
-                      (offset_is_const && (const_offset == const_as_16)) ?
-                      agx_immediate(const_as_16) : agx_mov_imm(b, 32, const_offset),
+                      base, agx_src_index(offset),
                       agx_format_for_bits(nir_dest_bit_size(instr->dest)),
                       BITFIELD_MASK(instr->num_components), 0);
 
@@ -334,6 +385,25 @@ agx_blend_const(agx_builder *b, agx_index dst, unsigned comp)
            AGX_PUSH_BLEND_CONST, AGX_SIZE_32, comp * 2, 4 * 2);
 
      return agx_mov_to(b, dst, val);
+}
+
+/*
+ * Demoting a helper invocation is logically equivalent to zeroing the sample
+ * mask. Metal implement discard as such.
+ *
+ * XXX: Actually, Metal's "discard" is a demote, and what is implemented here
+ * is a demote. There might be a better way to implement this to get correct
+ * helper invocation semantics. For now, I'm kicking the can down the road.
+ */
+static agx_instr *
+agx_emit_discard(agx_builder *b, nir_intrinsic_instr *instr)
+{
+   agx_writeout(b, 0xC200);
+   agx_writeout(b, 0x0001);
+   b->shader->did_writeout = true;
+
+   b->shader->out->writes_sample_mask = true;
+   return agx_sample_mask(b, agx_immediate(0));
 }
 
 static agx_instr *
@@ -382,11 +452,17 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
   case nir_intrinsic_load_frag_coord:
      return agx_emit_load_frag_coord(b, instr);
 
+  case nir_intrinsic_discard:
+     return agx_emit_discard(b, instr);
+
   case nir_intrinsic_load_back_face_agx:
      return agx_get_sr_to(b, dst, AGX_SR_BACKFACING);
 
   case nir_intrinsic_load_vertex_id:
-     return agx_mov_to(b, dst, agx_abs(agx_register(10, AGX_SIZE_32))); /* TODO: RA */
+     return agx_mov_to(b, dst, agx_abs(agx_register(10, AGX_SIZE_32)));
+
+  case nir_intrinsic_load_instance_id:
+     return agx_mov_to(b, dst, agx_abs(agx_register(12, AGX_SIZE_32)));
 
   case nir_intrinsic_load_blend_const_color_r_float: return agx_blend_const(b, dst, 0);
   case nir_intrinsic_load_blend_const_color_g_float: return agx_blend_const(b, dst, 1);
@@ -539,7 +615,7 @@ agx_emit_alu(agx_builder *b, nir_alu_instr *instr)
    case nir_op_imul: return agx_imad_to(b, dst, s0, s1, agx_zero(), 0);
 
    case nir_op_ishl: return agx_bfi_to(b, dst, agx_zero(), s0, s1, 0);
-   case nir_op_ushr: return agx_bfeil_to(b, dst, agx_zero(), s0, s1, 0);
+   case nir_op_ushr: return agx_ushr_to(b, dst, s0, s1);
    case nir_op_ishr: return agx_asr_to(b, dst, s0, s1);
 
    case nir_op_bcsel:
@@ -1138,6 +1214,33 @@ agx_lower_point_coord(struct nir_builder *b,
    return true;
 }
 
+static bool
+agx_lower_aligned_offsets(struct nir_builder *b,
+                          nir_instr *instr, UNUSED void *data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   if (intr->intrinsic != nir_intrinsic_load_ubo)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+
+   unsigned bytes = nir_dest_bit_size(intr->dest) / 8;
+   assert(util_is_power_of_two_or_zero(bytes) && bytes != 0);
+
+   nir_src *offset = &intr->src[1];
+
+   unsigned shift = util_logbase2(bytes);
+
+   nir_ssa_def *old = nir_ssa_for_src(b, *offset, 1);
+   nir_ssa_def *new = nir_ishr_imm(b, old, shift);
+
+   nir_instr_rewrite_src_ssa(instr, offset, new);
+   return true;
+}
+
 static void
 agx_optimize_nir(nir_shader *nir)
 {
@@ -1177,10 +1280,7 @@ agx_optimize_nir(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_undef);
       NIR_PASS(progress, nir, nir_lower_undef_to_zero);
 
-      NIR_PASS(progress, nir, nir_opt_loop_unroll,
-               nir_var_shader_in |
-               nir_var_shader_out |
-               nir_var_function_temp);
+      NIR_PASS(progress, nir, nir_opt_loop_unroll);
    } while (progress);
 
    NIR_PASS_V(nir, nir_opt_algebraic_late);
@@ -1356,6 +1456,10 @@ agx_compile_shader_nir(nir_shader *nir,
       NIR_PASS_V(nir, nir_lower_mediump_io,
             nir_var_shader_in | nir_var_shader_out, ~0, false);
    }
+   NIR_PASS_V(nir, nir_shader_instructions_pass,
+         agx_lower_aligned_offsets,
+         nir_metadata_block_index | nir_metadata_dominance, NULL);
+
    NIR_PASS_V(nir, nir_lower_ssbo);
 
    /* Varying output is scalar, other I/O is vector */

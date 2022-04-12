@@ -247,6 +247,13 @@ nir_blend_logicop(
    return out;
 }
 
+static nir_ssa_def *
+nir_fsat_signed(nir_builder *b, nir_ssa_def *x)
+{
+   return nir_fclamp(b, x, nir_imm_floatN_t(b, -1.0, x->bit_size),
+                           nir_imm_floatN_t(b, +1.0, x->bit_size));
+}
+
 /* Given a blend state, the source color, and the destination color,
  * return the blended color
  */
@@ -276,8 +283,18 @@ nir_blend(
    /* Fixed-point framebuffers require their inputs clamped. */
    enum pipe_format format = options.format[rt];
 
-   if (!util_format_is_float(format))
+   /* From section 17.3.6 "Blending" of the OpenGL 4.5 spec:
+    *
+    *     If the color buffer is fixed-point, the components of the source and
+    *     destination values and blend factors are each clamped to [0, 1] or
+    *     [-1, 1] respectively for an unsigned normalized or signed normalized
+    *     color buffer prior to evaluating the blend equation. If the color
+    *     buffer is floating-point, no clamping occurs.
+    */
+   if (util_format_is_unorm(format))
       src = nir_fsat(b, src);
+   else if (util_format_is_snorm(format))
+      src = nir_fsat_signed(b, src);
 
    /* DST_ALPHA reads back 1.0 if there is no alpha channel */
    const struct util_format_description *desc =
@@ -344,10 +361,16 @@ nir_lower_blend_instr(nir_builder *b, nir_instr *instr, void *data)
       (var->data.location == FRAG_RESULT_COLOR) ? 0 :
       (var->data.location - FRAG_RESULT_DATA0);
 
+   /* No blend lowering requested on this RT */
+   if (options->format[rt] == PIPE_FORMAT_NONE)
+      return false;
+
    b->cursor = nir_before_instr(instr);
 
    /* Grab the input color */
-   nir_ssa_def *src = nir_ssa_for_src(b, intr->src[1], 4);
+   unsigned src_num_comps = nir_src_num_components(intr->src[1]);
+   nir_ssa_def *src =
+      nir_pad_vector(b, nir_ssa_for_src(b, intr->src[1], src_num_comps), 4);
 
    /* Grab the previous fragment color */
    var->data.fb_fetch_output = true;
@@ -358,13 +381,18 @@ nir_lower_blend_instr(nir_builder *b, nir_instr *instr, void *data)
    /* Blend the two colors per the passed options */
    nir_ssa_def *blended = src;
 
-   if (options->logicop_enable)
+   if (options->logicop_enable) {
       blended = nir_blend_logicop(b, *options, rt, src, dst);
-   else if (!util_format_is_pure_integer(options->format[rt]))
+   } else if (!util_format_is_pure_integer(options->format[rt])) {
+      assert(!util_format_is_scaled(options->format[rt]));
       blended = nir_blend(b, *options, rt, src, options->src1, dst);
+   }
 
    /* Apply a colormask */
    blended = nir_color_mask(b, options->rt[rt].colormask, blended, dst);
+
+   if (src_num_comps != 4)
+      blended = nir_channels(b, blended, BITFIELD_MASK(src_num_comps));
 
    /* Write out the final color instead of the input */
    nir_instr_rewrite_src_ssa(instr, &intr->src[1], blended);

@@ -118,6 +118,7 @@ struct fd_resource {
    struct threaded_resource b;
    struct fd_bo *bo; /* use fd_resource_set_bo() to write */
    enum pipe_format internal_format;
+   uint32_t hash; /* _mesa_hash_pointer() on this resource's address. */
    struct fdl_layout layout;
 
    /* buffer range that has been initialized */
@@ -389,6 +390,27 @@ fd_batch_resource_read(struct fd_batch *batch,
     */
    if (unlikely(!fd_batch_references_resource(batch, rsc)))
       fd_batch_resource_read_slowpath(batch, rsc);
+}
+
+static inline enum fdl_view_type
+fdl_type_from_pipe_target(enum pipe_texture_target target) {
+   switch (target) {
+   case PIPE_TEXTURE_1D:
+   case PIPE_TEXTURE_1D_ARRAY:
+      return FDL_VIEW_TYPE_1D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+   case PIPE_TEXTURE_2D_ARRAY:
+      return FDL_VIEW_TYPE_2D;
+   case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_CUBE_ARRAY:
+      return FDL_VIEW_TYPE_CUBE;
+   case PIPE_TEXTURE_3D:
+      return FDL_VIEW_TYPE_3D;
+   case PIPE_MAX_TEXTURE_TYPES:
+   default:
+      unreachable("bad texture type");
+   }
 }
 
 #endif /* FREEDRENO_RESOURCE_H_ */

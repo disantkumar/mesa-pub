@@ -87,30 +87,31 @@ void r3xx_compile_fragment_program(struct r300_fragment_program_compiler* c)
 	/* Lists of instruction transformations. */
 	struct radeon_program_transformation force_alpha_to_one[] = {
 		{ &rc_force_output_alpha_to_one, c },
-		{ 0, 0 }
+		{ NULL, NULL }
 	};
 
 	struct radeon_program_transformation rewrite_tex[] = {
 		{ &radeonTransformTEX, c },
-		{ 0, 0 }
+		{ NULL, NULL }
 	};
 
 	struct radeon_program_transformation rewrite_if[] = {
-		{ &r500_transform_IF, 0 },
-		{0, 0}
+		{ &r500_transform_IF, NULL },
+		{ NULL, NULL }
 	};
 
 	struct radeon_program_transformation native_rewrite_r500[] = {
-		{ &radeonTransformALU, 0 },
-		{ &radeonTransformDeriv, 0 },
-		{ &radeonTransformTrigScale, 0 },
-		{ 0, 0 }
+		{ &radeonTransformALU, NULL },
+		{ &radeonTransformDeriv, NULL },
+		{ &radeonTransformTrigScale, NULL },
+		{ NULL, NULL }
 	};
 
 	struct radeon_program_transformation native_rewrite_r300[] = {
-		{ &radeonTransformALU, 0 },
-		{ &r300_transform_trig_simple, 0 },
-		{ 0, 0 }
+		{ &radeonTransformALU, NULL },
+		{ &radeonStubDeriv, NULL },
+		{ &r300_transform_trig_simple, NULL },
+		{ NULL, NULL }
 	};
 
 	/* List of compiler passes. */
@@ -120,7 +121,6 @@ void r3xx_compile_fragment_program(struct r300_fragment_program_compiler* c)
 		/* This transformation needs to be done before any of the IF
 		 * instructions are modified. */
 		{"transform KILP",		1, 1,		rc_transform_KILL,		NULL},
-		{"unroll loops",		1, is_r500,	rc_unroll_loops,		NULL},
 		{"transform loops",		1, !is_r500,	rc_transform_loops,		NULL},
 		{"emulate branches",		1, !is_r500,	rc_emulate_branches,		NULL},
 		{"force alpha to one",		1, alpha2one,	rc_local_transform,		force_alpha_to_one},

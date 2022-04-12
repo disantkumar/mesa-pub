@@ -1,5 +1,7 @@
 /*
  * Copyright 2010 Red Hat Inc.
+ * Copyright © 2014-2017 Broadcom
+ * Copyright (C) 2019-2020 Collabora, Ltd.
  * Copyright 2006 VMware, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -128,6 +130,7 @@ agx_is_2d(const struct agx_resource *pres)
    switch (pres->base.target) {
    case PIPE_TEXTURE_2D:
    case PIPE_TEXTURE_RECT:
+   case PIPE_TEXTURE_CUBE:
       return true;
    default:
       return false;
@@ -135,8 +138,22 @@ agx_is_2d(const struct agx_resource *pres)
 }
 
 static bool
-agx_should_tile(struct agx_device *dev,
-                const struct agx_resource *pres)
+agx_must_tile(const struct agx_resource *pres)
+{
+   switch (pres->base.target) {
+   case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_3D:
+      /* We don't know how to do linear for these */
+      return true;
+   default:
+      break;
+   }
+
+   return false;
+}
+
+static bool
+agx_should_tile(const struct agx_resource *pres)
 {
    const unsigned valid_binding =
       PIPE_BIND_DEPTH_STENCIL |
@@ -153,7 +170,11 @@ agx_should_tile(struct agx_device *dev,
       && (bpp == 32)
       && ((pres->base.bind & ~valid_binding) == 0);
 
-   return can_tile && (pres->base.usage != PIPE_USAGE_STREAM);
+   bool should_tile = (pres->base.usage != PIPE_USAGE_STREAM);
+   bool must_tile = agx_must_tile(pres);
+
+   assert(!(must_tile && !can_tile));
+   return must_tile || (can_tile && should_tile);
 }
 
 static struct pipe_resource *
@@ -170,10 +191,8 @@ agx_resource_create(struct pipe_screen *screen,
    nresource->base = *templ;
    nresource->base.screen = screen;
 
-   nresource->modifier =
-      agx_should_tile(dev, nresource) ?
-      DRM_FORMAT_MOD_APPLE_64X64_MORTON_ORDER :
-      DRM_FORMAT_MOD_LINEAR;
+   nresource->modifier = agx_should_tile(nresource) ?
+      DRM_FORMAT_MOD_APPLE_64X64_MORTON_ORDER : DRM_FORMAT_MOD_LINEAR;
 
    unsigned offset = 0;
 
@@ -192,6 +211,10 @@ agx_resource_create(struct pipe_screen *screen,
       nresource->slices[l].offset = offset;
       offset += ALIGN_POT(nresource->slices[l].line_stride * height, 0x80);
    }
+
+   /* Arrays and cubemaps have the entire miptree duplicated */
+   nresource->array_stride = ALIGN_POT(offset, 64);
+   unsigned size = ALIGN_POT(nresource->array_stride * templ->array_size, 4096);
 
    pipe_reference_init(&nresource->base.reference, 1);
 
@@ -227,7 +250,6 @@ agx_resource_create(struct pipe_screen *screen,
       }
    }
 
-   unsigned size = ALIGN_POT(offset, 4096);
    nresource->bo = agx_bo_create(dev, size, AGX_MEMORY_TYPE_FRAMEBUFFER);
 
    if (!nresource->bo) {
@@ -236,6 +258,16 @@ agx_resource_create(struct pipe_screen *screen,
    }
 
    return &nresource->base;
+}
+
+static uint8_t *
+agx_rsrc_offset(struct agx_resource *rsrc, unsigned level, unsigned z)
+{
+   struct agx_bo *bo = rsrc->bo;
+   uint8_t *map = ((uint8_t *) bo->ptr.cpu) + rsrc->slices[level].offset;
+   map += z * rsrc->array_stride;
+
+   return map;
 }
 
 static void
@@ -278,7 +310,6 @@ agx_transfer_map(struct pipe_context *pctx,
    struct agx_context *ctx = agx_context(pctx);
    struct agx_resource *rsrc = agx_resource(resource);
    unsigned bytes_per_pixel = util_format_get_blocksize(resource->format);
-   struct agx_bo *bo = rsrc->bo;
 
    /* Can't map tiled/compressed directly */
    if ((usage & PIPE_MAP_DIRECTLY) && rsrc->modifier != DRM_FORMAT_MOD_LINEAR)
@@ -304,12 +335,14 @@ agx_transfer_map(struct pipe_context *pctx,
       assert(box->depth == 1);
 
       if ((usage & PIPE_MAP_READ) && BITSET_TEST(rsrc->data_valid, level)) {
-         agx_detile(
-            ((uint8_t *) bo->ptr.cpu) + rsrc->slices[level].offset,
-            transfer->map,
-            u_minify(resource->width0, level), bytes_per_pixel * 8,
-            transfer->base.stride / bytes_per_pixel,
-            box->x, box->y, box->x + box->width, box->y + box->height);
+         for (unsigned z = 0; z < box->depth; ++z) {
+            uint8_t *map = agx_rsrc_offset(rsrc, level, box->z + z);
+
+            agx_detile(map, transfer->map,
+               u_minify(resource->width0, level), bytes_per_pixel * 8,
+               transfer->base.stride / bytes_per_pixel,
+               box->x, box->y, box->x + box->width, box->y + box->height);
+         }
       }
 
       return transfer->map;
@@ -317,16 +350,14 @@ agx_transfer_map(struct pipe_context *pctx,
       assert (rsrc->modifier == DRM_FORMAT_MOD_LINEAR);
 
       transfer->base.stride = rsrc->slices[level].line_stride;
-      transfer->base.layer_stride = 0; // TODO
+      transfer->base.layer_stride = rsrc->array_stride;
 
       /* Be conservative for direct writes */
 
       if ((usage & PIPE_MAP_WRITE) && (usage & PIPE_MAP_DIRECTLY))
          BITSET_SET(rsrc->data_valid, level);
 
-      return ((uint8_t *) bo->ptr.cpu)
-             + rsrc->slices[level].offset
-             + transfer->base.box.z * transfer->base.layer_stride
+      return agx_rsrc_offset(rsrc, level, box->z)
              + transfer->base.box.y * rsrc->slices[level].line_stride
              + transfer->base.box.x * bytes_per_pixel;
    }
@@ -349,19 +380,20 @@ agx_transfer_unmap(struct pipe_context *pctx,
    /* Tiling will occur in software from a staging cpu buffer */
    if ((transfer->usage & PIPE_MAP_WRITE) &&
          rsrc->modifier == DRM_FORMAT_MOD_APPLE_64X64_MORTON_ORDER) {
-      struct agx_bo *bo = rsrc->bo;
       assert(trans->map != NULL);
-      assert(transfer->box.depth == 1);
 
-      agx_tile(
-         ((uint8_t *) bo->ptr.cpu) + rsrc->slices[transfer->level].offset,
-         trans->map,
-         u_minify(transfer->resource->width0, transfer->level),
-         bytes_per_pixel * 8,
-         transfer->stride / bytes_per_pixel,
-         transfer->box.x, transfer->box.y,
-         transfer->box.x + transfer->box.width,
-         transfer->box.y + transfer->box.height);
+      for (unsigned z = 0; z < transfer->box.depth; ++z) {
+         uint8_t *map = agx_rsrc_offset(rsrc, transfer->level,
+               transfer->box.z + z);
+
+         agx_tile(map, trans->map,
+            u_minify(transfer->resource->width0, transfer->level),
+            bytes_per_pixel * 8,
+            transfer->stride / bytes_per_pixel,
+            transfer->box.x, transfer->box.y,
+            transfer->box.x + transfer->box.width,
+            transfer->box.y + transfer->box.height);
+      }
    }
 
    /* Free the transfer */
@@ -728,6 +760,7 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
    case PIPE_CAP_SURFACE_SAMPLE_COUNT:
+   case PIPE_CAP_SAMPLE_SHADING:
       return is_deqp;
 
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
@@ -749,9 +782,9 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
-      return 130;
+      return is_deqp ? 330 : 130;
    case PIPE_CAP_ESSL_FEATURE_LEVEL:
-      return 120;
+      return is_deqp ? 320 : 120;
 
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 16;
@@ -789,7 +822,7 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET:
       return 0xffff;
 
-   case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+   case PIPE_CAP_TEXTURE_TRANSFER_MODES:
       return 0;
 
    case PIPE_CAP_ENDIANNESS:
@@ -830,12 +863,22 @@ agx_get_paramf(struct pipe_screen* pscreen,
                enum pipe_capf param)
 {
    switch (param) {
+   case PIPE_CAPF_MIN_LINE_WIDTH:
+   case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+   case PIPE_CAPF_MIN_POINT_SIZE:
+   case PIPE_CAPF_MIN_POINT_SIZE_AA:
+      return 1;
+
+   case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+   case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+      return 0.1;
+
    case PIPE_CAPF_MAX_LINE_WIDTH:
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 16.0; /* Off-by-one fixed point 4:4 encoding */
 
-   case PIPE_CAPF_MAX_POINT_WIDTH:
-   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_SIZE:
+   case PIPE_CAPF_MAX_POINT_SIZE_AA:
       return 511.95f;
 
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
@@ -1082,6 +1125,19 @@ agx_screen_create(struct sw_winsys *winsys)
    if (!agx_open_device(screen, &agx_screen->dev)) {
       ralloc_free(agx_screen);
       return NULL;
+   }
+
+   if (agx_screen->dev.debug & AGX_DBG_DEQP) {
+      /* You're on your own. */
+      static bool warned_about_hacks = false;
+
+      if (!warned_about_hacks) {
+         fprintf(stderr, "\n------------------\n"
+                         "Unsupported debug parameter set. Expect breakage.\n"
+                         "Do not report bugs.\n"
+                         "------------------\n\n");
+         warned_about_hacks = true;
+      }
    }
 
    screen->destroy = agx_destroy_screen;

@@ -270,10 +270,12 @@ enum opcode {
    BRW_OPCODE_SUBB, /**< Gfx7+ */
    BRW_OPCODE_SAD2,
    BRW_OPCODE_SADA2,
+   BRW_OPCODE_ADD3, /* Gen12+ only */
    BRW_OPCODE_DP4,
    BRW_OPCODE_DPH,
    BRW_OPCODE_DP3,
    BRW_OPCODE_DP2,
+   BRW_OPCODE_DP4A, /**< Gfx12+ */
    BRW_OPCODE_LINE,
    BRW_OPCODE_PLN, /**< G45+ */
    BRW_OPCODE_MAD, /**< Gfx6+ */
@@ -354,6 +356,7 @@ enum opcode {
    SHADER_OPCODE_TXF_CMS_LOGICAL,
    SHADER_OPCODE_TXF_CMS_W,
    SHADER_OPCODE_TXF_CMS_W_LOGICAL,
+   SHADER_OPCODE_TXF_CMS_W_GFX12_LOGICAL,
    SHADER_OPCODE_TXF_UMS,
    SHADER_OPCODE_TXF_UMS_LOGICAL,
    SHADER_OPCODE_TXF_MCS,
@@ -391,8 +394,6 @@ enum opcode {
     * bits.
     */
    FS_OPCODE_PACK,
-
-   SHADER_OPCODE_SHADER_TIME_ADD,
 
    /**
     * Typed and untyped surface access opcodes.
@@ -440,6 +441,7 @@ enum opcode {
    SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL,
    SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL,
    SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL,
+   SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL,
 
    SHADER_OPCODE_TYPED_ATOMIC_LOGICAL,
    SHADER_OPCODE_TYPED_SURFACE_READ_LOGICAL,
@@ -1298,6 +1300,9 @@ enum brw_message_target {
 #define BRW_SAMPLER_RETURN_FORMAT_UINT32      2
 #define BRW_SAMPLER_RETURN_FORMAT_SINT32      3
 
+#define GFX8_SAMPLER_RETURN_FORMAT_32BITS    0
+#define GFX8_SAMPLER_RETURN_FORMAT_16BITS    1
+
 #define BRW_SAMPLER_MESSAGE_SIMD8_SAMPLE              0
 #define BRW_SAMPLER_MESSAGE_SIMD16_SAMPLE             0
 #define BRW_SAMPLER_MESSAGE_SIMD16_SAMPLE_BIAS        0
@@ -1346,6 +1351,9 @@ enum brw_message_target {
 #define BRW_SAMPLER_SIMD_MODE_SIMD8                     1
 #define BRW_SAMPLER_SIMD_MODE_SIMD16                    2
 #define BRW_SAMPLER_SIMD_MODE_SIMD32_64                 3
+
+#define GFX10_SAMPLER_SIMD_MODE_SIMD8H                  5
+#define GFX10_SAMPLER_SIMD_MODE_SIMD16H                 6
 
 /* GFX9 changes SIMD mode 0 to mean SIMD8D, but lets us get the SIMD4x2
  * behavior by setting bit 22 of dword 2 in the message header. */
@@ -1566,6 +1574,7 @@ enum brw_message_target {
 #define BRW_AOP_FMAX                  1
 #define BRW_AOP_FMIN                  2
 #define BRW_AOP_FCMPWR                3
+#define BRW_AOP_FADD                  4
 
 #define BRW_MATH_FUNCTION_INV                              1
 #define BRW_MATH_FUNCTION_LOG                              2
@@ -1604,6 +1613,7 @@ enum brw_message_target {
 #define GFX8_URB_OPCODE_ATOMIC_ADD  6
 #define GFX8_URB_OPCODE_SIMD8_WRITE 7
 #define GFX8_URB_OPCODE_SIMD8_READ  8
+#define GFX125_URB_OPCODE_FENCE     9
 
 #define BRW_URB_SWIZZLE_NONE          0
 #define BRW_URB_SWIZZLE_INTERLEAVE    1
@@ -1952,6 +1962,11 @@ enum PACKED lsc_flush_type {
     * Flush "RW" section of the L3 cache, but leave L1 and L2 caches untouched.
     */
    LSC_FLUSH_TYPE_L3ONLY = 5,
+   /*
+    * HW maps this flush type internally to NONE.
+    */
+   LSC_FLUSH_TYPE_NONE_6 = 6,
+
 };
 
 enum PACKED lsc_backup_fence_routing {

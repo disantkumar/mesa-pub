@@ -38,10 +38,10 @@
 #include "util/u_upload_mgr.h"
 #include "intel/compiler/brw_compiler.h"
 #include "intel/compiler/brw_eu_defines.h"
+#include "compiler/shader_info.h"
 #include "crocus_context.h"
 #include "crocus_defines.h"
 #include "util/u_prim_restart.h"
-#include "indices/u_primconvert.h"
 #include "util/u_prim.h"
 
 static bool
@@ -166,8 +166,8 @@ crocus_update_draw_info(struct crocus_context *ice,
    }
 
    if (info->mode == PIPE_PRIM_PATCHES &&
-       ice->state.vertices_per_patch != info->vertices_per_patch) {
-      ice->state.vertices_per_patch = info->vertices_per_patch;
+       ice->state.vertices_per_patch != ice->state.patch_vertices) {
+      ice->state.vertices_per_patch = ice->state.patch_vertices;
 
       if (screen->devinfo.ver == 8)
          ice->state.dirty |= CROCUS_DIRTY_GEN8_VF_TOPOLOGY;

@@ -223,7 +223,7 @@ VkResult anv_AcquirePerformanceConfigurationINTEL(
    config = vk_object_alloc(&device->vk, NULL, sizeof(*config),
                             VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL);
    if (!config)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       config->register_config =
@@ -285,7 +285,7 @@ VkResult anv_QueueSetPerformanceConfigurationINTEL(
          int ret = intel_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
                                (void *)(uintptr_t) config->config_id);
          if (ret < 0)
-            return anv_device_set_lost(device, "i915-perf config failed: %m");
+            return vk_device_set_lost(&device->vk, "i915-perf config failed: %m");
       }
    }
 

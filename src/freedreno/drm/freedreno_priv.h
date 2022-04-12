@@ -46,6 +46,7 @@
 #include "util/u_debug.h"
 #include "util/u_math.h"
 
+#include "freedreno_dev_info.h"
 #include "freedreno_drmif.h"
 #include "freedreno_ringbuffer.h"
 
@@ -129,7 +130,9 @@ struct fd_device {
    struct fd_bo_cache bo_cache;
    struct fd_bo_cache ring_cache;
 
-   int closefd; /* call close(fd) upon destruction */
+   bool has_cached_coherent;
+
+   bool closefd; /* call close(fd) upon destruction */
 
    /* just for valgrind: */
    int bo_size;
@@ -145,6 +148,23 @@ struct fd_device {
    struct list_head deferred_submits;
    unsigned deferred_cmds;
    simple_mtx_t submit_lock;
+
+   /**
+    * BO for suballocating long-lived state objects.
+    *
+    * Note: one would be tempted to put this in fd_pipe to avoid locking.
+    * But that is a bad idea for a couple of reasons:
+    *
+    *  1) With TC, stateobj allocation can happen in either frontend thread
+    *     (ie. most CSOs), and also driver thread (a6xx cached tex state)
+    *  2) It is best for fd_pipe to not hold a reference to a BO that can
+    *     be free'd to bo cache, as that can cause unexpected re-entrancy
+    *     (fd_bo_cache_alloc() -> find_in_bucket() -> fd_bo_state() ->
+    *     cleanup_fences() -> drop pipe ref which free's bo's).
+    */
+   struct fd_bo *suballoc_bo;
+   uint32_t suballoc_offset;
+   simple_mtx_t suballoc_lock;
 };
 
 #define foreach_submit(name, list) \
@@ -192,7 +212,7 @@ struct fd_pipe_control {
 struct fd_pipe {
    struct fd_device *dev;
    enum fd_pipe_id id;
-   uint32_t gpu_id;
+   struct fd_dev_id dev_id;
 
    /**
     * Note refcnt is *not* atomic, but protected by table_lock, since the
@@ -283,7 +303,8 @@ struct fd_bo {
    uint32_t handle;
    uint32_t name;
    int32_t refcnt;
-   uint32_t flags; /* flags like FD_RELOC_DUMP to use for relocs to this BO */
+   uint32_t reloc_flags; /* flags like FD_RELOC_DUMP to use for relocs to this BO */
+   uint32_t alloc_flags; /* flags that control allocation/mapping, ie. FD_BO_x */
    uint64_t iova;
    void *map;
    const struct fd_bo_funcs *funcs;

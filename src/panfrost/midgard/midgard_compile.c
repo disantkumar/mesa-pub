@@ -31,7 +31,6 @@
 #include <stdio.h>
 #include <err.h>
 
-#include "main/mtypes.h"
 #include "compiler/glsl/glsl_to_nir.h"
 #include "compiler/nir_types.h"
 #include "compiler/nir/nir_builder.h"
@@ -40,7 +39,6 @@
 #include "util/u_debug.h"
 #include "util/u_dynarray.h"
 #include "util/list.h"
-#include "main/mtypes.h"
 
 #include "midgard.h"
 #include "midgard_nir.h"
@@ -49,7 +47,6 @@
 #include "helpers.h"
 #include "compiler.h"
 #include "midgard_quirks.h"
-#include "panfrost-quirks.h"
 #include "panfrost/util/pan_lower_framebuffer.h"
 
 #include "disassemble.h"
@@ -369,10 +366,7 @@ optimise_nir(nir_shader *nir, unsigned quirks, bool is_blend)
                 NIR_PASS(progress, nir, nir_opt_undef);
                 NIR_PASS(progress, nir, nir_lower_undef_to_zero);
 
-                NIR_PASS(progress, nir, nir_opt_loop_unroll,
-                         nir_var_shader_in |
-                         nir_var_shader_out |
-                         nir_var_function_temp);
+                NIR_PASS(progress, nir, nir_opt_loop_unroll);
 
                 NIR_PASS(progress, nir, nir_opt_vectorize,
                          midgard_vectorize_filter, NULL);
@@ -1872,54 +1866,55 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
         case nir_intrinsic_store_combined_output_pan:
                 assert(nir_src_is_const(instr->src[1]) && "no indirect outputs");
 
-                offset = nir_intrinsic_base(instr) + nir_src_as_uint(instr->src[1]);
-
                 reg = nir_src_index(ctx, &instr->src[0]);
 
                 if (ctx->stage == MESA_SHADER_FRAGMENT) {
                         bool combined = instr->intrinsic ==
                                 nir_intrinsic_store_combined_output_pan;
 
-                        const nir_variable *var;
-                        var = nir_find_variable_with_driver_location(ctx->nir, nir_var_shader_out,
-                                         nir_intrinsic_base(instr));
-                        assert(var);
-
-                        /* Dual-source blend writeout is done by leaving the
-                         * value in r2 for the blend shader to use. */
-                        if (var->data.index) {
-                                if (instr->src[0].is_ssa) {
-                                        emit_explicit_constant(ctx, reg, reg);
-
-                                        unsigned out = make_compiler_temp(ctx);
-
-                                        midgard_instruction ins = v_mov(reg, out);
-                                        emit_mir_instruction(ctx, ins);
-
-                                        ctx->blend_src1 = out;
-                                } else {
-                                        ctx->blend_src1 = reg;
-                                }
-
-                                break;
-                        }
-
                         enum midgard_rt_id rt;
-                        if (var->data.location >= FRAG_RESULT_DATA0)
-                                rt = MIDGARD_COLOR_RT0 + var->data.location -
-                                     FRAG_RESULT_DATA0;
-                        else if (combined)
-                                rt = MIDGARD_ZS_RT;
-                        else
-                                unreachable("bad rt");
 
-                        unsigned reg_z = ~0, reg_s = ~0;
+                        unsigned reg_z = ~0, reg_s = ~0, reg_2 = ~0;
                         if (combined) {
                                 unsigned writeout = nir_intrinsic_component(instr);
                                 if (writeout & PAN_WRITEOUT_Z)
                                         reg_z = nir_src_index(ctx, &instr->src[2]);
                                 if (writeout & PAN_WRITEOUT_S)
                                         reg_s = nir_src_index(ctx, &instr->src[3]);
+                                if (writeout & PAN_WRITEOUT_2)
+                                        reg_2 = nir_src_index(ctx, &instr->src[4]);
+
+                                if (writeout & PAN_WRITEOUT_C)
+                                        rt = MIDGARD_COLOR_RT0;
+                                else
+                                        rt = MIDGARD_ZS_RT;
+                        } else {
+                                const nir_variable *var =
+                                        nir_find_variable_with_driver_location(ctx->nir, nir_var_shader_out,
+                                                 nir_intrinsic_base(instr));
+
+                                assert(var != NULL);
+                                assert(var->data.location >= FRAG_RESULT_DATA0);
+
+                                rt = MIDGARD_COLOR_RT0 + var->data.location -
+                                     FRAG_RESULT_DATA0;
+                        }
+
+                        /* Dual-source blend writeout is done by leaving the
+                         * value in r2 for the blend shader to use. */
+                        if (~reg_2) {
+                                if (instr->src[4].is_ssa) {
+                                        emit_explicit_constant(ctx, reg_2, reg_2);
+
+                                        unsigned out = make_compiler_temp(ctx);
+
+                                        midgard_instruction ins = v_mov(reg_2, out);
+                                        emit_mir_instruction(ctx, ins);
+
+                                        ctx->blend_src1 = out;
+                                } else {
+                                        ctx->blend_src1 = reg_2;
+                                }
                         }
 
                         emit_fragment_store(ctx, reg, reg_z, reg_s, rt, 0);
@@ -1935,6 +1930,8 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
                          * emit that explicitly. */
 
                         emit_explicit_constant(ctx, reg, reg);
+
+                        offset = nir_intrinsic_base(instr) + nir_src_as_uint(instr->src[1]);
 
                         unsigned dst_component = nir_intrinsic_component(instr);
                         unsigned nr_comp = nir_src_num_components(instr->src[0]);
@@ -2038,6 +2035,10 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
         case nir_intrinsic_load_sampler_lod_parameters_pan:
         case nir_intrinsic_load_workgroup_size:
                 emit_sysval_read(ctx, &instr->instr, 3, 0);
+                break;
+
+        case nir_intrinsic_load_blend_const_color_rgba:
+                emit_sysval_read(ctx, &instr->instr, 4, 0);
                 break;
 
         case nir_intrinsic_load_workgroup_id:
@@ -3089,9 +3090,9 @@ midgard_compile_shader_nir(nir_shader *nir,
         NIR_PASS_V(nir, nir_lower_var_copies);
         NIR_PASS_V(nir, nir_lower_vars_to_ssa);
 
-        unsigned pan_quirks = panfrost_get_quirks(inputs->gpu_id, 0);
         NIR_PASS_V(nir, pan_lower_framebuffer,
-                   inputs->rt_formats, inputs->is_blend, pan_quirks);
+                   inputs->rt_formats, inputs->raw_fmt_mask,
+                   inputs->is_blend, ctx->quirks & MIDGARD_BROKEN_BLEND_LOADS);
 
         NIR_PASS_V(nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
                         glsl_type_size, 0);
@@ -3103,8 +3104,6 @@ midgard_compile_shader_nir(nir_shader *nir,
         /* Optimisation passes */
 
         optimise_nir(nir, ctx->quirks, inputs->is_blend);
-
-        NIR_PASS_V(nir, pan_nir_reorder_writeout);
 
         if ((midgard_debug & MIDGARD_DBG_SHADERS) &&
             ((midgard_debug & MIDGARD_DBG_INTERNAL) || !nir->info.internal)) {
@@ -3229,7 +3228,7 @@ midgard_compile_shader_nir(nir_shader *nir,
         /* Report the very first tag executed */
         info->midgard.first_tag = midgard_get_first_tag_from_block(ctx, 0);
 
-        info->ubo_mask = ctx->ubo_mask & BITSET_MASK(ctx->nir->info.num_ubos);
+        info->ubo_mask = ctx->ubo_mask & ((1 << ctx->nir->info.num_ubos) - 1);
 
         if ((midgard_debug & MIDGARD_DBG_SHADERS) &&
             ((midgard_debug & MIDGARD_DBG_INTERNAL) || !nir->info.internal)) {
@@ -3284,6 +3283,9 @@ midgard_compile_shader_nir(nir_shader *nir,
                         ctx->loop_count,
                         ctx->spills, ctx->fills);
         }
+
+        _mesa_hash_table_u64_destroy(ctx->ssa_constants);
+        _mesa_hash_table_u64_destroy(ctx->sysval_to_id);
 
         ralloc_free(ctx);
 }

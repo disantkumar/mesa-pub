@@ -34,13 +34,29 @@
 #include "common/intel_l3_config.h"
 #include "blorp/blorp_genX_exec.h"
 
+#include "ds/intel_tracepoints.h"
+
 static void blorp_measure_start(struct blorp_batch *_batch,
                                 const struct blorp_params *params)
 {
    struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
+   trace_intel_begin_blorp(&cmd_buffer->trace, cmd_buffer);
    anv_measure_snapshot(cmd_buffer,
                         params->snapshot_type,
                         NULL, 0);
+}
+
+static void blorp_measure_end(struct blorp_batch *_batch,
+                              const struct blorp_params *params)
+{
+   struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
+   trace_intel_end_blorp(&cmd_buffer->trace, cmd_buffer,
+                         params->x1 - params->x0,
+                         params->y1 - params->y0,
+                         params->hiz_op,
+                         params->fast_clear_op,
+                         params->shader_type,
+                         params->shader_pipeline);
 }
 
 static void *
@@ -129,6 +145,22 @@ blorp_alloc_dynamic_state(struct blorp_batch *batch,
 
    struct anv_state state =
       anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, size, alignment);
+
+   *offset = state.offset;
+   return state.map;
+}
+
+UNUSED static void *
+blorp_alloc_general_state(struct blorp_batch *batch,
+                          uint32_t size,
+                          uint32_t alignment,
+                          uint32_t *offset)
+{
+   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+
+   struct anv_state state =
+      anv_state_stream_alloc(&cmd_buffer->general_state_stream, size,
+                             alignment);
 
    *offset = state.offset;
    return state.map;
@@ -233,17 +265,14 @@ blorp_get_l3_config(struct blorp_batch *batch)
    return cmd_buffer->state.current_l3_config;
 }
 
-void
-genX(blorp_exec)(struct blorp_batch *batch,
-                 const struct blorp_params *params)
+static void
+blorp_exec_on_render(struct blorp_batch *batch,
+                     const struct blorp_params *params)
 {
-   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+   assert((batch->flags & BLORP_BATCH_USE_COMPUTE) == 0);
 
-   if (!cmd_buffer->state.current_l3_config) {
-      const struct intel_l3_config *cfg =
-         intel_get_default_l3_config(&cmd_buffer->device->info);
-      genX(cmd_buffer_config_l3)(cmd_buffer, cfg);
-   }
+   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+   assert(cmd_buffer->pool->queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT);
 
    const unsigned scale = params->fast_clear_op ? UINT_MAX : 1;
    genX(cmd_buffer_emit_hashing_mode)(cmd_buffer, params->x1 - params->x0,
@@ -264,38 +293,14 @@ genX(blorp_exec)(struct blorp_batch *batch,
                              "before blorp BTI change");
 #endif
 
-#if GFX_VERx10 == 120
-   if (!(batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL)) {
-      /* Wa_14010455700
-       *
-       * ISL will change some CHICKEN registers depending on the depth surface
-       * format, along with emitting the depth and stencil packets. In that
-       * case, we want to do a depth flush and stall, so the pipeline is not
-       * using these settings while we change the registers.
-       */
-      cmd_buffer->state.pending_pipe_bits |=
-         ANV_PIPE_DEPTH_CACHE_FLUSH_BIT |
-         ANV_PIPE_DEPTH_STALL_BIT |
-         ANV_PIPE_END_OF_PIPE_SYNC_BIT;
-   }
-#endif
-
-#if GFX_VER == 7
-   /* The MI_LOAD/STORE_REGISTER_MEM commands which BLORP uses to implement
-    * indirect fast-clear colors can cause GPU hangs if we don't stall first.
-    * See genX(cmd_buffer_mi_memcpy) for more details.
-    */
-   if (params->src.clear_color_addr.buffer ||
-       params->dst.clear_color_addr.buffer) {
-      anv_add_pending_pipe_bits(cmd_buffer,
-                                ANV_PIPE_CS_STALL_BIT,
-                                "before blorp prep fast clear");
-   }
-#endif
-
-   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+   if (params->depth.enabled &&
+       !(batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL))
+      genX(cmd_buffer_emit_gfx12_depth_wa)(cmd_buffer, &params->depth.surf);
 
    genX(flush_pipeline_select_3d)(cmd_buffer);
+
+   /* Apply any outstanding flushes in case pipeline select haven't. */
+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
    genX(cmd_buffer_emit_gfx7_depth_flush)(cmd_buffer);
 
@@ -321,7 +326,75 @@ genX(blorp_exec)(struct blorp_batch *batch,
                              "after blorp BTI change");
 #endif
 
+   /* Calculate state that does not get touched by blorp.
+    * Flush everything else.
+    */
+   anv_cmd_dirty_mask_t skip_bits = ANV_CMD_DIRTY_DYNAMIC_SCISSOR |
+                                    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS |
+                                    ANV_CMD_DIRTY_INDEX_BUFFER |
+                                    ANV_CMD_DIRTY_XFB_ENABLE |
+                                    ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE |
+                                    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |
+                                    ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS |
+                                    ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE |
+                                    ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE;
+
+   if (!params->wm_prog_data) {
+      skip_bits |= ANV_CMD_DIRTY_DYNAMIC_COLOR_BLEND_STATE |
+                   ANV_CMD_DIRTY_DYNAMIC_LOGIC_OP;
+   }
+
    cmd_buffer->state.gfx.vb_dirty = ~0;
-   cmd_buffer->state.gfx.dirty = ~0;
-   cmd_buffer->state.push_constants_dirty = ~0;
+   cmd_buffer->state.gfx.dirty |= ~skip_bits;
+   cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_ALL_GRAPHICS;
+}
+
+static void
+blorp_exec_on_compute(struct blorp_batch *batch,
+                      const struct blorp_params *params)
+{
+   assert(batch->flags & BLORP_BATCH_USE_COMPUTE);
+
+   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+   assert(cmd_buffer->pool->queue_family->queueFlags & VK_QUEUE_COMPUTE_BIT);
+
+   genX(flush_pipeline_select_gpgpu)(cmd_buffer);
+
+   /* Apply any outstanding flushes in case pipeline select haven't. */
+   genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+
+   blorp_exec(batch, params);
+
+   cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_COMPUTE_BIT;
+}
+
+void
+genX(blorp_exec)(struct blorp_batch *batch,
+                 const struct blorp_params *params)
+{
+   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+
+   if (!cmd_buffer->state.current_l3_config) {
+      const struct intel_l3_config *cfg =
+         intel_get_default_l3_config(&cmd_buffer->device->info);
+      genX(cmd_buffer_config_l3)(cmd_buffer, cfg);
+   }
+
+#if GFX_VER == 7
+   /* The MI_LOAD/STORE_REGISTER_MEM commands which BLORP uses to implement
+    * indirect fast-clear colors can cause GPU hangs if we don't stall first.
+    * See genX(cmd_buffer_mi_memcpy) for more details.
+    */
+   if (params->src.clear_color_addr.buffer ||
+       params->dst.clear_color_addr.buffer) {
+      anv_add_pending_pipe_bits(cmd_buffer,
+                                ANV_PIPE_CS_STALL_BIT,
+                                "before blorp prep fast clear");
+   }
+#endif
+
+   if (batch->flags & BLORP_BATCH_USE_COMPUTE)
+      blorp_exec_on_compute(batch, params);
+   else
+      blorp_exec_on_render(batch, params);
 }

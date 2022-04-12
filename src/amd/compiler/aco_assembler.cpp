@@ -61,19 +61,6 @@ struct asm_context {
    int subvector_begin_pos = -1;
 };
 
-static uint32_t
-get_sdwa_sel(unsigned sel, PhysReg reg)
-{
-   if (sel & sdwa_isra) {
-      unsigned size = sdwa_rasize & sel;
-      if (size == 1)
-         return reg.byte();
-      else /* size == 2 */
-         return sdwa_isword | (reg.byte() >> 1);
-   }
-   return sel & sdwa_asuint;
-}
-
 unsigned
 get_mimg_nsa_dwords(const Instruction* instr)
 {
@@ -638,6 +625,10 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
          encoding = 0;
          if (instr->opcode == aco_opcode::v_interp_mov_f32) {
             encoding = 0x3 & instr->operands[0].constantValue();
+         } else if (instr->opcode == aco_opcode::v_writelane_b32_e64) {
+            encoding |= instr->operands[0].physReg() << 0;
+            encoding |= instr->operands[1].physReg() << 9;
+            /* Encoding src2 works fine with hardware but breaks some disassemblers. */
          } else {
             for (unsigned i = 0; i < instr->operands.size(); i++)
                encoding |= instr->operands[i].physReg() << (i * 9);
@@ -675,14 +666,14 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
             encoding |= vop3.neg_lo[i] << (29 + i);
          out.push_back(encoding);
 
-      } else if (instr->isDPP()) {
+      } else if (instr->isDPP16()) {
          assert(ctx.chip_class >= GFX8);
-         DPP_instruction& dpp = instr->dpp();
+         DPP16_instruction& dpp = instr->dpp16();
 
          /* first emit the instruction without the DPP operand */
          Operand dpp_op = instr->operands[0];
          instr->operands[0] = Operand(PhysReg{250}, v1);
-         instr->format = (Format)((uint16_t)instr->format & ~(uint16_t)Format::DPP);
+         instr->format = (Format)((uint16_t)instr->format & ~(uint16_t)Format::DPP16);
          emit_instruction(ctx, out, instr);
          uint32_t encoding = (0xF & dpp.row_mask) << 28;
          encoding |= (0xF & dpp.bank_mask) << 24;
@@ -695,6 +686,20 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
          encoding |= dpp.bound_ctrl << 19;
          encoding |= dpp.dpp_ctrl << 8;
          encoding |= (0xFF) & dpp_op.physReg();
+         out.push_back(encoding);
+         return;
+      } else if (instr->isDPP8()) {
+         assert(ctx.chip_class >= GFX10);
+         DPP8_instruction& dpp = instr->dpp8();
+
+         /* first emit the instruction without the DPP operand */
+         Operand dpp_op = instr->operands[0];
+         instr->operands[0] = Operand(PhysReg{234}, v1);
+         instr->format = (Format)((uint16_t)instr->format & ~(uint16_t)Format::DPP8);
+         emit_instruction(ctx, out, instr);
+         uint32_t encoding = (0xFF) & dpp_op.physReg();
+         for (unsigned i = 0; i < 8; ++i)
+            encoding |= dpp.lane_sel[i] << (8 + i * 3);
          out.push_back(encoding);
          return;
       } else if (instr->isSDWA()) {
@@ -715,23 +720,23 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
             }
             encoding |= (sdwa.clamp ? 1 : 0) << 13;
          } else {
-            encoding |= get_sdwa_sel(sdwa.dst_sel, instr->definitions[0].physReg()) << 8;
-            uint32_t dst_u = sdwa.dst_sel & sdwa_sext ? 1 : 0;
-            if (sdwa.dst_preserve || (sdwa.dst_sel & sdwa_isra))
+            encoding |= sdwa.dst_sel.to_sdwa_sel(instr->definitions[0].physReg().byte()) << 8;
+            uint32_t dst_u = sdwa.dst_sel.sign_extend() ? 1 : 0;
+            if (instr->definitions[0].bytes() < 4) /* dst_preserve */
                dst_u = 2;
             encoding |= dst_u << 11;
             encoding |= (sdwa.clamp ? 1 : 0) << 13;
             encoding |= sdwa.omod << 14;
          }
 
-         encoding |= get_sdwa_sel(sdwa.sel[0], sdwa_op.physReg()) << 16;
-         encoding |= sdwa.sel[0] & sdwa_sext ? 1 << 19 : 0;
+         encoding |= sdwa.sel[0].to_sdwa_sel(sdwa_op.physReg().byte()) << 16;
+         encoding |= sdwa.sel[0].sign_extend() ? 1 << 19 : 0;
          encoding |= sdwa.abs[0] << 21;
          encoding |= sdwa.neg[0] << 20;
 
          if (instr->operands.size() >= 2) {
-            encoding |= get_sdwa_sel(sdwa.sel[1], instr->operands[1].physReg()) << 24;
-            encoding |= sdwa.sel[1] & sdwa_sext ? 1 << 27 : 0;
+            encoding |= sdwa.sel[1].to_sdwa_sel(instr->operands[1].physReg().byte()) << 24;
+            encoding |= sdwa.sel[1].sign_extend() ? 1 << 27 : 0;
             encoding |= sdwa.abs[1] << 29;
             encoding |= sdwa.neg[1] << 28;
          }

@@ -86,13 +86,15 @@ void trace_dump_shader_buffer(const struct pipe_shader_buffer *buffer);
 
 void trace_dump_draw_info(const struct pipe_draw_info *state);
 
+void trace_dump_draw_vertex_state_info(struct pipe_draw_vertex_state_info state);
+
 void trace_dump_draw_start_count(const struct pipe_draw_start_count_bias *state);
 
 void trace_dump_draw_indirect_info(const struct pipe_draw_indirect_info *state);
 
 void trace_dump_blit_info(const struct pipe_blit_info *);
 
-void trace_dump_query_result(unsigned query_type,
+void trace_dump_query_result(unsigned query_type, unsigned index,
                              const union pipe_query_result *result);
 
 void trace_dump_grid_info(const struct pipe_grid_info *state);

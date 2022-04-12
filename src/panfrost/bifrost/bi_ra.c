@@ -178,7 +178,12 @@ lcra_count_constraints(struct lcra_state *l, unsigned i)
  * that union is the desired clobber set. That may be written equivalently as
  * the union over i < n of (B - i), where subtraction is defined elementwise
  * and corresponds to a shift of the entire bitset.
+ *
+ * EVEN_BITS_MASK is an affinity mask for aligned register pairs. Interpreted
+ * as a bit set, it is { x : 0 <= x < 64 if x is even }
  */
+
+#define EVEN_BITS_MASK (0x5555555555555555ull)
 
 static uint64_t
 bi_make_affinity(uint64_t clobber, unsigned count, bool split_file)
@@ -207,7 +212,7 @@ bi_make_affinity(uint64_t clobber, unsigned count, bool split_file)
 }
 
 static void
-bi_mark_interference(bi_block *block, struct lcra_state *l, uint16_t *live, uint64_t preload_live, unsigned node_count, bool is_blend, bool split_file)
+bi_mark_interference(bi_block *block, struct lcra_state *l, uint8_t *live, uint64_t preload_live, unsigned node_count, bool is_blend, bool split_file, bool aligned_sr)
 {
         bi_foreach_instr_in_block_rev(block, ins) {
                 /* Mark all registers live after the instruction as
@@ -228,6 +233,11 @@ bi_mark_interference(bi_block *block, struct lcra_state *l, uint16_t *live, uint
                         unsigned count = bi_count_write_registers(ins, d);
                         unsigned offset = ins->dest[d].offset;
                         uint64_t affinity = bi_make_affinity(preload_live, count, split_file);
+
+                        /* Valhall needs >= 64-bit staging writes to be pair-aligned */
+                        if (aligned_sr && count >= 2)
+                                affinity &= EVEN_BITS_MASK;
+
                         l->affinity[node] &= (affinity >> offset);
 
                         for (unsigned i = 0; i < node_count; ++i) {
@@ -236,6 +246,20 @@ bi_mark_interference(bi_block *block, struct lcra_state *l, uint16_t *live, uint
                                                         bi_writemask(ins, d), i, live[i]);
                                 }
                         }
+
+                        unsigned node_first = bi_get_node(ins->dest[0]);
+                        if (d == 1 && node_first < node_count) {
+                                lcra_add_node_interference(l, node, bi_writemask(ins, 1),
+                                                           node_first, bi_writemask(ins, 0));
+                        }
+                }
+
+                /* Valhall needs >= 64-bit staging reads to be pair-aligned */
+                if (aligned_sr && bi_count_read_registers(ins, 0) >= 2) {
+                        unsigned node = bi_get_node(ins->src[0]);
+
+                        if (node < node_count)
+                                l->affinity[node] &= EVEN_BITS_MASK;
                 }
 
                 if (!is_blend && ins->op == BI_OPCODE_BLEND) {
@@ -264,12 +288,12 @@ bi_compute_interference(bi_context *ctx, struct lcra_state *l, bool full_regs)
         bi_compute_liveness(ctx);
         bi_postra_liveness(ctx);
 
-        bi_foreach_block_rev(ctx, _blk) {
-                bi_block *blk = (bi_block *) _blk;
-                uint16_t *live = mem_dup(_blk->live_out, node_count * sizeof(uint16_t));
+        bi_foreach_block_rev(ctx, blk) {
+                uint8_t *live = mem_dup(blk->live_out, node_count);
 
                 bi_mark_interference(blk, l, live, blk->reg_live_out,
-                                node_count, ctx->inputs->is_blend, !full_regs);
+                                node_count, ctx->inputs->is_blend, !full_regs,
+                                ctx->arch >= 9);
 
                 free(live);
         }
@@ -294,18 +318,22 @@ bi_allocate_registers(bi_context *ctx, bool *success, bool full_regs)
                 bi_foreach_dest(ins, d) {
                         unsigned dest = bi_get_node(ins->dest[d]);
 
-                        /* Blend shaders expect the src colour to be in r0-r3 */
-                        if (ins->op == BI_OPCODE_BLEND &&
-                            !ctx->inputs->is_blend) {
-                                unsigned node = bi_get_node(ins->src[0]);
-                                assert(node < node_count);
-                                l->solutions[node] = 0;
-                        }
-
                         if (dest < node_count)
                                 l->affinity[dest] = default_affinity;
                 }
 
+                /* Blend shaders expect the src colour to be in r0-r3 */
+                if (ins->op == BI_OPCODE_BLEND &&
+                    !ctx->inputs->is_blend) {
+                        unsigned node = bi_get_node(ins->src[0]);
+                        assert(node < node_count);
+                        l->solutions[node] = 0;
+
+                        /* Dual source blend input in r4-r7 */
+                        node = bi_get_node(ins->src[4]);
+                        if (node < node_count)
+                                l->solutions[node] = 4;
+                }
         }
 
         bi_compute_interference(ctx, l, full_regs);
@@ -346,6 +374,25 @@ bi_reg_from_index(bi_context *ctx, struct lcra_state *l, bi_index index)
         return new_index;
 }
 
+/* Dual texture instructions write to two sets of staging registers, modeled as
+ * two destinations in the IR. The first set is communicated with the usual
+ * staging register mechanism. The second set is encoded in the texture
+ * operation descriptor. This is quite unusual, and requires the following late
+ * fixup.
+ */
+static void
+bi_fixup_dual_tex_register(bi_instr *I)
+{
+        assert(I->dest[1].type == BI_INDEX_REGISTER);
+        assert(I->src[3].type == BI_INDEX_CONSTANT);
+
+        struct bifrost_dual_texture_operation desc = {
+                .secondary_register = I->dest[1].value
+        };
+
+        I->src[3].value |= bi_dual_tex_as_u32(desc);
+}
+
 static void
 bi_install_registers(bi_context *ctx, struct lcra_state *l)
 {
@@ -355,6 +402,9 @@ bi_install_registers(bi_context *ctx, struct lcra_state *l)
 
                 bi_foreach_src(ins, s)
                         ins->src[s] = bi_reg_from_index(ctx, l, ins->src[s]);
+
+                if (ins->op == BI_OPCODE_TEXC && !bi_is_null(ins->dest[1]))
+                        bi_fixup_dual_tex_register(ins);
         }
 }
 
@@ -480,7 +530,7 @@ bi_register_allocate(bi_context *ctx)
         unsigned iter_count = 1000; /* max iterations */
 
         /* Number of bytes of memory we've spilled into */
-        unsigned spill_count = ctx->info->tls_size;
+        unsigned spill_count = ctx->info.tls_size;
 
         /* Try with reduced register pressure to improve thread count on v7 */
         if (ctx->arch == 7) {
@@ -488,8 +538,8 @@ bi_register_allocate(bi_context *ctx)
                 l = bi_allocate_registers(ctx, &success, false);
 
                 if (success) {
-                        ctx->info->work_reg_count = 32;
-                } else if (!success) {
+                        ctx->info.work_reg_count = 32;
+                } else {
                         lcra_free(l);
                         l = NULL;
                 }
@@ -501,7 +551,7 @@ bi_register_allocate(bi_context *ctx)
                 l = bi_allocate_registers(ctx, &success, true);
 
                 if (success) {
-                        ctx->info->work_reg_count = 64;
+                        ctx->info.work_reg_count = 64;
                 } else {
                         signed spill_node = bi_choose_spill_node(ctx, l);
                         lcra_free(l);
@@ -517,8 +567,9 @@ bi_register_allocate(bi_context *ctx)
         }
 
         assert(success);
+        assert(l != NULL);
 
-        ctx->info->tls_size = spill_count;
+        ctx->info.tls_size = spill_count;
         bi_install_registers(ctx, l);
 
         lcra_free(l);

@@ -25,17 +25,31 @@
 """Send a job to LAVA, track it and collect log back"""
 
 import argparse
-import lavacli
-import os
+import pathlib
 import sys
 import time
 import traceback
 import urllib.parse
 import xmlrpc
-import yaml
+from datetime import datetime, timedelta
 
-from datetime import datetime
+import lavacli
+import yaml
 from lavacli.utils import loader
+
+# Timeout in minutes to decide if the device from the dispatched LAVA job has
+# hung or not due to the lack of new log output.
+DEVICE_HANGING_TIMEOUT_MIN = 5
+
+# How many seconds the script should wait before try a new polling iteration to
+# check if the dispatched LAVA job is running or waiting in the job queue.
+WAIT_FOR_DEVICE_POLLING_TIME_SEC = 10
+
+# How many seconds to wait between log output LAVA RPC calls.
+LOG_POLLING_TIME_SEC = 5
+
+# How many retries should be made when a timeout happen.
+NUMBER_OF_RETRIES_TIMEOUT_DETECTION = 2
 
 
 def print_log(msg):
@@ -45,19 +59,31 @@ def fatal_err(msg):
     print_log(msg)
     sys.exit(1)
 
+
+def hide_sensitive_data(yaml_data, hide_tag="HIDEME"):
+    out_data = ""
+
+    for line in yaml_data.splitlines(True):
+        if hide_tag in line:
+            continue
+        out_data += line
+
+    return out_data
+
+
 def generate_lava_yaml(args):
     # General metadata and permissions, plus also inexplicably kernel arguments
     values = {
         'job_name': 'mesa: {}'.format(args.pipeline_info),
         'device_type': args.device_type,
-        'visibility': { 'group': [ 'Collabora+fdo'] },
+        'visibility': { 'group': [ args.visibility_group ] },
         'priority': 75,
         'context': {
             'extra_nfsroot_args': ' init=/init rootwait minio_results={}'.format(args.job_artifacts_base)
         },
         'timeouts': {
             'job': {
-                'minutes': 30
+                'minutes': args.job_timeout
             }
         },
     }
@@ -97,7 +123,7 @@ def generate_lava_yaml(args):
     # skeleton test definition: only declaring each job as a single 'test'
     # since LAVA's test parsing is not useful to us
     test = {
-      'timeout': { 'minutes': 30 },
+      'timeout': { 'minutes': args.job_timeout },
       'failure_retry': 1,
       'definitions': [ {
         'name': 'mesa',
@@ -112,7 +138,7 @@ def generate_lava_yaml(args):
             'format': 'Lava-Test Test Definition 1.0',
           },
           'parse': {
-            'pattern': 'hwci: (?P<test_case_id>\S*):\s+(?P<result>(pass|fail))'
+            'pattern': r'hwci: (?P<test_case_id>\S*):\s+(?P<result>(pass|fail))'
           },
           'run': {
           },
@@ -126,15 +152,22 @@ def generate_lava_yaml(args):
     #   - fetch and unpack per-job environment from lava-submit.sh
     #   - exec .gitlab-ci/common/init-stage2.sh 
     init_lines = []
+
     with open(args.first_stage_init, 'r') as init_sh:
       init_lines += [ x.rstrip() for x in init_sh if not x.startswith('#') and x.rstrip() ]
+
+    with open(args.jwt_file) as jwt_file:
+        init_lines += [
+            "set +x",
+            f'echo -n "{jwt_file.read()}" > "{args.jwt_file}"  # HIDEME',
+            "set -x",
+        ]
+
     init_lines += [
       'mkdir -p {}'.format(args.ci_project_dir),
       'wget -S --progress=dot:giga -O- {} | tar -xz -C {}'.format(args.mesa_build_url, args.ci_project_dir),
       'wget -S --progress=dot:giga -O- {} | tar -xz -C /'.format(args.job_rootfs_overlay_url),
-      'set +x',
-      'export CI_JOB_JWT="{}"'.format(args.jwt),
-      'set -x',
+      f'echo "export CI_JOB_JWT_FILE={args.jwt_file}" >> /set-job-env-vars.sh',
       'exec /init-stage2.sh',
     ]
     test['definitions'][0]['repository']['run']['steps'] = init_lines
@@ -210,19 +243,44 @@ def get_job_results(proxy, job_id, test_suite, test_case):
 
     return True
 
+def wait_until_job_is_started(proxy, job_id):
+    print_log(f"Waiting for job {job_id} to start.")
+    current_state = "Submitted"
+    waiting_states = ["Submitted", "Scheduling", "Scheduled"]
+    while current_state in waiting_states:
+        job_state = _call_proxy(proxy.scheduler.job_state, job_id)
+        current_state = job_state["job_state"]
+
+        time.sleep(WAIT_FOR_DEVICE_POLLING_TIME_SEC)
+    print_log(f"Job {job_id} started.")
 
 def follow_job_execution(proxy, job_id):
     line_count = 0
     finished = False
+    last_time_logs = datetime.now()
     while not finished:
         (finished, data) = _call_proxy(proxy.scheduler.jobs.logs, job_id, line_count)
         logs = yaml.load(str(data), Loader=loader(False))
         if logs:
+            # Reset the timeout
+            last_time_logs = datetime.now()
             for line in logs:
                 print("{} {}".format(line["dt"], line["msg"]))
 
             line_count += len(logs)
 
+        else:
+            time_limit = timedelta(minutes=DEVICE_HANGING_TIMEOUT_MIN)
+            if datetime.now() - last_time_logs > time_limit:
+                print_log("LAVA job {} doesn't advance (machine got hung?). Retry.".format(job_id))
+                return False
+
+        # `proxy.scheduler.jobs.logs` does not block, even when there is no
+        # new log to be fetched. To avoid dosing the LAVA dispatcher
+        # machine, let's add a sleep to save them some stamina.
+        time.sleep(LOG_POLLING_TIME_SEC)
+
+    return True
 
 def show_job_data(proxy, job_id):
     show = _call_proxy(proxy.scheduler.jobs.show, job_id)
@@ -246,9 +304,7 @@ def main(args):
     yaml_file = generate_lava_yaml(args)
 
     if args.dump_yaml:
-        censored_args = args
-        censored_args.jwt = "jwt-hidden"
-        print(generate_lava_yaml(censored_args))
+        print(hide_sensitive_data(generate_lava_yaml(args)))
 
     if args.validate_only:
         ret = validate_job(proxy, yaml_file)
@@ -257,26 +313,29 @@ def main(args):
         print("LAVA job definition validated successfully")
         return
 
+    retry_count = NUMBER_OF_RETRIES_TIMEOUT_DETECTION
 
-    while True:
+    while retry_count >= 0:
         job_id = submit_job(proxy, yaml_file)
 
         print_log("LAVA job id: {}".format(job_id))
 
-        follow_job_execution(proxy, job_id)
+        wait_until_job_is_started(proxy, job_id)
+
+        if not follow_job_execution(proxy, job_id):
+            print_log(f"Job {job_id} has timed out. Cancelling it.")
+            # Cancel the job as it is considered unreachable by Mesa CI.
+            proxy.scheduler.jobs.cancel(job_id)
+
+            retry_count -= 1
+            continue
 
         show_job_data(proxy, job_id)
 
         if get_job_results(proxy,  job_id, "0_mesa", "mesa") == True:
              break
 
-
-if __name__ == '__main__':
-    # given that we proxy from DUT -> LAVA dispatcher -> LAVA primary -> us ->
-    # GitLab runner -> GitLab primary -> user, safe to say we don't need any
-    # more buffering
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+def create_parser():
     parser = argparse.ArgumentParser("LAVA job submitter")
 
     parser.add_argument("--pipeline-info")
@@ -284,6 +343,7 @@ if __name__ == '__main__':
     parser.add_argument("--mesa-build-url")
     parser.add_argument("--job-rootfs-overlay-url")
     parser.add_argument("--job-artifacts-base")
+    parser.add_argument("--job-timeout", type=int)
     parser.add_argument("--first-stage-init")
     parser.add_argument("--ci-project-dir")
     parser.add_argument("--device-type")
@@ -292,9 +352,21 @@ if __name__ == '__main__':
     parser.add_argument("--kernel-image-type", nargs='?', default="")
     parser.add_argument("--boot-method")
     parser.add_argument("--lava-tags", nargs='?', default="")
-    parser.add_argument("--jwt")
+    parser.add_argument("--jwt-file", type=pathlib.Path)
     parser.add_argument("--validate-only", action='store_true')
     parser.add_argument("--dump-yaml", action='store_true')
+    parser.add_argument("--visibility-group")
+
+    return parser
+
+if __name__ == "__main__":
+    # given that we proxy from DUT -> LAVA dispatcher -> LAVA primary -> us ->
+    # GitLab runner -> GitLab primary -> user, safe to say we don't need any
+    # more buffering
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
+    parser = create_parser()
 
     parser.set_defaults(func=main)
     args = parser.parse_args()

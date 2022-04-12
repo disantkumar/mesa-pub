@@ -25,6 +25,7 @@
 #include "compiler/nir/nir.h"
 
 #include "util/u_debug.h"
+#include "util/u_prim.h"
 
 #include "codegen/nv50_ir.h"
 #include "codegen/nv50_ir_from_common.h"
@@ -64,11 +65,15 @@ function_temp_type_info(const struct glsl_type *type, unsigned *size, unsigned *
 {
    assert(glsl_type_is_vector_or_scalar(type));
 
-   unsigned comp_size = glsl_type_is_boolean(type) ? 4 : glsl_get_bit_size(type) / 8;
-   unsigned length = glsl_get_vector_elements(type);
+   if (glsl_type_is_scalar(type)) {
+      glsl_get_natural_size_align_bytes(type, size, align);
+   } else {
+      unsigned comp_size = glsl_type_is_boolean(type) ? 4 : glsl_get_bit_size(type) / 8;
+      unsigned length = glsl_get_vector_elements(type);
 
-   *size = comp_size * length;
-   *align = 0x10;
+      *size = comp_size * length;
+      *align = 0x10;
+   }
 }
 
 class Converter : public ConverterCommon
@@ -132,7 +137,6 @@ private:
 
    DataType getDType(nir_alu_instr *);
    DataType getDType(nir_intrinsic_instr *);
-   DataType getDType(nir_intrinsic_instr *, bool isSigned);
    DataType getDType(nir_op, uint8_t);
 
    DataFile getFile(nir_intrinsic_op);
@@ -167,7 +171,6 @@ private:
    bool visit(nir_tex_instr *);
 
    // tex stuff
-   Value* applyProjection(Value *src, Value *proj);
    unsigned int getNIRArgCount(TexInstruction::Target&);
 
    nir_shader *nir;
@@ -271,29 +274,33 @@ Converter::getDType(nir_alu_instr *insn)
 DataType
 Converter::getDType(nir_intrinsic_instr *insn)
 {
-   bool isSigned;
+   bool isFloat, isSigned;
    switch (insn->intrinsic) {
+   case nir_intrinsic_bindless_image_atomic_fadd:
+   case nir_intrinsic_global_atomic_fadd:
+   case nir_intrinsic_image_atomic_fadd:
+   case nir_intrinsic_shared_atomic_fadd:
+   case nir_intrinsic_ssbo_atomic_fadd:
+      isFloat = true;
+      isSigned = false;
+      break;
    case nir_intrinsic_shared_atomic_imax:
    case nir_intrinsic_shared_atomic_imin:
    case nir_intrinsic_ssbo_atomic_imax:
    case nir_intrinsic_ssbo_atomic_imin:
+      isFloat = false;
       isSigned = true;
       break;
    default:
+      isFloat = false;
       isSigned = false;
       break;
    }
 
-   return getDType(insn, isSigned);
-}
-
-DataType
-Converter::getDType(nir_intrinsic_instr *insn, bool isSigned)
-{
    if (insn->dest.is_ssa)
-      return typeOfSize(insn->dest.ssa.bit_size / 8, false, isSigned);
+      return typeOfSize(insn->dest.ssa.bit_size / 8, isFloat, isSigned);
    else
-      return typeOfSize(insn->dest.reg.reg->bit_size / 8, false, isSigned);
+      return typeOfSize(insn->dest.reg.reg->bit_size / 8, isFloat, isSigned);
 }
 
 DataType
@@ -614,6 +621,12 @@ Converter::getSubOp(nir_intrinsic_op op)
    case nir_intrinsic_image_atomic_add:
    case nir_intrinsic_shared_atomic_add:
    case nir_intrinsic_ssbo_atomic_add:
+      return  NV50_IR_SUBOP_ATOM_ADD;
+   case nir_intrinsic_bindless_image_atomic_fadd:
+   case nir_intrinsic_global_atomic_fadd:
+   case nir_intrinsic_image_atomic_fadd:
+   case nir_intrinsic_shared_atomic_fadd:
+   case nir_intrinsic_ssbo_atomic_fadd:
       return  NV50_IR_SUBOP_ATOM_ADD;
    case nir_intrinsic_bindless_image_atomic_and:
    case nir_intrinsic_global_atomic_and:
@@ -1313,10 +1326,7 @@ Converter::parseNIR()
       break;
    case Program::TYPE_TESSELLATION_CONTROL:
    case Program::TYPE_TESSELLATION_EVAL:
-      if (nir->info.tess.primitive_mode == GL_ISOLINES)
-         info_out->prop.tp.domain = GL_LINES;
-      else
-         info_out->prop.tp.domain = nir->info.tess.primitive_mode;
+      info_out->prop.tp.domain = u_tess_prim_from_shader(nir->info.tess._primitive_mode);
       info_out->prop.tp.outputPatchSize = nir->info.tess.tcs_vertices_out;
       info_out->prop.tp.outputPrim =
          nir->info.tess.point_mode ? PIPE_PRIM_POINTS : PIPE_PRIM_TRIANGLES;
@@ -1698,7 +1708,7 @@ Converter::visit(nir_intrinsic_instr *insn)
          }
 
          TexInstruction *texi = mkTex(OP_TXF, TEX_TARGET_2D_MS_ARRAY, 0, 0, defs, srcs);
-         texi->tex.levelZero = 1;
+         texi->tex.levelZero = true;
          texi->tex.mask = mask;
          texi->tex.useOffsets = 0;
          texi->tex.r = 0xffff;
@@ -2042,6 +2052,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       break;
    }
    case nir_intrinsic_shared_atomic_add:
+   case nir_intrinsic_shared_atomic_fadd:
    case nir_intrinsic_shared_atomic_and:
    case nir_intrinsic_shared_atomic_comp_swap:
    case nir_intrinsic_shared_atomic_exchange:
@@ -2064,6 +2075,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       break;
    }
    case nir_intrinsic_ssbo_atomic_add:
+   case nir_intrinsic_ssbo_atomic_fadd:
    case nir_intrinsic_ssbo_atomic_and:
    case nir_intrinsic_ssbo_atomic_comp_swap:
    case nir_intrinsic_ssbo_atomic_exchange:
@@ -2093,6 +2105,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       break;
    }
    case nir_intrinsic_global_atomic_add:
+   case nir_intrinsic_global_atomic_fadd:
    case nir_intrinsic_global_atomic_and:
    case nir_intrinsic_global_atomic_comp_swap:
    case nir_intrinsic_global_atomic_exchange:
@@ -2119,6 +2132,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       break;
    }
    case nir_intrinsic_bindless_image_atomic_add:
+   case nir_intrinsic_bindless_image_atomic_fadd:
    case nir_intrinsic_bindless_image_atomic_and:
    case nir_intrinsic_bindless_image_atomic_comp_swap:
    case nir_intrinsic_bindless_image_atomic_exchange:
@@ -2135,6 +2149,7 @@ Converter::visit(nir_intrinsic_instr *insn)
    case nir_intrinsic_bindless_image_size:
    case nir_intrinsic_bindless_image_store:
    case nir_intrinsic_image_atomic_add:
+   case nir_intrinsic_image_atomic_fadd:
    case nir_intrinsic_image_atomic_and:
    case nir_intrinsic_image_atomic_comp_swap:
    case nir_intrinsic_image_atomic_exchange:
@@ -2172,6 +2187,7 @@ Converter::visit(nir_intrinsic_instr *insn)
       bool bindless = false;
       switch (op) {
       case nir_intrinsic_bindless_image_atomic_add:
+      case nir_intrinsic_bindless_image_atomic_fadd:
       case nir_intrinsic_bindless_image_atomic_and:
       case nir_intrinsic_bindless_image_atomic_comp_swap:
       case nir_intrinsic_bindless_image_atomic_exchange:
@@ -2189,6 +2205,7 @@ Converter::visit(nir_intrinsic_instr *insn)
          mask = 0x1;
          break;
       case nir_intrinsic_image_atomic_add:
+      case nir_intrinsic_image_atomic_fadd:
       case nir_intrinsic_image_atomic_and:
       case nir_intrinsic_image_atomic_comp_swap:
       case nir_intrinsic_image_atomic_exchange:
@@ -2282,6 +2299,8 @@ Converter::visit(nir_intrinsic_instr *insn)
       DataType sType = getSType(insn->src[0], false, false);
       Value *indirectOffset;
       uint32_t offset = getIndirect(&insn->src[1], 0, indirectOffset);
+      if (indirectOffset)
+         indirectOffset = mkOp1v(OP_MOV, TYPE_U32, getSSA(4, FILE_ADDRESS), indirectOffset);
 
       for (uint8_t i = 0u; i < nir_intrinsic_src_components(insn, 0); ++i) {
          if (!((1u << i) & nir_intrinsic_write_mask(insn)))
@@ -2298,6 +2317,8 @@ Converter::visit(nir_intrinsic_instr *insn)
       LValues &newDefs = convert(&insn->dest);
       Value *indirectOffset;
       uint32_t offset = getIndirect(&insn->src[0], 0, indirectOffset);
+      if (indirectOffset)
+         indirectOffset = mkOp1v(OP_MOV, TYPE_U32, getSSA(4, FILE_ADDRESS), indirectOffset);
 
       for (uint8_t i = 0u; i < dest_components; ++i)
          loadFrom(getFile(op), 0, dType, newDefs[i], offset, i, indirectOffset);
@@ -2897,14 +2918,6 @@ Converter::convert(glsl_sampler_dim dim, bool isArray, bool isShadow)
 }
 #undef CASE_SAMPLER
 
-Value*
-Converter::applyProjection(Value *src, Value *proj)
-{
-   if (!proj)
-      return src;
-   return mkOp2v(OP_MUL, TYPE_F32, getScratch(), src, proj);
-}
-
 unsigned int
 Converter::getNIRArgCount(TexInstruction::Target& target)
 {
@@ -2947,7 +2960,6 @@ Converter::visit(nir_tex_instr *insn)
       std::vector<nir_src*> offsets;
       uint8_t mask = 0;
       bool lz = false;
-      Value *proj = NULL;
       TexInstruction::Target target = convert(insn->sampler_dim, insn->is_array, insn->is_shadow);
       operation op = getOperation(insn->op);
 
@@ -2960,7 +2972,6 @@ Converter::visit(nir_tex_instr *insn)
       int msIdx = nir_tex_instr_src_index(insn, nir_tex_src_ms_index);
       int lodIdx = nir_tex_instr_src_index(insn, nir_tex_src_lod);
       int offsetIdx = nir_tex_instr_src_index(insn, nir_tex_src_offset);
-      int projIdx = nir_tex_instr_src_index(insn, nir_tex_src_projector);
       int sampOffIdx = nir_tex_instr_src_index(insn, nir_tex_src_sampler_offset);
       int texOffIdx = nir_tex_instr_src_index(insn, nir_tex_src_texture_offset);
       int sampHandleIdx = nir_tex_instr_src_index(insn, nir_tex_src_sampler_handle);
@@ -2969,12 +2980,9 @@ Converter::visit(nir_tex_instr *insn)
       bool bindless = sampHandleIdx != -1 || texHandleIdx != -1;
       assert((sampHandleIdx != -1) == (texHandleIdx != -1));
 
-      if (projIdx != -1)
-         proj = mkOp1v(OP_RCP, TYPE_F32, getScratch(), getSrc(&insn->src[projIdx].src, 0));
-
       srcs.resize(insn->coord_components);
       for (uint8_t i = 0u; i < insn->coord_components; ++i)
-         srcs[i] = applyProjection(getSrc(&insn->src[coordsIdx].src, i), proj);
+         srcs[i] = getSrc(&insn->src[coordsIdx].src, i);
 
       // sometimes we get less args than target.getArgCount, but codegen expects the latter
       if (insn->coord_components) {
@@ -3002,7 +3010,7 @@ Converter::visit(nir_tex_instr *insn)
       if (offsetIdx != -1)
          offsets.push_back(&insn->src[offsetIdx].src);
       if (compIdx != -1)
-         srcs.push_back(applyProjection(getSrc(&insn->src[compIdx].src, 0), proj));
+         srcs.push_back(getSrc(&insn->src[compIdx].src, 0));
       if (texOffIdx != -1) {
          srcs.push_back(getSrc(&insn->src[texOffIdx].src, 0));
          texOffIdx = srcs.size() - 1;
@@ -3133,6 +3141,11 @@ Converter::run()
 
    NIR_PASS_V(nir, nir_lower_subgroups, &subgroup_options);
 
+   struct nir_lower_tex_options tex_options = {};
+   tex_options.lower_txp = ~0;
+
+   NIR_PASS_V(nir, nir_lower_tex, &tex_options);
+
    NIR_PASS_V(nir, nir_lower_load_const_to_scalar);
    NIR_PASS_V(nir, nir_lower_alu_to_scalar, NULL, NULL);
    NIR_PASS_V(nir, nir_lower_phis_to_scalar, false);
@@ -3157,6 +3170,7 @@ Converter::run()
       NIR_PASS(progress, nir, nir_copy_prop);
       NIR_PASS(progress, nir, nir_opt_dce);
       NIR_PASS(progress, nir, nir_opt_dead_cf);
+      NIR_PASS(progress, nir, nir_lower_64bit_phis);
    } while (progress);
 
    NIR_PASS_V(nir, nir_lower_bool_to_int32);
@@ -3279,7 +3293,8 @@ nvir_nir_shader_compiler_options(int chipset)
    op.lower_device_index_to_zero = false; // TODO
    op.lower_wpos_pntc = false; // TODO
    op.lower_hadd = true; // TODO
-   op.lower_add_sat = true; // TODO
+   op.lower_uadd_sat = true; // TODO
+   op.lower_iadd_sat = true; // TODO
    op.vectorize_io = false;
    op.lower_to_scalar = false;
    op.unify_interfaces = false;
@@ -3317,6 +3332,8 @@ nvir_nir_shader_compiler_options(int chipset)
    return op;
 }
 
+static const nir_shader_compiler_options g80_nir_shader_compiler_options =
+nvir_nir_shader_compiler_options(NVISA_G80_CHIPSET);
 static const nir_shader_compiler_options gf100_nir_shader_compiler_options =
 nvir_nir_shader_compiler_options(NVISA_GF100_CHIPSET);
 static const nir_shader_compiler_options gm107_nir_shader_compiler_options =
@@ -3331,5 +3348,7 @@ nv50_ir_nir_shader_compiler_options(int chipset)
       return &gv100_nir_shader_compiler_options;
    if (chipset >= NVISA_GM107_CHIPSET)
       return &gm107_nir_shader_compiler_options;
-   return &gf100_nir_shader_compiler_options;
+   if (chipset >= NVISA_GF100_CHIPSET)
+      return &gf100_nir_shader_compiler_options;
+   return &g80_nir_shader_compiler_options;
 }

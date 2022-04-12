@@ -41,7 +41,6 @@ apt-get install -y --no-remove \
       libxkbcommon0 \
       libxrandr2 \
       libxrender1 \
-      python-is-python3 \
       python3-mako \
       python3-numpy \
       python3-packaging \
@@ -60,7 +59,7 @@ apt-get install -y --no-install-recommends \
 
 # Needed for ci-fairy, this revision is able to upload files to MinIO
 # and doesn't depend on git
-pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@0f1abc24c043e63894085a6bd12f14263e8b29eb
+pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@34f4ade99434043f88e164933f570301fd18b125
 
 ############### Build dEQP runner
 . .gitlab-ci/container/build-deqp-runner.sh

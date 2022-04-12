@@ -31,7 +31,7 @@
 #include <stdio.h>
 
 bool si_cs_is_buffer_referenced(struct si_context *sctx, struct pb_buffer *buf,
-                                enum radeon_bo_usage usage)
+                                unsigned usage)
 {
    return sctx->ws->cs_is_buffer_referenced(&sctx->gfx_cs, buf, usage);
 }
@@ -136,6 +136,9 @@ void si_init_resource_fields(struct si_screen *sscreen, struct si_resource *res,
    if (res->b.b.flags & SI_RESOURCE_FLAG_DRIVER_INTERNAL)
       res->flags |= RADEON_FLAG_DRIVER_INTERNAL;
 
+   if (res->b.b.flags & PIPE_RESOURCE_FLAG_SPARSE)
+      res->flags |= RADEON_FLAG_SPARSE;
+
    /* For higher throughput and lower latency over PCIe assuming sequential access.
     * Only CP DMA and optimized compute benefit from this.
     * GFX8 and older don't support RADEON_FLAG_UNCACHED.
@@ -145,30 +148,18 @@ void si_init_resource_fields(struct si_screen *sscreen, struct si_resource *res,
       res->flags |= RADEON_FLAG_UNCACHED;
 
    /* Set expected VRAM and GART usage for the buffer. */
-   res->vram_usage_kb = 0;
-   res->gart_usage_kb = 0;
-   res->max_forced_staging_uploads = 0;
-   res->b.max_forced_staging_uploads = 0;
+   res->memory_usage_kb = MAX2(1, size / 1024);
 
    if (res->domains & RADEON_DOMAIN_VRAM) {
-      res->vram_usage_kb = MAX2(1, size / 1024);
-
-      if (!sscreen->info.smart_access_memory) {
-         /* We don't want to evict buffers from VRAM by mapping them for CPU access,
-          * because they might never be moved back again. If a buffer is large enough,
-          * upload data by copying from a temporary GTT buffer. 8K might not seem much,
-          * but there can be 100000 buffers.
-          *
-          * This tweak improves performance for viewperf.
-          */
-         const unsigned min_size = 8196; /* tuned to minimize mapped VRAM */
-         const unsigned max_staging_uploads = 1; /* number of uploads before mapping directly */
-
-         res->max_forced_staging_uploads = res->b.max_forced_staging_uploads =
-            sscreen->info.has_dedicated_vram && size >= min_size ? max_staging_uploads : 0;
-      }
-   } else if (res->domains & RADEON_DOMAIN_GTT) {
-      res->gart_usage_kb = MAX2(1, size / 1024);
+      /* We don't want to evict buffers from VRAM by mapping them for CPU access,
+       * because they might never be moved back again. If a buffer is large enough,
+       * upload data by copying from a temporary GTT buffer.
+       */
+      if (!sscreen->info.smart_access_memory &&
+          sscreen->info.has_dedicated_vram &&
+          !res->b.cpu_storage && /* TODO: The CPU storage breaks this. */
+          size >= SI_MAX_VRAM_MAP_SIZE)
+         res->b.b.flags |= PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY;
    }
 }
 
@@ -228,12 +219,12 @@ static void si_resource_destroy(struct pipe_screen *screen, struct pipe_resource
       util_range_destroy(&buffer->valid_buffer_range);
       radeon_bo_reference(((struct si_screen*)screen)->ws, &buffer->buf, NULL);
       util_idalloc_mt_free(&sscreen->buffer_ids, buffer->b.buffer_id_unique);
-      FREE(buffer);
+      FREE_CL(buffer);
    } else if (buf->flags & SI_RESOURCE_AUX_PLANE) {
       struct si_auxiliary_texture *tex = (struct si_auxiliary_texture *)buf;
 
       radeon_bo_reference(((struct si_screen*)screen)->ws, &tex->buffer, NULL);
-      FREE(tex);
+      FREE_CL(tex);
    } else {
       struct si_texture *tex = (struct si_texture *)buf;
       struct si_resource *resource = &tex->buffer;
@@ -244,7 +235,7 @@ static void si_resource_destroy(struct pipe_screen *screen, struct pipe_resource
          si_resource_reference(&tex->cmask_buffer, NULL);
       }
       radeon_bo_reference(((struct si_screen*)screen)->ws, &resource->buf, NULL);
-      FREE(tex);
+      FREE_CL(tex);
    }
 }
 
@@ -295,12 +286,9 @@ void si_replace_buffer_storage(struct pipe_context *ctx, struct pipe_resource *d
    radeon_bo_reference(sctx->screen->ws, &sdst->buf, ssrc->buf);
    sdst->gpu_address = ssrc->gpu_address;
    sdst->b.b.bind = ssrc->b.b.bind;
-   sdst->b.max_forced_staging_uploads = ssrc->b.max_forced_staging_uploads;
-   sdst->max_forced_staging_uploads = ssrc->max_forced_staging_uploads;
    sdst->flags = ssrc->flags;
 
-   assert(sdst->vram_usage_kb == ssrc->vram_usage_kb);
-   assert(sdst->gart_usage_kb == ssrc->gart_usage_kb);
+   assert(sdst->memory_usage_kb == ssrc->memory_usage_kb);
    assert(sdst->bo_size == ssrc->bo_size);
    assert(sdst->bo_alignment_log2 == ssrc->bo_alignment_log2);
    assert(sdst->domains == ssrc->domains);
@@ -394,10 +382,7 @@ static void *si_buffer_transfer_map(struct pipe_context *ctx, struct pipe_resour
    bool force_discard_range = false;
    if (usage & (PIPE_MAP_DISCARD_WHOLE_RESOURCE | PIPE_MAP_DISCARD_RANGE) &&
        !(usage & PIPE_MAP_PERSISTENT) &&
-       /* Try not to decrement the counter if it's not positive. Still racy,
-        * but it makes it harder to wrap the counter from INT_MIN to INT_MAX. */
-       buf->max_forced_staging_uploads > 0 &&
-       p_atomic_dec_return(&buf->max_forced_staging_uploads) >= 0) {
+       buf->b.b.flags & PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY) {
       usage &= ~(PIPE_MAP_DISCARD_WHOLE_RESOURCE | PIPE_MAP_UNSYNCHRONIZED);
       usage |= PIPE_MAP_DISCARD_RANGE;
       force_discard_range = true;
@@ -574,18 +559,17 @@ static void si_buffer_subdata(struct pipe_context *ctx, struct pipe_resource *bu
 }
 
 static struct si_resource *si_alloc_buffer_struct(struct pipe_screen *screen,
-                                                  const struct pipe_resource *templ)
+                                                  const struct pipe_resource *templ,
+                                                  bool allow_cpu_storage)
 {
-   struct si_resource *buf;
-
-   buf = MALLOC_STRUCT(si_resource);
+   struct si_resource *buf = MALLOC_STRUCT_CL(si_resource);
 
    buf->b.b = *templ;
    buf->b.b.next = NULL;
    pipe_reference_init(&buf->b.b.reference, 1);
    buf->b.b.screen = screen;
 
-   threaded_resource_init(&buf->b.b);
+   threaded_resource_init(&buf->b.b, allow_cpu_storage, SI_MAP_BUFFER_ALIGNMENT);
 
    buf->buf = NULL;
    buf->bind_history = 0;
@@ -598,23 +582,22 @@ static struct pipe_resource *si_buffer_create(struct pipe_screen *screen,
                                               const struct pipe_resource *templ, unsigned alignment)
 {
    struct si_screen *sscreen = (struct si_screen *)screen;
-   struct si_resource *buf = si_alloc_buffer_struct(screen, templ);
+   struct si_resource *buf =
+      si_alloc_buffer_struct(screen, templ,
+                             templ->width0 <= sscreen->options.tc_max_cpu_storage_size);
 
    if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
       buf->b.b.flags |= SI_RESOURCE_FLAG_UNMAPPABLE;
 
    si_init_resource_fields(sscreen, buf, templ->width0, alignment);
 
-   if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
-      buf->flags |= RADEON_FLAG_SPARSE;
+   buf->b.buffer_id_unique = util_idalloc_mt_alloc(&sscreen->buffer_ids);
 
    if (!si_alloc_resource(sscreen, buf)) {
-      threaded_resource_deinit(&buf->b.b);
-      FREE(buf);
+      si_resource_destroy(screen, &buf->b.b);
       return NULL;
    }
 
-   buf->b.buffer_id_unique = util_idalloc_mt_alloc(&sscreen->buffer_ids);
    return &buf->b.b;
 }
 
@@ -648,7 +631,7 @@ static struct pipe_resource *si_buffer_from_user_memory(struct pipe_screen *scre
 {
    struct si_screen *sscreen = (struct si_screen *)screen;
    struct radeon_winsys *ws = sscreen->ws;
-   struct si_resource *buf = si_alloc_buffer_struct(screen, templ);
+   struct si_resource *buf = si_alloc_buffer_struct(screen, templ, false);
 
    buf->domains = RADEON_DOMAIN_GTT;
    buf->flags = 0;
@@ -656,18 +639,17 @@ static struct pipe_resource *si_buffer_from_user_memory(struct pipe_screen *scre
    util_range_add(&buf->b.b, &buf->valid_buffer_range, 0, templ->width0);
    util_range_add(&buf->b.b, &buf->b.valid_buffer_range, 0, templ->width0);
 
+   buf->b.buffer_id_unique = util_idalloc_mt_alloc(&sscreen->buffer_ids);
+
    /* Convert a user pointer to a buffer. */
    buf->buf = ws->buffer_from_ptr(ws, user_memory, templ->width0);
    if (!buf->buf) {
-      threaded_resource_deinit(&buf->b.b);
-      FREE(buf);
+      si_resource_destroy(screen, &buf->b.b);
       return NULL;
    }
 
    buf->gpu_address = ws->buffer_get_virtual_address(buf->buf);
-   buf->vram_usage_kb = 0;
-   buf->gart_usage_kb = templ->width0 / 1024;
-   buf->b.buffer_id_unique = util_idalloc_mt_alloc(&sscreen->buffer_ids);
+   buf->memory_usage_kb = templ->width0 / 1024;
    return &buf->b.b;
 }
 
@@ -677,7 +659,7 @@ struct pipe_resource *si_buffer_from_winsys_buffer(struct pipe_screen *screen,
                                                    bool dedicated)
 {
    struct si_screen *sscreen = (struct si_screen *)screen;
-   struct si_resource *res = si_alloc_buffer_struct(screen, templ);
+   struct si_resource *res = si_alloc_buffer_struct(screen, templ, false);
 
    if (!res)
       return 0;
@@ -688,10 +670,7 @@ struct pipe_resource *si_buffer_from_winsys_buffer(struct pipe_screen *screen,
    res->bo_alignment_log2 = imported_buf->alignment_log2;
    res->domains = sscreen->ws->buffer_get_initial_domain(res->buf);
 
-   if (res->domains & RADEON_DOMAIN_VRAM)
-      res->vram_usage_kb = MAX2(1, res->bo_size / 1024);
-   else if (res->domains & RADEON_DOMAIN_GTT)
-      res->gart_usage_kb = MAX2(1, res->bo_size / 1024);
+   res->memory_usage_kb = MAX2(1, res->bo_size / 1024);
 
    if (sscreen->ws->buffer_get_flags)
       res->flags = sscreen->ws->buffer_get_flags(res->buf);
@@ -715,6 +694,12 @@ static struct pipe_resource *si_resource_create(struct pipe_screen *screen,
    }
 }
 
+static bool si_buffer_commit(struct si_context *ctx, struct si_resource *res,
+                             struct pipe_box *box, bool commit)
+{
+   return ctx->ws->buffer_commit(ctx->ws, res->buf, box->x, box->width, commit);
+}
+
 static bool si_resource_commit(struct pipe_context *pctx, struct pipe_resource *resource,
                                unsigned level, struct pipe_box *box, bool commit)
 {
@@ -734,9 +719,10 @@ static bool si_resource_commit(struct pipe_context *pctx, struct pipe_resource *
    }
    ctx->ws->cs_sync_flush(&ctx->gfx_cs);
 
-   assert(resource->target == PIPE_BUFFER);
-
-   return ctx->ws->buffer_commit(ctx->ws, res->buf, box->x, box->width, commit);
+   if (resource->target == PIPE_BUFFER)
+      return si_buffer_commit(ctx, res, box, commit);
+   else
+      return si_texture_commit(ctx, res, level, box, commit);
 }
 
 void si_init_screen_buffer_functions(struct si_screen *sscreen)

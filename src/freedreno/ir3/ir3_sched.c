@@ -38,15 +38,17 @@
 #define d(fmt, ...)                                                            \
    do {                                                                        \
       if (SCHED_DEBUG) {                                                       \
-         printf("SCHED: " fmt "\n", ##__VA_ARGS__);                            \
+         mesa_logi("SCHED: " fmt, ##__VA_ARGS__);                              \
       }                                                                        \
    } while (0)
 
 #define di(instr, fmt, ...)                                                    \
    do {                                                                        \
       if (SCHED_DEBUG) {                                                       \
-         printf("SCHED: " fmt ": ", ##__VA_ARGS__);                            \
-         ir3_print_instr(instr);                                               \
+         struct log_stream *stream = mesa_log_streami();                       \
+         mesa_log_stream_printf(stream, "SCHED: " fmt ": ", ##__VA_ARGS__);    \
+         ir3_print_instr_stream(stream, instr);                                \
+         mesa_log_stream_destroy(stream);                                      \
       }                                                                        \
    } while (0)
 
@@ -104,16 +106,18 @@ struct ir3_sched_ctx {
 
    bool error;
 
-   int sfu_delay;
-   int tex_delay;
+   unsigned ip;
 
-   /* We order the scheduled tex/SFU instructions, and keep track of the
+   int sy_delay;
+   int ss_delay;
+
+   /* We order the scheduled (sy)/(ss) producers, and keep track of the
     * index of the last waited on instruction, so we can know which
     * instructions are still outstanding (and therefore would require us to
     * wait for all outstanding instructions before scheduling a use).
     */
-   int tex_index, first_outstanding_tex_index;
-   int sfu_index, first_outstanding_sfu_index;
+   int sy_index, first_outstanding_sy_index;
+   int ss_index, first_outstanding_ss_index;
 };
 
 struct ir3_sched_node {
@@ -123,8 +127,13 @@ struct ir3_sched_node {
    unsigned delay;
    unsigned max_delay;
 
-   unsigned tex_index;
-   unsigned sfu_index;
+   unsigned sy_index;
+   unsigned ss_index;
+
+   /* For ready instructions, the earliest possible ip that it could be
+    * scheduled.
+    */
+   unsigned earliest_ip;
 
    /* For instructions that are a meta:collect src, once we schedule
     * the first src of the collect, the entire vecN is live (at least
@@ -197,13 +206,12 @@ sched_check_src_cond(struct ir3_instruction *instr,
    return false;
 }
 
-/* Is this a prefetch or tex that hasn't been waited on yet? */
+/* Is this a sy producer that hasn't been waited on yet? */
 
 static bool
-is_outstanding_tex_or_prefetch(struct ir3_instruction *instr,
-                               struct ir3_sched_ctx *ctx)
+is_outstanding_sy(struct ir3_instruction *instr, struct ir3_sched_ctx *ctx)
 {
-   if (!is_tex_or_prefetch(instr))
+   if (!is_sy_producer(instr))
       return false;
 
    /* The sched node is only valid within the same block, we cannot
@@ -213,13 +221,13 @@ is_outstanding_tex_or_prefetch(struct ir3_instruction *instr,
       return true;
 
    struct ir3_sched_node *n = instr->data;
-   return n->tex_index >= ctx->first_outstanding_tex_index;
+   return n->sy_index >= ctx->first_outstanding_sy_index;
 }
 
 static bool
-is_outstanding_sfu(struct ir3_instruction *instr, struct ir3_sched_ctx *ctx)
+is_outstanding_ss(struct ir3_instruction *instr, struct ir3_sched_ctx *ctx)
 {
-   if (!is_sfu(instr))
+   if (!is_ss_producer(instr))
       return false;
 
    /* The sched node is only valid within the same block, we cannot
@@ -229,7 +237,7 @@ is_outstanding_sfu(struct ir3_instruction *instr, struct ir3_sched_ctx *ctx)
       return true;
 
    struct ir3_sched_node *n = instr->data;
-   return n->sfu_index >= ctx->first_outstanding_sfu_index;
+   return n->ss_index >= ctx->first_outstanding_ss_index;
 }
 
 static unsigned
@@ -300,39 +308,56 @@ schedule(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
       }
    }
 
+   bool counts_for_delay = is_alu(instr) || is_flow(instr);
+
+   /* TODO: switch to "cycles". For now try to match ir3_delay. */
+   unsigned delay_cycles = counts_for_delay ? 1 + instr->repeat : 0;
+
+   /* We insert any nop's needed to get to earliest_ip, then advance
+    * delay_cycles by scheduling the instruction.
+    */
+   ctx->ip = MAX2(ctx->ip, n->earliest_ip) + delay_cycles;
+
+   util_dynarray_foreach (&n->dag.edges, struct dag_edge, edge) {
+      unsigned delay = (unsigned)(uintptr_t)edge->data;
+      struct ir3_sched_node *child =
+         container_of(edge->child, struct ir3_sched_node, dag);
+      child->earliest_ip = MAX2(child->earliest_ip, ctx->ip + delay);
+   }
+
    dag_prune_head(ctx->dag, &n->dag);
 
    unsigned cycles = cycle_count(instr);
 
-   if (is_sfu(instr)) {
-      ctx->sfu_delay = 8;
-      n->sfu_index = ctx->sfu_index++;
+   if (is_ss_producer(instr)) {
+      ctx->ss_delay = soft_ss_delay(instr);
+      n->ss_index = ctx->ss_index++;
    } else if (!is_meta(instr) &&
-              sched_check_src_cond(instr, is_outstanding_sfu, ctx)) {
-      ctx->sfu_delay = 0;
-      ctx->first_outstanding_sfu_index = ctx->sfu_index;
-   } else if (ctx->sfu_delay > 0) {
-      ctx->sfu_delay -= MIN2(cycles, ctx->sfu_delay);
+              sched_check_src_cond(instr, is_outstanding_ss, ctx)) {
+      ctx->ss_delay = 0;
+      ctx->first_outstanding_ss_index = ctx->ss_index;
+   } else if (ctx->ss_delay > 0) {
+      ctx->ss_delay -= MIN2(cycles, ctx->ss_delay);
    }
 
-   if (is_tex_or_prefetch(instr)) {
+   if (is_sy_producer(instr)) {
       /* NOTE that this isn't an attempt to hide texture fetch latency,
        * but an attempt to hide the cost of switching to another warp.
        * If we can, we'd like to try to schedule another texture fetch
        * before scheduling something that would sync.
        */
-      ctx->tex_delay = 10;
+      ctx->sy_delay = soft_sy_delay(instr, ctx->block->shader);
       assert(ctx->remaining_tex > 0);
       ctx->remaining_tex--;
-      n->tex_index = ctx->tex_index++;
+      n->sy_index = ctx->sy_index++;
    } else if (!is_meta(instr) &&
-              sched_check_src_cond(instr, is_outstanding_tex_or_prefetch,
-                                   ctx)) {
-      ctx->tex_delay = 0;
-      ctx->first_outstanding_tex_index = ctx->tex_index;
-   } else if (ctx->tex_delay > 0) {
-      ctx->tex_delay -= MIN2(cycles, ctx->tex_delay);
+              sched_check_src_cond(instr, is_outstanding_sy, ctx)) {
+      ctx->sy_delay = 0;
+      ctx->first_outstanding_sy_index = ctx->sy_index;
+   } else if (ctx->sy_delay > 0) {
+      ctx->sy_delay -= MIN2(cycles, ctx->sy_delay);
    }
+
 }
 
 struct ir3_sched_notes {
@@ -552,15 +577,15 @@ live_effect(struct ir3_instruction *instr)
 
 /* Determine if this is an instruction that we'd prefer not to schedule
  * yet, in order to avoid an (ss)/(sy) sync.  This is limited by the
- * sfu_delay/tex_delay counters, ie. the more cycles it has been since
+ * ss_delay/sy_delay counters, ie. the more cycles it has been since
  * the last SFU/tex, the less costly a sync would be, and the number of
  * outstanding SFU/tex instructions to prevent a blowup in register pressure.
  */
 static bool
 should_defer(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
 {
-   if (ctx->sfu_delay) {
-      if (sched_check_src_cond(instr, is_outstanding_sfu, ctx))
+   if (ctx->ss_delay) {
+      if (sched_check_src_cond(instr, is_outstanding_ss, ctx))
          return true;
    }
 
@@ -569,8 +594,8 @@ should_defer(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
     * limit this rule to cases where there are remaining texture
     * fetches
     */
-   if (ctx->tex_delay && ctx->remaining_tex) {
-      if (sched_check_src_cond(instr, is_outstanding_tex_or_prefetch, ctx))
+   if (ctx->sy_delay && ctx->remaining_tex) {
+      if (sched_check_src_cond(instr, is_outstanding_sy, ctx))
          return true;
    }
 
@@ -580,10 +605,10 @@ should_defer(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
     * and prevents unacceptably large increases in register pressure from too
     * many outstanding texture instructions.
     */
-   if (ctx->tex_index - ctx->first_outstanding_tex_index >= 8 && is_tex(instr))
+   if (ctx->sy_index - ctx->first_outstanding_sy_index >= 8 && is_sy_producer(instr))
       return true;
 
-   if (ctx->sfu_index - ctx->first_outstanding_sfu_index >= 8 && is_sfu(instr))
+   if (ctx->ss_index - ctx->first_outstanding_ss_index >= 8 && is_ss_producer(instr))
       return true;
 
    return false;
@@ -592,6 +617,36 @@ should_defer(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
 static struct ir3_sched_node *choose_instr_inc(struct ir3_sched_ctx *ctx,
                                                struct ir3_sched_notes *notes,
                                                bool defer, bool avoid_output);
+
+enum choose_instr_dec_rank {
+   DEC_NEUTRAL,
+   DEC_NEUTRAL_READY,
+   DEC_FREED,
+   DEC_FREED_READY,
+};
+
+static const char *
+dec_rank_name(enum choose_instr_dec_rank rank)
+{
+   switch (rank) {
+   case DEC_NEUTRAL:
+      return "neutral";
+   case DEC_NEUTRAL_READY:
+      return "neutral+ready";
+   case DEC_FREED:
+      return "freed";
+   case DEC_FREED_READY:
+      return "freed+ready";
+   default:
+      return NULL;
+   }
+}
+
+static unsigned
+node_delay(struct ir3_sched_ctx *ctx, struct ir3_sched_node *n)
+{
+   return MAX2(n->earliest_ip, ctx->ip) - ctx->ip;
+}
 
 /**
  * Chooses an instruction to schedule using the Goodman/Hsu (1988) CSR (Code
@@ -606,106 +661,78 @@ choose_instr_dec(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
 {
    const char *mode = defer ? "-d" : "";
    struct ir3_sched_node *chosen = NULL;
+   enum choose_instr_dec_rank chosen_rank = DEC_NEUTRAL;
 
-   /* Find a ready inst with regs freed and pick the one with max cost. */
    foreach_sched_node (n, &ctx->dag->heads) {
       if (defer && should_defer(ctx, n->instr))
          continue;
 
-      /* Note: mergedregs is only used post-RA, just set it to false */
-      unsigned d = ir3_delay_calc_prera(ctx->block, n->instr);
+      unsigned d = node_delay(ctx, n);
 
-      if (d > 0)
-         continue;
-
-      if (live_effect(n->instr) > -1)
+      int live = live_effect(n->instr);
+      if (live > 0)
          continue;
 
       if (!check_instr(ctx, notes, n->instr))
          continue;
 
-      if (!chosen || chosen->max_delay < n->max_delay) {
+      enum choose_instr_dec_rank rank;
+      if (live < 0) {
+         /* Prioritize instrs which free up regs and can be scheduled with no
+          * delay.
+          */
+         if (d == 0)
+            rank = DEC_FREED_READY;
+         else
+            rank = DEC_FREED;
+      } else {
+         /* Contra the paper, pick a leader with no effect on used regs.  This
+          * may open up new opportunities, as otherwise a single-operand instr
+          * consuming a value will tend to block finding freeing that value.
+          * This had a massive effect on reducing spilling on V3D.
+          *
+          * XXX: Should this prioritize ready?
+          */
+         if (d == 0)
+            rank = DEC_NEUTRAL_READY;
+         else
+            rank = DEC_NEUTRAL;
+      }
+
+      /* Prefer higher-ranked instructions, or in the case of a rank tie, the
+       * highest latency-to-end-of-program instruction.
+       */
+      if (!chosen || rank > chosen_rank ||
+          (rank == chosen_rank && chosen->max_delay < n->max_delay)) {
          chosen = n;
+         chosen_rank = rank;
       }
    }
 
    if (chosen) {
-      di(chosen->instr, "dec%s: chose (freed+ready)", mode);
-      return chosen;
-   }
-
-   /* Find a leader with regs freed and pick the one with max cost. */
-   foreach_sched_node (n, &ctx->dag->heads) {
-      if (defer && should_defer(ctx, n->instr))
-         continue;
-
-      if (live_effect(n->instr) > -1)
-         continue;
-
-      if (!check_instr(ctx, notes, n->instr))
-         continue;
-
-      if (!chosen || chosen->max_delay < n->max_delay) {
-         chosen = n;
-      }
-   }
-
-   if (chosen) {
-      di(chosen->instr, "dec%s: chose (freed)", mode);
-      return chosen;
-   }
-
-   /* Contra the paper, pick a leader with no effect on used regs.  This may
-    * open up new opportunities, as otherwise a single-operand instr consuming
-    * a value will tend to block finding freeing that value.  This had a
-    * massive effect on reducing spilling on V3D.
-    *
-    * XXX: Should this prioritize ready?
-    */
-   foreach_sched_node (n, &ctx->dag->heads) {
-      if (defer && should_defer(ctx, n->instr))
-         continue;
-
-      unsigned d = ir3_delay_calc_prera(ctx->block, n->instr);
-
-      if (d > 0)
-         continue;
-
-      if (live_effect(n->instr) > 0)
-         continue;
-
-      if (!check_instr(ctx, notes, n->instr))
-         continue;
-
-      if (!chosen || chosen->max_delay < n->max_delay)
-         chosen = n;
-   }
-
-   if (chosen) {
-      di(chosen->instr, "dec%s: chose (neutral+ready)", mode);
-      return chosen;
-   }
-
-   foreach_sched_node (n, &ctx->dag->heads) {
-      if (defer && should_defer(ctx, n->instr))
-         continue;
-
-      if (live_effect(n->instr) > 0)
-         continue;
-
-      if (!check_instr(ctx, notes, n->instr))
-         continue;
-
-      if (!chosen || chosen->max_delay < n->max_delay)
-         chosen = n;
-   }
-
-   if (chosen) {
-      di(chosen->instr, "dec%s: chose (neutral)", mode);
+      di(chosen->instr, "dec%s: chose (%s)", mode, dec_rank_name(chosen_rank));
       return chosen;
    }
 
    return choose_instr_inc(ctx, notes, defer, true);
+}
+
+enum choose_instr_inc_rank {
+   INC_DISTANCE,
+   INC_DISTANCE_READY,
+};
+
+static const char *
+inc_rank_name(enum choose_instr_inc_rank rank)
+{
+   switch (rank) {
+   case INC_DISTANCE:
+      return "distance";
+   case INC_DISTANCE_READY:
+      return "distance+ready";
+   default:
+      return NULL;
+   }
 }
 
 /**
@@ -718,6 +745,7 @@ choose_instr_inc(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
 {
    const char *mode = defer ? "-d" : "";
    struct ir3_sched_node *chosen = NULL;
+   enum choose_instr_inc_rank chosen_rank = INC_DISTANCE;
 
    /*
     * From hear on out, we are picking something that increases
@@ -734,48 +762,29 @@ choose_instr_inc(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
       if (defer && should_defer(ctx, n->instr))
          continue;
 
-      unsigned d = ir3_delay_calc_prera(ctx->block, n->instr);
-
-      if (d > 0)
-         continue;
-
       if (!check_instr(ctx, notes, n->instr))
          continue;
 
+      unsigned d = node_delay(ctx, n);
+
+      enum choose_instr_inc_rank rank;
+      if (d == 0)
+         rank = INC_DISTANCE_READY;
+      else
+         rank = INC_DISTANCE;
+
       unsigned distance = nearest_use(n->instr);
 
-      if (!chosen || distance < chosen_distance) {
+      if (!chosen || rank > chosen_rank ||
+          (rank == chosen_rank && distance < chosen_distance)) {
          chosen = n;
          chosen_distance = distance;
+         chosen_rank = rank;
       }
    }
 
    if (chosen) {
-      di(chosen->instr, "inc%s: chose (distance+ready)", mode);
-      return chosen;
-   }
-
-   /* Pick the max delay of the remaining leaders. */
-   foreach_sched_node (n, &ctx->dag->heads) {
-      if (avoid_output && n->output)
-         continue;
-
-      if (defer && should_defer(ctx, n->instr))
-         continue;
-
-      if (!check_instr(ctx, notes, n->instr))
-         continue;
-
-      unsigned distance = nearest_use(n->instr);
-
-      if (!chosen || distance < chosen_distance) {
-         chosen = n;
-         chosen_distance = distance;
-      }
-   }
-
-   if (chosen) {
-      di(chosen->instr, "inc%s: chose (distance)", mode);
+      di(chosen->instr, "inc%s: chose (%s)", mode, inc_rank_name(chosen_rank));
       return chosen;
    }
 
@@ -823,7 +832,7 @@ dump_state(struct ir3_sched_ctx *ctx)
 
    foreach_sched_node (n, &ctx->dag->heads) {
       di(n->instr, "maxdel=%3d le=%d del=%u ", n->max_delay,
-         live_effect(n->instr), ir3_delay_calc_prera(ctx->block, n->instr));
+         live_effect(n->instr), node_delay(ctx, n));
 
       util_dynarray_foreach (&n->dag.edges, struct dag_edge, edge) {
          struct ir3_sched_node *child = (struct ir3_sched_node *)edge->child;
@@ -1013,11 +1022,17 @@ sched_node_add_dep(struct ir3_instruction *instr, struct ir3_instruction *src,
    if (instr->opc == OPC_META_COLLECT)
       sn->collect = instr;
 
-   dag_add_edge(&sn->dag, &n->dag, NULL);
+   unsigned d_soft = ir3_delayslots(src, instr, i, true);
+   unsigned d = ir3_delayslots(src, instr, i, false);
 
-   unsigned d = ir3_delayslots(src, instr, i, true);
+   /* delays from (ss) and (sy) are considered separately and more accurately in
+    * the scheduling heuristic, so ignore it when calculating the ip of
+    * instructions, but do consider it when prioritizing which instructions to
+    * schedule.
+    */
+   dag_add_edge_max_data(&sn->dag, &n->dag, (uintptr_t)d);
 
-   n->delay = MAX2(n->delay, d);
+   n->delay = MAX2(n->delay, d_soft);
 }
 
 static void
@@ -1143,10 +1158,10 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
    ctx->addr0 = NULL;
    ctx->addr1 = NULL;
    ctx->pred = NULL;
-   ctx->tex_delay = 0;
-   ctx->sfu_delay = 0;
-   ctx->tex_index = ctx->first_outstanding_tex_index = 0;
-   ctx->sfu_index = ctx->first_outstanding_sfu_index = 0;
+   ctx->sy_delay = 0;
+   ctx->ss_delay = 0;
+   ctx->sy_index = ctx->first_outstanding_sy_index = 0;
+   ctx->ss_index = ctx->first_outstanding_ss_index = 0;
 
    /* move all instructions to the unscheduled list, and
     * empty the block's instruction list (to which we will
@@ -1162,7 +1177,7 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
    foreach_instr_safe (instr, &ctx->unscheduled_list) {
       if (is_kill_or_demote(instr))
          ctx->remaining_kills++;
-      if (is_tex_or_prefetch(instr))
+      if (is_sy_producer(instr))
          ctx->remaining_tex++;
    }
 
@@ -1191,17 +1206,10 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
 
       instr = choose_instr(ctx, &notes);
       if (instr) {
-         unsigned delay = ir3_delay_calc_prera(ctx->block, instr);
+         unsigned delay = node_delay(ctx, instr->data);
          d("delay=%u", delay);
 
-         /* and if we run out of instructions that can be scheduled,
-          * then it is time for nop's:
-          */
          debug_assert(delay <= 6);
-         while (delay > 0) {
-            ir3_NOP(block);
-            delay--;
-         }
 
          schedule(ctx, instr);
 

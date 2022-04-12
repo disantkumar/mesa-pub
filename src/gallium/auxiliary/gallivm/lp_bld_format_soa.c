@@ -953,6 +953,8 @@ lp_build_insert_soa_chan(struct lp_build_context *bld,
        if (type.floating) {
           if (chan_desc.size == 16) {
              chan = lp_build_float_to_half(gallivm, rgba);
+             chan = LLVMBuildBitCast(builder, chan,
+				     lp_build_vec_type(gallivm, lp_type_int_vec(16, 16 * type.length)), "");
              chan = LLVMBuildZExt(builder, chan, bld->int_vec_type, "");
              if (start)
                 chan = LLVMBuildShl(builder, chan,
@@ -985,6 +987,7 @@ lp_build_pack_rgba_soa(struct gallivm_state *gallivm,
 {
    unsigned chan;
    struct lp_build_context bld;
+   LLVMValueRef rgba_swiz[4];
    assert(format_desc->layout == UTIL_FORMAT_LAYOUT_PLAIN);
    assert(format_desc->block.width == 1);
    assert(format_desc->block.height == 1);
@@ -993,13 +996,16 @@ lp_build_pack_rgba_soa(struct gallivm_state *gallivm,
    assert(type.width == 32);
 
    lp_build_context_init(&bld, gallivm, type);
+
+   lp_build_format_swizzle_soa(format_desc, &bld, rgba_in, rgba_swiz);
+
    for (chan = 0; chan < format_desc->nr_channels; ++chan) {
       struct util_format_channel_description chan_desc = format_desc->channel[chan];
 
       lp_build_insert_soa_chan(&bld, format_desc->block.bits,
                                chan_desc,
                                packed,
-                               rgba_in[chan]);
+                               rgba_swiz[chan]);
    }
 }
 

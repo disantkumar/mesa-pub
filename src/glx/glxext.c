@@ -612,26 +612,20 @@ __glXInitializeVisualConfigFromTags(struct glx_config * config, int count,
          if (fbconfig_style_tags)
             bp++;
          break;
+      case GLX_FLOAT_COMPONENTS_NV:
+         config->floatComponentsNV = *bp++;
+         break;
       case None:
          i = count;
          break;
       default: {
             long int tagvalue = *bp++;
-            DebugMessageF("WARNING: unknown GLX tag from server: "
+            DebugMessageF("WARNING: unknown fbconfig attribute from server: "
                           "tag 0x%lx value 0x%lx\n", tag, tagvalue);
             break;
          }
       }
    }
-
-   /* The GLX_ARB_fbconfig_float spec says:
-    *
-    *     "Note that floating point rendering is only supported for
-    *     GLXPbuffer drawables."
-    */
-   if (config->renderType &
-       (GLX_RGBA_FLOAT_BIT_ARB|GLX_RGBA_UNSIGNED_FLOAT_BIT_EXT))
-      config->drawableType &= GLX_PBUFFER_BIT;
 }
 
 static struct glx_config *

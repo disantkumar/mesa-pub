@@ -116,6 +116,7 @@ enum virgl_context_cmd {
    VIRGL_CCMD_PIPE_RESOURCE_SET_TYPE,
    VIRGL_CCMD_GET_MEMORY_INFO,
    VIRGL_CCMD_EMIT_STRING_MARKER,
+   VIRGL_CCMD_LINK_SHADER,
    VIRGL_MAX_COMMANDS
 };
 
@@ -370,6 +371,7 @@ enum virgl_context_cmd {
 #define VIRGL_OBJ_SAMPLE_STATE_S0_COMPARE_MODE(x) (((x) & 0x1) << 15)
 #define VIRGL_OBJ_SAMPLE_STATE_S0_COMPARE_FUNC(x) (((x) & 0x7) << 16)
 #define VIRGL_OBJ_SAMPLE_STATE_S0_SEAMLESS_CUBE_MAP(x) (((x) & 0x1) << 19)
+#define VIRGL_OBJ_SAMPLE_STATE_S0_MAX_ANISOTROPY(x) (((x & 0x3f)) << 20)
 
 #define VIRGL_OBJ_SAMPLER_STATE_LOD_BIAS 3
 #define VIRGL_OBJ_SAMPLER_STATE_MIN_LOD 4
@@ -606,11 +608,14 @@ enum virgl_context_cmd {
 #define VIRGL_TRANSFER3D_DATA_OFFSET 12
 #define VIRGL_TRANSFER3D_DIRECTION 13
 
-/* Copy transfer */
+/* Copy transfer to host and from host*/
 #define VIRGL_COPY_TRANSFER3D_SIZE 14
 /* The first 11 dwords are the same as VIRGL_RESOURCE_IW_*  */
 #define VIRGL_COPY_TRANSFER3D_SRC_RES_HANDLE 12
 #define VIRGL_COPY_TRANSFER3D_SRC_RES_OFFSET 13
+/* Second bit of this dword is used to identify the direction
+ * 1 << 1 means transfer from host. 0 << 1 means transfer to host.
+ */
 #define VIRGL_COPY_TRANSFER3D_SYNCHRONIZED 14
 
 /* set tweak flags */
@@ -671,5 +676,14 @@ enum vrend_tweak_type {
 #define VIRGL_SEND_STRING_MARKER_MIN_SIZE 2
 #define VIRGL_SEND_STRING_MARKER_STRING_SIZE 1
 #define VIRGL_SEND_STRING_MARKER_OFFSET 2
+
+/* link shader program */
+#define VIRGL_LINK_SHADER_SIZE 6
+#define VIRGL_LINK_SHADER_VERTEX_HANDLE 1
+#define VIRGL_LINK_SHADER_FRAGMENT_HANDLE 2
+#define VIRGL_LINK_SHADER_GEOMETRY_HANDLE 3
+#define VIRGL_LINK_SHADER_TESS_CTRL_HANDLE 4
+#define VIRGL_LINK_SHADER_TESS_EVAL_HANDLE 5
+#define VIRGL_LINK_SHADER_COMPUTE_HANDLE 6
 
 #endif

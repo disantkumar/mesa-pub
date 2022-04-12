@@ -73,10 +73,10 @@ enum fd_debug_flag {
    FD_DBG_DDRAW        = BITFIELD_BIT(3),
    FD_DBG_NOSCIS       = BITFIELD_BIT(4),
    FD_DBG_DIRECT       = BITFIELD_BIT(5),
-   FD_DBG_NOBYPASS     = BITFIELD_BIT(6),
+   FD_DBG_GMEM         = BITFIELD_BIT(6),
    FD_DBG_PERF         = BITFIELD_BIT(7),
    FD_DBG_NOBIN        = BITFIELD_BIT(8),
-   FD_DBG_NOGMEM       = BITFIELD_BIT(9),
+   FD_DBG_SYSMEM       = BITFIELD_BIT(9),
    FD_DBG_SERIALC      = BITFIELD_BIT(10),
    FD_DBG_SHADERDB     = BITFIELD_BIT(11),
    FD_DBG_FLUSH        = BITFIELD_BIT(12),
@@ -106,21 +106,29 @@ extern bool fd_binning_enabled;
 
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 
 #define DBG(fmt, ...)                                                          \
    do {                                                                        \
       if (FD_DBG(MSGS))                                                        \
-         mesa_logi("%5d: %s:%d: " fmt, gettid(), __FUNCTION__, __LINE__,       \
-                   ##__VA_ARGS__);                                             \
+         mesa_logi("%5d: %s:%d: " fmt, ((pid_t)syscall(SYS_gettid)),           \
+                                        __FUNCTION__, __LINE__,                \
+                                        ##__VA_ARGS__);                        \
+   } while (0)
+
+#define perf_debug_message(debug, type, ...)                                   \
+   do {                                                                        \
+      if (FD_DBG(PERF))                                                        \
+         mesa_logw(__VA_ARGS__);                                               \
+      struct pipe_debug_callback *__d = (debug);                               \
+      if (__d)                                                                 \
+         pipe_debug_message(__d, type, __VA_ARGS__);                           \
    } while (0)
 
 #define perf_debug_ctx(ctx, ...)                                               \
    do {                                                                        \
-      if (FD_DBG(PERF))                                                        \
-         mesa_logw(__VA_ARGS__);                                               \
       struct fd_context *__c = (ctx);                                          \
-      if (__c)                                                                 \
-         pipe_debug_message(&__c->debug, PERF_INFO, __VA_ARGS__);              \
+      perf_debug_message(__c ? &__c->debug : NULL, PERF_INFO, __VA_ARGS__);    \
    } while (0)
 
 #define perf_debug(...) perf_debug_ctx(NULL, __VA_ARGS__)

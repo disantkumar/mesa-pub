@@ -43,13 +43,13 @@ static const struct debug_named_value i915_debug_options[] = {
    {"texture", DBG_TEXTURE, "Texture information"},
    {"constants", DBG_CONSTANTS, "Constant buffers"},
    {"fs", DBG_FS, "Dump fragment shaders"},
+   {"vbuf", DBG_VBUF, "Use the WIP vbuf code path"},
    DEBUG_NAMED_VALUE_END};
 
 unsigned i915_debug = 0;
 
 DEBUG_GET_ONCE_FLAGS_OPTION(i915_debug, "I915_DEBUG", i915_debug_options, 0)
 DEBUG_GET_ONCE_BOOL_OPTION(i915_no_tiling, "I915_NO_TILING", false)
-DEBUG_GET_ONCE_BOOL_OPTION(i915_lie, "I915_LIE", true)
 DEBUG_GET_ONCE_BOOL_OPTION(i915_use_blitter, "I915_USE_BLITTER", true)
 
 void
@@ -57,7 +57,6 @@ i915_debug_init(struct i915_screen *is)
 {
    i915_debug = debug_get_option_i915_debug();
    is->debug.tiling = !debug_get_option_i915_no_tiling();
-   is->debug.lie = debug_get_option_i915_lie();
    is->debug.use_blitter = debug_get_option_i915_use_blitter();
 }
 

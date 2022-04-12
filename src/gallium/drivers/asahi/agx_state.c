@@ -419,6 +419,16 @@ agx_translate_layout(uint64_t modifier)
    }
 }
 
+static enum agx_texture_dimension
+agx_translate_texture_dimension(enum pipe_texture_target dim)
+{
+   switch (dim) {
+   case PIPE_TEXTURE_2D: return AGX_TEXTURE_DIMENSION_2D;
+   case PIPE_TEXTURE_CUBE: return AGX_TEXTURE_DIMENSION_CUBE;
+   default: unreachable("Unsupported texture dimension");
+   }
+}
+
 static struct pipe_sampler_view *
 agx_create_sampler_view(struct pipe_context *pctx,
                         struct pipe_resource *texture,
@@ -449,9 +459,11 @@ agx_create_sampler_view(struct pipe_context *pctx,
    util_format_compose_swizzles(desc->swizzle, view_swizzle, out_swizzle);
 
    unsigned level = state->u.tex.first_level;
+   assert(state->u.tex.first_layer == 0);
 
    /* Pack the descriptor into GPU memory */
    agx_pack(so->desc->ptr.cpu, TEXTURE, cfg) {
+      cfg.dimension = agx_translate_texture_dimension(state->target);
       cfg.layout = agx_translate_layout(rsrc->modifier);
       cfg.format = agx_pixel_format[state->format].hw;
       cfg.swizzle_r = agx_channel_from_pipe(out_swizzle[0]);
@@ -462,7 +474,7 @@ agx_create_sampler_view(struct pipe_context *pctx,
       cfg.height = u_minify(texture->height0, level);
       cfg.levels = state->u.tex.last_level - level + 1;
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
-      cfg.unk_1 = rsrc->bo->ptr.gpu + rsrc->slices[level].offset;
+      cfg.address = rsrc->bo->ptr.gpu + rsrc->slices[level].offset;
       cfg.unk_2 = false;
 
       cfg.stride = (rsrc->modifier == DRM_FORMAT_MOD_LINEAR) ?
@@ -484,6 +496,7 @@ agx_set_sampler_views(struct pipe_context *pctx,
                       enum pipe_shader_type shader,
                       unsigned start, unsigned count,
                       unsigned unbind_num_trailing_slots,
+                      bool take_ownership,
                       struct pipe_sampler_view **views)
 {
    struct agx_context *ctx = agx_context(pctx);
@@ -499,8 +512,14 @@ agx_set_sampler_views(struct pipe_context *pctx,
       if (views[i])
          new_nr = i + 1;
 
-      pipe_sampler_view_reference((struct pipe_sampler_view **)
-                                  &ctx->stage[shader].textures[i], views[i]);
+      if (take_ownership) {
+         pipe_sampler_view_reference((struct pipe_sampler_view **)
+                                     &ctx->stage[shader].textures[i], NULL);
+         ctx->stage[shader].textures[i] = (struct agx_sampler_view *)views[i];
+      } else {
+         pipe_sampler_view_reference((struct pipe_sampler_view **)
+                                     &ctx->stage[shader].textures[i], views[i]);
+      }
    }
 
    for (; i < ctx->stage[shader].texture_count; i++) {
@@ -786,19 +805,22 @@ agx_create_vertex_elements(struct pipe_context *ctx,
    struct agx_attribute *attribs = calloc(sizeof(*attribs), AGX_MAX_ATTRIBS);
    for (unsigned i = 0; i < count; ++i) {
       const struct pipe_vertex_element ve = state[i];
-      assert(ve.instance_divisor == 0 && "no instancing");
 
       const struct util_format_description *desc =
          util_format_description(ve.src_format);
 
+      unsigned chan_size = desc->channel[0].size / 8;
+
+      assert(chan_size == 1 || chan_size == 2 || chan_size == 4);
       assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
-      assert((ve.src_offset & 0x3) == 0);
+      assert((ve.src_offset & (chan_size - 1)) == 0);
 
       attribs[i] = (struct agx_attribute) {
          .buf = ve.vertex_buffer_index,
-         .src_offset = ve.src_offset / 4,
+         .src_offset = ve.src_offset / chan_size,
          .nr_comps_minus_1 = desc->nr_channels - 1,
          .format = agx_vertex_format[ve.src_format],
+         .divisor = ve.instance_divisor
       };
    }
 
@@ -940,8 +962,7 @@ agx_update_vs(struct agx_context *ctx)
           sizeof(key.attributes[0]) * AGX_MAX_ATTRIBS);
 
    u_foreach_bit(i, ctx->vb_mask) {
-      assert((ctx->vertex_buffers[i].stride & 0x3) == 0);
-      key.vbuf_strides[i] = ctx->vertex_buffers[i].stride / 4;
+      key.vbuf_strides[i] = ctx->vertex_buffers[i].stride;
    }
 
    struct asahi_shader_key akey = {
@@ -1080,13 +1101,16 @@ agx_build_pipeline(struct agx_context *ctx, struct agx_compiled_shader *cs, enum
 
    /* TODO: Can we prepack this? */
    if (stage == PIPE_SHADER_FRAGMENT) {
+      bool writes_sample_mask = ctx->fs->info.writes_sample_mask;
+
       agx_pack(record, SET_SHADER_EXTENDED, cfg) {
          cfg.code = cs->bo->ptr.gpu;
          cfg.register_quadwords = 0;
          cfg.unk_3 = 0x8d;
          cfg.unk_1 = 0x2010bd;
          cfg.unk_2 = 0x0d;
-         cfg.unk_2b = 1;
+         cfg.unk_2b = writes_sample_mask ? 5 : 1;
+         cfg.fragment_parameters.early_z_testing = !writes_sample_mask;
          cfg.unk_3b = 0x1;
          cfg.unk_4 = 0x800;
          cfg.preshader_unk = 0xc080;
@@ -1137,7 +1161,10 @@ agx_build_clear_pipeline(struct agx_context *ctx, uint32_t code, uint64_t clear_
       cfg.unk_3 = 0x8d;
       cfg.unk_2 = 0x0d;
       cfg.unk_2b = 4;
-      cfg.frag_unk = 0x880100;
+      cfg.fragment_parameters.unk_1 = 0x880100;
+      cfg.fragment_parameters.early_z_testing = false;
+      cfg.fragment_parameters.unk_2 = false;
+      cfg.fragment_parameters.unk_3 = 0;
       cfg.preshader_mode = 0; // XXX
    }
 
@@ -1189,7 +1216,7 @@ agx_build_reload_pipeline(struct agx_context *ctx, uint32_t code, struct pipe_su
       cfg.height = surf->height;
       cfg.levels = 1;
       cfg.srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
-      cfg.unk_1 = rsrc->bo->ptr.gpu;
+      cfg.address = rsrc->bo->ptr.gpu;
       cfg.unk_2 = false;
 
       cfg.stride = (rsrc->modifier == DRM_FORMAT_MOD_LINEAR) ?
@@ -1221,7 +1248,10 @@ agx_build_reload_pipeline(struct agx_context *ctx, uint32_t code, struct pipe_su
       cfg.unk_2 = 0x0d;
       cfg.unk_2b = 4;
       cfg.unk_4 = 0;
-      cfg.frag_unk = 0x880100;
+      cfg.fragment_parameters.unk_1 = 0x880100;
+      cfg.fragment_parameters.early_z_testing = false;
+      cfg.fragment_parameters.unk_2 = false;
+      cfg.fragment_parameters.unk_3 = 0;
       cfg.preshader_mode = 0; // XXX
    }
 
@@ -1268,7 +1298,10 @@ agx_build_store_pipeline(struct agx_context *ctx, uint32_t code,
       cfg.register_quadwords = 1;
       cfg.unk_2 = 0xd;
       cfg.unk_3 = 0x8d;
-      cfg.frag_unk = 0x880100;
+      cfg.fragment_parameters.unk_1 = 0x880100;
+      cfg.fragment_parameters.early_z_testing = false;
+      cfg.fragment_parameters.unk_2 = false;
+      cfg.fragment_parameters.unk_3 = 0;
       cfg.preshader_mode = 0; // XXX
    }
 
@@ -1359,26 +1392,20 @@ demo_rasterizer(struct agx_context *ctx, struct agx_pool *pool, bool is_points)
 }
 
 static uint64_t
-demo_unk11(struct agx_pool *pool, bool prim_lines, bool prim_points, bool reads_tib)
+demo_unk11(struct agx_pool *pool, bool prim_lines, bool prim_points, bool reads_tib, bool sample_mask_from_shader)
 {
-#define UNK11_FILL_MODE_LINES_1 (1 << 26)
+   struct agx_ptr T = agx_pool_alloc_aligned(pool, AGX_UNKNOWN_4A_LENGTH, 64);
 
-#define UNK11_FILL_MODE_LINES_2 (0x5004 << 16)
-#define UNK11_LINES (0x10000000)
-#define UNK11_POINTS (0x40000000)
+   agx_pack(T.cpu, UNKNOWN_4A, cfg) {
+      cfg.lines_or_points = (prim_lines || prim_points);
+      cfg.reads_tilebuffer = reads_tib;
+      cfg.sample_mask_from_shader = sample_mask_from_shader;
 
-#define UNK11_READS_TIB (0x20000000)
-
-   uint32_t unk[] = {
-      0x200004a,
-      0x200 | ((prim_lines || prim_points) ? UNK11_FILL_MODE_LINES_1 : 0) | (reads_tib ? UNK11_READS_TIB : 0),
-      0x7e00000 | (prim_lines ? UNK11_LINES : 0) | (prim_points ? UNK11_POINTS : 0),
-      0x7e00000 | (prim_lines ? UNK11_LINES : 0) | (prim_points ? UNK11_POINTS : 0),
-
-      0x1ffff
+      cfg.front.lines = cfg.back.lines = prim_lines;
+      cfg.front.points = cfg.back.points = prim_points;
    };
 
-   return agx_pool_upload(pool, unk, sizeof(unk));
+   return T.gpu;
 }
 
 static uint64_t
@@ -1411,9 +1438,13 @@ agx_push_record(uint8_t **out, unsigned size_words, uint64_t ptr)
    assert(ptr < (1ull << 40));
    assert(size_words < (1ull << 24));
 
-   uint64_t value = (size_words | (ptr << 24));
-   memcpy(*out, &value, sizeof(value));
-   *out += sizeof(value);
+   agx_pack(*out, RECORD, cfg) {
+      cfg.pointer_hi = (ptr >> 32);
+      cfg.pointer_lo = (uint32_t) ptr;
+      cfg.size_words = size_words;
+   };
+
+   *out += AGX_RECORD_LENGTH;
 }
 
 static uint8_t *
@@ -1430,22 +1461,17 @@ agx_encode_state(struct agx_context *ctx, uint8_t *out,
       cfg.texture_count = ctx->stage[PIPE_SHADER_VERTEX].texture_count;
    }
 
-   /* yes, it's really 17 bytes */
    out += AGX_BIND_PIPELINE_LENGTH;
-   *(out++) = 0x0;
 
    struct agx_pool *pool = &ctx->batch->pool;
-   struct agx_ptr zero = agx_pool_alloc_aligned(pool, 16, 256);
-   memset(zero.cpu, 0, 16);
-
    bool reads_tib = ctx->fs->info.reads_tib;
+   bool sample_mask_from_shader = ctx->fs->info.writes_sample_mask;
 
-   agx_push_record(&out, 0, zero.gpu);
    agx_push_record(&out, 5, demo_interpolation(ctx->fs, pool));
    agx_push_record(&out, 5, demo_launch_fragment(ctx, pool, pipeline_fragment, varyings, ctx->fs->info.varyings.nr_descs));
    agx_push_record(&out, 4, demo_linkage(ctx->vs, pool));
    agx_push_record(&out, 7, demo_rasterizer(ctx, pool, is_points));
-   agx_push_record(&out, 5, demo_unk11(pool, is_lines, is_points, reads_tib));
+   agx_push_record(&out, 5, demo_unk11(pool, is_lines, is_points, reads_tib, sample_mask_from_shader));
 
    if (ctx->dirty & (AGX_DIRTY_VIEWPORT | AGX_DIRTY_SCISSOR)) {
       struct agx_viewport_scissor vps = agx_upload_viewport_scissor(pool,
@@ -1459,7 +1485,7 @@ agx_encode_state(struct agx_context *ctx, uint8_t *out,
    agx_push_record(&out, 3, demo_unk12(pool));
    agx_push_record(&out, 2, agx_pool_upload(pool, ctx->rast->cull, sizeof(ctx->rast->cull)));
 
-   return (out - 1); // XXX: alignment fixup, or something
+   return out;
 }
 
 static enum agx_primitive
@@ -1521,8 +1547,6 @@ agx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    if (info->index_size && draws->index_bias)
       unreachable("todo: index bias");
-   if (info->instance_count != 1)
-      unreachable("todo: instancing");
 
    struct agx_context *ctx = agx_context(pctx);
    struct agx_batch *batch = ctx->batch;

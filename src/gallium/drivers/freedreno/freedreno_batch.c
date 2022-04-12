@@ -71,7 +71,7 @@ batch_init(struct fd_batch *batch)
       batch->draw = alloc_ring(batch, 0x100000, 0);
 
       /* a6xx+ re-uses draw rb for both draw and binning pass: */
-      if (ctx->screen->gpu_id < 600) {
+      if (ctx->screen->gen < 6) {
          batch->binning = alloc_ring(batch, 0x100000, 0);
       }
    }
@@ -83,7 +83,7 @@ batch_init(struct fd_batch *batch)
     * by always creating a fence to request that the submit is flushed
     * immediately:
     */
-   if (ctx->screen->gpu_id < 600)
+   if (ctx->screen->gen < 6)
       batch->fence = fd_fence_create(batch);
 
    batch->cleared = 0;
@@ -176,12 +176,6 @@ cleanup_submit(struct fd_batch *batch)
    if (batch->tile_fini) {
       fd_ringbuffer_del(batch->tile_fini);
       batch->tile_fini = NULL;
-   }
-
-   if (batch->tessellation) {
-      fd_bo_del(batch->tessfactor_bo);
-      fd_bo_del(batch->tessparam_bo);
-      fd_ringbuffer_del(batch->tess_addrs_constobj);
    }
 
    fd_submit_del(batch->submit);
@@ -444,13 +438,13 @@ fd_batch_add_resource(struct fd_batch *batch, struct fd_resource *rsc)
 {
 
    if (likely(fd_batch_references_resource(batch, rsc))) {
-      debug_assert(_mesa_set_search(batch->resources, rsc));
+      debug_assert(_mesa_set_search_pre_hashed(batch->resources, rsc->hash, rsc));
       return;
    }
 
    debug_assert(!_mesa_set_search(batch->resources, rsc));
 
-   _mesa_set_add(batch->resources, rsc);
+   _mesa_set_add_pre_hashed(batch->resources, rsc->hash, rsc);
    rsc->track->batch_mask |= (1 << batch->idx);
 }
 
@@ -551,7 +545,7 @@ void
 fd_wfi(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
    if (batch->needs_wfi) {
-      if (batch->ctx->screen->gpu_id >= 500)
+      if (batch->ctx->screen->gen >= 5)
          OUT_WFI5(ring);
       else
          OUT_WFI(ring);

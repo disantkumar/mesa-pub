@@ -104,6 +104,8 @@
  *    TC_TRANSFER_MAP_NO_INVALIDATE into transfer_map and buffer_subdata to
  *    indicate this. Ignoring the flag will lead to failures.
  *    The threaded context uses its own buffer invalidation mechanism.
+ *    Do NOT use pipe_buffer_write, as this may trigger invalidation;
+ *    use tc_buffer_write instead.
  *
  * 4) PIPE_MAP_ONCE can no longer be used to infer that a buffer will not be mapped
  *    a second time before it is unmapped.
@@ -145,6 +147,10 @@
  *    the threaded context wants to replace a resource's backing storage with
  *    another resource's backing storage. The threaded context uses it to
  *    implement buffer invalidation. This call is always queued.
+ *    Note that 'minimum_num_rebinds' specifies only the minimum number of rebinds
+ *    which must be managed by the driver; if a buffer is bound multiple times in
+ *    the same binding point (e.g., vertex buffer slots 0,1,2), this will be counted
+ *    as a single rebind.
  *
  *
  * Optional resource busy callbacks for better performance
@@ -193,10 +199,15 @@
 #include "pipe/p_state.h"
 #include "util/bitset.h"
 #include "util/u_inlines.h"
+#include "util/u_memory.h"
 #include "util/u_queue.h"
 #include "util/u_range.h"
 #include "util/u_thread.h"
 #include "util/slab.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct threaded_context;
 struct tc_unflushed_batch_token;
@@ -204,6 +215,8 @@ struct tc_unflushed_batch_token;
 /* 0 = disabled, 1 = assertions, 2 = printfs, 3 = logging */
 #define TC_DEBUG 0
 
+/* This is an internal flag not sent to the driver. */
+#define TC_TRANSFER_MAP_UPLOAD_CPU_STORAGE   (1u << 28)
 /* These are map flags sent to drivers. */
 /* Never infer whether it's safe to use unsychronized mappings: */
 #define TC_TRANSFER_MAP_NO_INFER_UNSYNCHRONIZED (1u << 29)
@@ -290,7 +303,7 @@ enum tc_binding_type {
 typedef void (*tc_replace_buffer_storage_func)(struct pipe_context *ctx,
                                                struct pipe_resource *dst,
                                                struct pipe_resource *src,
-                                               unsigned num_rebinds,
+                                               unsigned minimum_num_rebinds,
                                                uint32_t rebind_mask,
                                                uint32_t delete_buffer_id);
 typedef struct pipe_fence_handle *(*tc_create_fence_func)(struct pipe_context *ctx,
@@ -308,6 +321,13 @@ struct threaded_resource {
     * nized mappings in the non-driver thread. Initially it's set to &b.
     */
    struct pipe_resource *latest;
+
+   /* Optional CPU storage of the buffer. When we get partial glBufferSubData(implemented by
+    * copy_buffer) + glDrawElements, we don't want to drain the gfx pipeline before executing
+    * the copy. For ideal pipelining, we upload to this CPU storage and then reallocate
+    * the GPU storage completely and reupload everything without copy_buffer.
+    */
+   void *cpu_storage;
 
    /* The buffer range which is initialized (with a write transfer, streamout,
     * or writable shader resources). The remainder of the buffer is considered
@@ -333,12 +353,6 @@ struct threaded_resource {
     */
    uint32_t buffer_id_unique;
 
-   /* If positive, prefer DISCARD_RANGE with a staging buffer over any other
-    * method of CPU access when map flags allow it. Useful for buffers that
-    * are too large for the visible VRAM window.
-    */
-   int max_forced_staging_uploads;
-
    /* If positive, then a staging transfer is in progress.
     */
    int pending_staging_uploads;
@@ -362,6 +376,8 @@ struct threaded_transfer {
     * the base instance. Initially it's set to &b.resource->valid_buffer_range.
     */
    struct util_range *valid_buffer_range;
+
+   bool cpu_storage_mapped;
 };
 
 struct threaded_query {
@@ -410,13 +426,29 @@ struct tc_buffer_list {
    BITSET_DECLARE(buffer_list, TC_BUFFER_ID_MASK + 1);
 };
 
+/**
+ * Optional TC parameters/callbacks.
+ */
+struct threaded_context_options {
+   tc_create_fence_func create_fence;
+   tc_is_resource_busy is_resource_busy;
+   bool driver_calls_flush_notify;
+
+   /**
+    * If true, ctx->get_device_reset_status() will be called without
+    * synchronizing with driver thread.  Drivers can enable this to avoid
+    * TC syncs if their implementation of get_device_reset_status() is
+    * safe to call without synchronizing with driver thread.
+    */
+   bool unsynchronized_get_device_reset_status;
+};
+
 struct threaded_context {
    struct pipe_context base;
    struct pipe_context *pipe;
    struct slab_child_pool pool_transfers;
    tc_replace_buffer_storage_func replace_buffer_storage;
-   tc_create_fence_func create_fence;
-   tc_is_resource_busy is_resource_busy;
+   struct threaded_context_options options;
    unsigned map_buffer_alignment;
    unsigned ubo_alignment;
 
@@ -427,7 +459,6 @@ struct threaded_context {
    unsigned num_direct_slots;
    unsigned num_syncs;
 
-   bool driver_calls_flush_notify;
    bool use_forced_staging_uploads;
    bool add_all_gfx_bindings_to_buffer_list;
    bool add_all_compute_bindings_to_buffer_list;
@@ -490,7 +521,8 @@ struct threaded_context {
    struct tc_buffer_list buffer_lists[TC_MAX_BUFFER_LISTS];
 };
 
-void threaded_resource_init(struct pipe_resource *res);
+void threaded_resource_init(struct pipe_resource *res, bool allow_cpu_storage,
+                            unsigned map_buffer_alignment);
 void threaded_resource_deinit(struct pipe_resource *res);
 struct pipe_context *threaded_context_unwrap_sync(struct pipe_context *pipe);
 void tc_driver_internal_flush_notify(struct threaded_context *tc);
@@ -499,10 +531,11 @@ struct pipe_context *
 threaded_context_create(struct pipe_context *pipe,
                         struct slab_parent_pool *parent_transfer_pool,
                         tc_replace_buffer_storage_func replace_buffer,
-                        tc_create_fence_func create_fence,
-                        tc_is_resource_busy is_resource_busy,
-                        bool driver_calls_flush_notify,
+                        const struct threaded_context_options *options,
                         struct threaded_context **out);
+
+void
+threaded_context_init_bytes_mapped_limit(struct threaded_context *tc, unsigned divisor);
 
 void
 threaded_context_flush(struct pipe_context *_pipe,
@@ -564,5 +597,36 @@ tc_assert_driver_thread(struct threaded_context *tc)
    assert(util_thread_id_equal(tc->driver_thread, util_get_thread_id()));
 #endif
 }
+
+/**
+ * This is called before GPU stores to disable the CPU storage because
+ * the CPU storage doesn't mirror the GPU storage.
+ *
+ * Drivers should also call it before exporting a DMABUF of a buffer.
+ */
+static inline void
+tc_buffer_disable_cpu_storage(struct pipe_resource *buf)
+{
+   struct threaded_resource *tres = threaded_resource(buf);
+
+   if (tres->cpu_storage) {
+      align_free(tres->cpu_storage);
+      tres->cpu_storage = NULL;
+   }
+}
+
+static inline void
+tc_buffer_write(struct pipe_context *pipe,
+                struct pipe_resource *buf,
+                unsigned offset,
+                unsigned size,
+                const void *data)
+{
+   pipe->buffer_subdata(pipe, buf, PIPE_MAP_WRITE | TC_TRANSFER_MAP_NO_INVALIDATE, offset, size, data);
+}
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -23,6 +23,9 @@ export XDG_CACHE_HOME=/tmp
 export PYTHONPATH=$(python3 -c "import sys;print(\":\".join(sys.path))")
 
 if [ "$HWCI_FREQ_MAX" = "true" ]; then
+  # Ensure initialization of the DRM device (needed by MSM)
+  head -0 /dev/dri/renderD128
+
   # Disable GPU frequency scaling
   DEVFREQ_GOVERNOR=`find /sys/devices -name governor | grep gpu || true`
   test -z "$DEVFREQ_GOVERNOR" || echo performance > $DEVFREQ_GOVERNOR || true
@@ -68,7 +71,7 @@ fi
 MINIO=$(cat /proc/cmdline | tr ' ' '\n' | grep minio_results | cut -d '=' -f 2 || true)
 if [ -n "$MINIO" ]; then
   tar -czf results.tar.gz results/;
-  ci-fairy minio login "$CI_JOB_JWT";
+  ci-fairy minio login --token-file "${CI_JOB_JWT_FILE}";
   ci-fairy minio cp results.tar.gz minio://"$MINIO"/results.tar.gz;
 fi
 

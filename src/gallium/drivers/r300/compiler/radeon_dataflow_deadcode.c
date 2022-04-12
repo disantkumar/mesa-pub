@@ -121,7 +121,7 @@ static unsigned char * get_used_ptr(struct deadcode_state *s, rc_register_file f
 	if (file == RC_FILE_OUTPUT || file == RC_FILE_TEMPORARY) {
 		if (index >= RC_REGISTER_MAX_INDEX) {
 			rc_error(s->C, "%s: index %i is out of bounds for file %i\n", __FUNCTION__, index, file);
-			return 0;
+			return NULL;
 		}
 
 		if (file == RC_FILE_OUTPUT)
@@ -133,13 +133,13 @@ static unsigned char * get_used_ptr(struct deadcode_state *s, rc_register_file f
 	} else if (file == RC_FILE_SPECIAL) {
 		if (index >= RC_NUM_SPECIAL_REGISTERS) {
 			rc_error(s->C, "%s: special file index %i out of bounds\n", __FUNCTION__, index);
-			return 0;
+			return NULL;
 		}
 
 		return &s->R.Special[index];
 	}
 
-	return 0;
+	return NULL;
 }
 
 static void mark_used(struct deadcode_state * s, rc_register_file file, unsigned int index, unsigned int mask)
@@ -253,8 +253,13 @@ void rc_dataflow_deadcode(struct radeon_compiler * c, void *user)
 				if(opcode->HasDstReg){
 					int src = 0;
 					unsigned int srcmasks[3];
-					rc_compute_sources_for_writemask(ptr,
-						ptr->U.I.DstReg.WriteMask, srcmasks);
+					unsigned int writemask = ptr->U.I.DstReg.WriteMask;
+					if (ptr->U.I.WriteALUResult == RC_ALURESULT_X)
+						writemask |= RC_MASK_X;
+					else if (ptr->U.I.WriteALUResult == RC_ALURESULT_W)
+						writemask |= RC_MASK_W;
+
+					rc_compute_sources_for_writemask(ptr, writemask, srcmasks);
 					for(src=0; src < opcode->NumSrcRegs; src++){
 						mark_used(&s,
 							ptr->U.I.SrcReg[src].File,

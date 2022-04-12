@@ -26,8 +26,8 @@
 #include "broadcom/common/v3d_macros.h"
 #include "broadcom/cle/v3dx_pack.h"
 #include "broadcom/compiler/v3d_compiler.h"
-#include "vk_format_info.h"
 #include "util/u_pack_color.h"
+#include "util/half_float.h"
 
 static const enum V3DX(Wrap_Mode) vk_to_v3d_wrap_mode[] = {
    [VK_SAMPLER_ADDRESS_MODE_REPEAT]          = V3D_WRAP_MODE_REPEAT,
@@ -49,17 +49,129 @@ vk_to_v3d_compare_func[] = {
    [VK_COMPARE_OP_ALWAYS]                       = V3D_COMPARE_FUNC_ALWAYS,
 };
 
+
+static union pipe_color_union encode_border_color(
+   const VkSamplerCustomBorderColorCreateInfoEXT *bc_info)
+{
+   const struct util_format_description *desc =
+      vk_format_description(bc_info->format);
+
+   const struct v3dv_format *format = v3dX(get_format)(bc_info->format);
+
+   /* We use the swizzle in our format table to determine swizzle configuration
+    * for sampling as well as to decide if we need to use the Swap R/B and
+    * Reverse Channels bits for Tile Load/Store operations. The order of the
+    * R/B swap and Reverse operations matters and gives different swizzles.
+    * Our format table assumes that Reverse happens first and R/B Swap second.
+    * This seems to match semantics for texture sampling and Tile load/store,
+    * however, it seems that the semantics are reversed for custom border
+    * colors so we need to fix up the swizzle manually for this case.
+    */
+   uint8_t swizzle[4];
+   if (v3dv_format_swizzle_needs_reverse(format->swizzle) &&
+       v3dv_format_swizzle_needs_rb_swap(format->swizzle)) {
+      swizzle[0] = PIPE_SWIZZLE_W;
+      swizzle[1] = PIPE_SWIZZLE_X;
+      swizzle[2] = PIPE_SWIZZLE_Y;
+      swizzle[3] = PIPE_SWIZZLE_Z;
+   } else {
+      memcpy(swizzle, format->swizzle, sizeof (swizzle));
+   }
+
+   union pipe_color_union border;
+   for (int i = 0; i < 4; i++) {
+      if (format->swizzle[i] <= 3)
+         border.ui[i] = bc_info->customBorderColor.uint32[swizzle[i]];
+      else
+         border.ui[i] = 0;
+   }
+
+   /* handle clamping */
+   if (vk_format_has_depth(bc_info->format) &&
+       vk_format_has_stencil(bc_info->format)) {
+      border.f[0] = CLAMP(border.f[0], 0, 1);
+      border.ui[1] = CLAMP(border.ui[1], 0, 0xff);
+   } else if (vk_format_is_unorm(bc_info->format)) {
+      for (int i = 0; i < 4; i++)
+         border.f[i] = CLAMP(border.f[i], 0, 1);
+   } else if (vk_format_is_snorm(bc_info->format)) {
+      for (int i = 0; i < 4; i++)
+         border.f[i] = CLAMP(border.f[i], -1, 1);
+   } else if (vk_format_is_uint(bc_info->format) &&
+              desc->channel[0].size < 32) {
+      for (int i = 0; i < 4; i++)
+         border.ui[i] = CLAMP(border.ui[i], 0, (1 << desc->channel[i].size));
+   } else if (vk_format_is_sint(bc_info->format) &&
+              desc->channel[0].size < 32) {
+      for (int i = 0; i < 4; i++)
+         border.i[i] = CLAMP(border.i[i],
+                             -(1 << (desc->channel[i].size - 1)),
+                             (1 << (desc->channel[i].size - 1)) - 1);
+   }
+
+   /* convert from float to expected format */
+   if (vk_format_is_srgb(bc_info->format) ||
+       vk_format_is_compressed(bc_info->format)) {
+      for (int i = 0; i < 4; i++)
+         border.ui[i] = _mesa_float_to_half(border.f[i]);
+   } else if (vk_format_is_unorm(bc_info->format)) {
+      for (int i = 0; i < 4; i++) {
+         switch (desc->channel[i].size) {
+         case 8:
+         case 16:
+            /* expect u16 for non depth values */
+            if (!vk_format_has_depth(bc_info->format))
+               border.ui[i] = (uint32_t) (border.f[i] * (float) 0xffff);
+            break;
+         case 24:
+         case 32:
+            /* uses full f32; no conversion needed */
+            break;
+         default:
+            border.ui[i] = _mesa_float_to_half(border.f[i]);
+            break;
+         }
+      }
+   } else if (vk_format_is_snorm(bc_info->format)) {
+      for (int i = 0; i < 4; i++) {
+         switch (desc->channel[i].size) {
+         case 8:
+            border.ui[i] = (int32_t) (border.f[i] * (float) 0x3fff);
+            break;
+         case 16:
+            border.i[i] = (int32_t) (border.f[i] * (float) 0x7fff);
+            break;
+         case 24:
+         case 32:
+            /* uses full f32; no conversion needed */
+            break;
+         default:
+            border.ui[i] = _mesa_float_to_half(border.f[i]);
+            break;
+         }
+      }
+   } else if (vk_format_is_float(bc_info->format)) {
+      for (int i = 0; i < 4; i++) {
+         switch(desc->channel[i].size) {
+         case 16:
+            border.ui[i] = _mesa_float_to_half(border.f[i]);
+            break;
+         default:
+            break;
+         }
+      }
+   }
+
+   return border;
+}
+
 void
 v3dX(pack_sampler_state)(struct v3dv_sampler *sampler,
-                         const VkSamplerCreateInfo *pCreateInfo)
+                         const VkSamplerCreateInfo *pCreateInfo,
+                         const VkSamplerCustomBorderColorCreateInfoEXT *bc_info)
 {
    enum V3DX(Border_Color_Mode) border_color_mode;
 
-   /* For now we only support the preset Vulkan border color modes. If we
-    * want to implement VK_EXT_custom_border_color in the future we would have
-    * to use V3D_BORDER_COLOR_FOLLOWS, and fill up border_color_word_[0/1/2/3]
-    * SAMPLER_STATE.
-    */
    switch (pCreateInfo->borderColor) {
    case VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
    case VK_BORDER_COLOR_INT_TRANSPARENT_BLACK:
@@ -72,6 +184,10 @@ v3dX(pack_sampler_state)(struct v3dv_sampler *sampler,
    case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
    case VK_BORDER_COLOR_INT_OPAQUE_WHITE:
       border_color_mode = V3D_BORDER_COLOR_1111;
+      break;
+   case VK_BORDER_COLOR_FLOAT_CUSTOM_EXT:
+   case VK_BORDER_COLOR_INT_CUSTOM_EXT:
+      border_color_mode = V3D_BORDER_COLOR_FOLLOWS;
       break;
    default:
       unreachable("Unknown border color");
@@ -106,6 +222,15 @@ v3dX(pack_sampler_state)(struct v3dv_sampler *sampler,
 
       s.border_color_mode = border_color_mode;
 
+      if (s.border_color_mode == V3D_BORDER_COLOR_FOLLOWS) {
+         union pipe_color_union border = encode_border_color(bc_info);
+
+         s.border_color_word_0 = border.ui[0];
+         s.border_color_word_1 = border.ui[1];
+         s.border_color_word_2 = border.ui[2];
+         s.border_color_word_3 = border.ui[3];
+      }
+
       s.wrap_i_border = false; /* Also hardcoded on v3d */
       s.wrap_s = vk_to_v3d_wrap_mode[pCreateInfo->addressModeU];
       s.wrap_t = vk_to_v3d_wrap_mode[pCreateInfo->addressModeV];
@@ -132,12 +257,13 @@ v3dX(pack_sampler_state)(struct v3dv_sampler *sampler,
 void
 v3dX(framebuffer_compute_internal_bpp_msaa)(
    const struct v3dv_framebuffer *framebuffer,
+   const struct v3dv_cmd_buffer_attachment_state *attachments,
    const struct v3dv_subpass *subpass,
    uint8_t *max_bpp,
    bool *msaa)
 {
-   STATIC_ASSERT(RENDER_TARGET_MAXIMUM_32BPP == 0);
-   *max_bpp = RENDER_TARGET_MAXIMUM_32BPP;
+   STATIC_ASSERT(V3D_INTERNAL_BPP_32 == 0);
+   *max_bpp = V3D_INTERNAL_BPP_32;
    *msaa = false;
 
    if (subpass) {
@@ -146,22 +272,22 @@ v3dX(framebuffer_compute_internal_bpp_msaa)(
          if (att_idx == VK_ATTACHMENT_UNUSED)
             continue;
 
-         const struct v3dv_image_view *att = framebuffer->attachments[att_idx];
+         const struct v3dv_image_view *att = attachments[att_idx].image_view;
          assert(att);
 
-         if (att->aspects & VK_IMAGE_ASPECT_COLOR_BIT)
+         if (att->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT)
             *max_bpp = MAX2(*max_bpp, att->internal_bpp);
 
-         if (att->image->samples > VK_SAMPLE_COUNT_1_BIT)
+         if (att->vk.image->samples > VK_SAMPLE_COUNT_1_BIT)
             *msaa = true;
       }
 
       if (!*msaa && subpass->ds_attachment.attachment != VK_ATTACHMENT_UNUSED) {
          const struct v3dv_image_view *att =
-            framebuffer->attachments[subpass->ds_attachment.attachment];
+            attachments[subpass->ds_attachment.attachment].image_view;
          assert(att);
 
-         if (att->image->samples > VK_SAMPLE_COUNT_1_BIT)
+         if (att->vk.image->samples > VK_SAMPLE_COUNT_1_BIT)
             *msaa = true;
       }
 
@@ -170,13 +296,13 @@ v3dX(framebuffer_compute_internal_bpp_msaa)(
 
    assert(framebuffer->attachment_count <= 4);
    for (uint32_t i = 0; i < framebuffer->attachment_count; i++) {
-      const struct v3dv_image_view *att = framebuffer->attachments[i];
+      const struct v3dv_image_view *att = attachments[i].image_view;
       assert(att);
 
-      if (att->aspects & VK_IMAGE_ASPECT_COLOR_BIT)
+      if (att->vk.aspects & VK_IMAGE_ASPECT_COLOR_BIT)
          *max_bpp = MAX2(*max_bpp, att->internal_bpp);
 
-      if (att->image->samples > VK_SAMPLE_COUNT_1_BIT)
+      if (att->vk.image->samples > VK_SAMPLE_COUNT_1_BIT)
          *msaa = true;
    }
 

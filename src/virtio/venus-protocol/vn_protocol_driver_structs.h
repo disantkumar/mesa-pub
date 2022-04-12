@@ -69,11 +69,11 @@ vn_sizeof_VkLayerProperties(const VkLayerProperties *val)
 {
     size_t size = 0;
     size += vn_sizeof_array_size(VK_MAX_EXTENSION_NAME_SIZE);
-    size += vn_sizeof_blob_array(val->layerName, VK_MAX_EXTENSION_NAME_SIZE);
+    size += vn_sizeof_char_array(val->layerName, VK_MAX_EXTENSION_NAME_SIZE);
     size += vn_sizeof_uint32_t(&val->specVersion);
     size += vn_sizeof_uint32_t(&val->implementationVersion);
     size += vn_sizeof_array_size(VK_MAX_DESCRIPTION_SIZE);
-    size += vn_sizeof_blob_array(val->description, VK_MAX_DESCRIPTION_SIZE);
+    size += vn_sizeof_char_array(val->description, VK_MAX_DESCRIPTION_SIZE);
     return size;
 }
 
@@ -82,13 +82,13 @@ vn_decode_VkLayerProperties(struct vn_cs_decoder *dec, VkLayerProperties *val)
 {
     {
         const size_t array_size = vn_decode_array_size(dec, VK_MAX_EXTENSION_NAME_SIZE);
-        vn_decode_blob_array(dec, val->layerName, array_size);
+        vn_decode_char_array(dec, val->layerName, array_size);
     }
     vn_decode_uint32_t(dec, &val->specVersion);
     vn_decode_uint32_t(dec, &val->implementationVersion);
     {
         const size_t array_size = vn_decode_array_size(dec, VK_MAX_DESCRIPTION_SIZE);
-        vn_decode_blob_array(dec, val->description, array_size);
+        vn_decode_char_array(dec, val->description, array_size);
     }
 }
 
@@ -119,9 +119,17 @@ vn_sizeof_VkExtensionProperties(const VkExtensionProperties *val)
 {
     size_t size = 0;
     size += vn_sizeof_array_size(VK_MAX_EXTENSION_NAME_SIZE);
-    size += vn_sizeof_blob_array(val->extensionName, VK_MAX_EXTENSION_NAME_SIZE);
+    size += vn_sizeof_char_array(val->extensionName, VK_MAX_EXTENSION_NAME_SIZE);
     size += vn_sizeof_uint32_t(&val->specVersion);
     return size;
+}
+
+static inline void
+vn_encode_VkExtensionProperties(struct vn_cs_encoder *enc, const VkExtensionProperties *val)
+{
+    vn_encode_array_size(enc, VK_MAX_EXTENSION_NAME_SIZE);
+    vn_encode_char_array(enc, val->extensionName, VK_MAX_EXTENSION_NAME_SIZE);
+    vn_encode_uint32_t(enc, &val->specVersion);
 }
 
 static inline void
@@ -129,7 +137,7 @@ vn_decode_VkExtensionProperties(struct vn_cs_decoder *dec, VkExtensionProperties
 {
     {
         const size_t array_size = vn_decode_array_size(dec, VK_MAX_EXTENSION_NAME_SIZE);
-        vn_decode_blob_array(dec, val->extensionName, array_size);
+        vn_decode_char_array(dec, val->extensionName, array_size);
     }
     vn_decode_uint32_t(dec, &val->specVersion);
 }
@@ -386,6 +394,40 @@ vn_encode_VkImageFormatListCreateInfo(struct vn_cs_encoder *enc, const VkImageFo
     vn_encode_VkImageFormatListCreateInfo_self(enc, val);
 }
 
+static inline void
+vn_decode_VkImageFormatListCreateInfo_pnext(struct vn_cs_decoder *dec, const void *val)
+{
+    /* no known/supported struct */
+    if (vn_decode_simple_pointer(dec))
+        assert(false);
+}
+
+static inline void
+vn_decode_VkImageFormatListCreateInfo_self(struct vn_cs_decoder *dec, VkImageFormatListCreateInfo *val)
+{
+    /* skip val->{sType,pNext} */
+    vn_decode_uint32_t(dec, &val->viewFormatCount);
+    if (vn_peek_array_size(dec)) {
+        const size_t array_size = vn_decode_array_size(dec, val->viewFormatCount);
+        vn_decode_VkFormat_array(dec, (VkFormat *)val->pViewFormats, array_size);
+    } else {
+        vn_decode_array_size_unchecked(dec);
+        val->pViewFormats = NULL;
+    }
+}
+
+static inline void
+vn_decode_VkImageFormatListCreateInfo(struct vn_cs_decoder *dec, VkImageFormatListCreateInfo *val)
+{
+    VkStructureType stype;
+    vn_decode_VkStructureType(dec, &stype);
+    assert(stype == VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO);
+
+    assert(val->sType == stype);
+    vn_decode_VkImageFormatListCreateInfo_pnext(dec, val->pNext);
+    vn_decode_VkImageFormatListCreateInfo_self(dec, val);
+}
+
 /* struct VkImageStencilUsageCreateInfo chain */
 
 static inline size_t
@@ -437,6 +479,33 @@ vn_encode_VkImageStencilUsageCreateInfo(struct vn_cs_encoder *enc, const VkImage
     vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO });
     vn_encode_VkImageStencilUsageCreateInfo_pnext(enc, val->pNext);
     vn_encode_VkImageStencilUsageCreateInfo_self(enc, val);
+}
+
+static inline void
+vn_decode_VkImageStencilUsageCreateInfo_pnext(struct vn_cs_decoder *dec, const void *val)
+{
+    /* no known/supported struct */
+    if (vn_decode_simple_pointer(dec))
+        assert(false);
+}
+
+static inline void
+vn_decode_VkImageStencilUsageCreateInfo_self(struct vn_cs_decoder *dec, VkImageStencilUsageCreateInfo *val)
+{
+    /* skip val->{sType,pNext} */
+    vn_decode_VkFlags(dec, &val->stencilUsage);
+}
+
+static inline void
+vn_decode_VkImageStencilUsageCreateInfo(struct vn_cs_decoder *dec, VkImageStencilUsageCreateInfo *val)
+{
+    VkStructureType stype;
+    vn_decode_VkStructureType(dec, &stype);
+    assert(stype == VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO);
+
+    assert(val->sType == stype);
+    vn_decode_VkImageStencilUsageCreateInfo_pnext(dec, val->pNext);
+    vn_decode_VkImageStencilUsageCreateInfo_self(dec, val);
 }
 
 /* struct VkComponentMapping */
@@ -591,6 +660,17 @@ vn_encode_VkViewport(struct vn_cs_encoder *enc, const VkViewport *val)
     vn_encode_float(enc, &val->height);
     vn_encode_float(enc, &val->minDepth);
     vn_encode_float(enc, &val->maxDepth);
+}
+
+static inline void
+vn_decode_VkViewport(struct vn_cs_decoder *dec, VkViewport *val)
+{
+    vn_decode_float(dec, &val->x);
+    vn_decode_float(dec, &val->y);
+    vn_decode_float(dec, &val->width);
+    vn_decode_float(dec, &val->height);
+    vn_decode_float(dec, &val->minDepth);
+    vn_decode_float(dec, &val->maxDepth);
 }
 
 /* struct VkOffset2D */
@@ -1003,6 +1083,65 @@ vn_encode_VkMemoryRequirements2_partial(struct vn_cs_encoder *enc, const VkMemor
     vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 });
     vn_encode_VkMemoryRequirements2_pnext_partial(enc, val->pNext);
     vn_encode_VkMemoryRequirements2_self_partial(enc, val);
+}
+
+/* struct VkMemoryBarrier2 chain */
+
+static inline size_t
+vn_sizeof_VkMemoryBarrier2_pnext(const void *val)
+{
+    /* no known/supported struct */
+    return vn_sizeof_simple_pointer(NULL);
+}
+
+static inline size_t
+vn_sizeof_VkMemoryBarrier2_self(const VkMemoryBarrier2 *val)
+{
+    size_t size = 0;
+    /* skip val->{sType,pNext} */
+    size += vn_sizeof_VkFlags64(&val->srcStageMask);
+    size += vn_sizeof_VkFlags64(&val->srcAccessMask);
+    size += vn_sizeof_VkFlags64(&val->dstStageMask);
+    size += vn_sizeof_VkFlags64(&val->dstAccessMask);
+    return size;
+}
+
+static inline size_t
+vn_sizeof_VkMemoryBarrier2(const VkMemoryBarrier2 *val)
+{
+    size_t size = 0;
+
+    size += vn_sizeof_VkStructureType(&val->sType);
+    size += vn_sizeof_VkMemoryBarrier2_pnext(val->pNext);
+    size += vn_sizeof_VkMemoryBarrier2_self(val);
+
+    return size;
+}
+
+static inline void
+vn_encode_VkMemoryBarrier2_pnext(struct vn_cs_encoder *enc, const void *val)
+{
+    /* no known/supported struct */
+    vn_encode_simple_pointer(enc, NULL);
+}
+
+static inline void
+vn_encode_VkMemoryBarrier2_self(struct vn_cs_encoder *enc, const VkMemoryBarrier2 *val)
+{
+    /* skip val->{sType,pNext} */
+    vn_encode_VkFlags64(enc, &val->srcStageMask);
+    vn_encode_VkFlags64(enc, &val->srcAccessMask);
+    vn_encode_VkFlags64(enc, &val->dstStageMask);
+    vn_encode_VkFlags64(enc, &val->dstAccessMask);
+}
+
+static inline void
+vn_encode_VkMemoryBarrier2(struct vn_cs_encoder *enc, const VkMemoryBarrier2 *val)
+{
+    assert(val->sType == VK_STRUCTURE_TYPE_MEMORY_BARRIER_2);
+    vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 });
+    vn_encode_VkMemoryBarrier2_pnext(enc, val->pNext);
+    vn_encode_VkMemoryBarrier2_self(enc, val);
 }
 
 #endif /* VN_PROTOCOL_DRIVER_STRUCTS_H */

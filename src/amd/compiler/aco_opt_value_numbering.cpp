@@ -87,8 +87,11 @@ struct InstrHash {
       if (instr->isVOP3())
          return hash_murmur_32<VOP3_instruction>(instr);
 
-      if (instr->isDPP())
-         return hash_murmur_32<DPP_instruction>(instr);
+      if (instr->isDPP16())
+         return hash_murmur_32<DPP16_instruction>(instr);
+
+      if (instr->isDPP8())
+         return hash_murmur_32<DPP8_instruction>(instr);
 
       if (instr->isSDWA())
          return hash_murmur_32<SDWA_instruction>(instr);
@@ -172,14 +175,20 @@ struct InstrPred {
          }
          return a3.clamp == b3.clamp && a3.omod == b3.omod && a3.opsel == b3.opsel;
       }
-      if (a->isDPP()) {
-         DPP_instruction& aDPP = a->dpp();
-         DPP_instruction& bDPP = b->dpp();
+      if (a->isDPP16()) {
+         DPP16_instruction& aDPP = a->dpp16();
+         DPP16_instruction& bDPP = b->dpp16();
          return aDPP.pass_flags == bDPP.pass_flags && aDPP.dpp_ctrl == bDPP.dpp_ctrl &&
                 aDPP.bank_mask == bDPP.bank_mask && aDPP.row_mask == bDPP.row_mask &&
                 aDPP.bound_ctrl == bDPP.bound_ctrl && aDPP.abs[0] == bDPP.abs[0] &&
                 aDPP.abs[1] == bDPP.abs[1] && aDPP.neg[0] == bDPP.neg[0] &&
                 aDPP.neg[1] == bDPP.neg[1];
+      }
+      if (a->isDPP8()) {
+         DPP8_instruction& aDPP = a->dpp8();
+         DPP8_instruction& bDPP = b->dpp8();
+         return aDPP.pass_flags == bDPP.pass_flags &&
+                !memcmp(aDPP.lane_sel, bDPP.lane_sel, sizeof(aDPP.lane_sel));
       }
       if (a->isSDWA()) {
          SDWA_instruction& aSDWA = a->sdwa();
@@ -187,8 +196,8 @@ struct InstrPred {
          return aSDWA.sel[0] == bSDWA.sel[0] && aSDWA.sel[1] == bSDWA.sel[1] &&
                 aSDWA.dst_sel == bSDWA.dst_sel && aSDWA.abs[0] == bSDWA.abs[0] &&
                 aSDWA.abs[1] == bSDWA.abs[1] && aSDWA.neg[0] == bSDWA.neg[0] &&
-                aSDWA.neg[1] == bSDWA.neg[1] && aSDWA.dst_preserve == bSDWA.dst_preserve &&
-                aSDWA.clamp == bSDWA.clamp && aSDWA.omod == bSDWA.omod;
+                aSDWA.neg[1] == bSDWA.neg[1] && aSDWA.clamp == bSDWA.clamp &&
+                aSDWA.omod == bSDWA.omod;
       }
 
       switch (a->format) {

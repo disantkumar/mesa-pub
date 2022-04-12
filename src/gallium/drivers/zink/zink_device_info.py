@@ -65,13 +65,27 @@ EXTENSIONS = [
     Extension("VK_KHR_maintenance3"),
     Extension("VK_KHR_external_memory"),
     Extension("VK_KHR_external_memory_fd"),
+    Extension("VK_KHR_external_semaphore_fd"),
+    Extension("VK_EXT_external_memory_dma_buf"),
+    Extension("VK_EXT_queue_family_foreign"),
     Extension("VK_EXT_provoking_vertex",
        alias="pv",
        features=True,
        properties=True,
        conditions=["$feats.provokingVertexLast"]),
     Extension("VK_EXT_shader_viewport_index_layer"),
+    Extension("VK_KHR_get_memory_requirements2"),
     Extension("VK_EXT_post_depth_coverage"),
+    Extension("VK_EXT_shader_subgroup_ballot"),
+    Extension("VK_EXT_shader_atomic_float", alias="atomic_float", features=True),
+    Extension("VK_KHR_8bit_storage",
+              alias="storage_8bit",
+              features=True,
+              conditions=["$feats.storageBuffer8BitAccess"]),
+    Extension("VK_KHR_16bit_storage",
+              alias="storage_16bit",
+              features=True,
+              conditions=["$feats.storageBuffer16BitAccess"]),
     Extension("VK_KHR_driver_properties",
         alias="driver",
         properties=True),
@@ -103,6 +117,12 @@ EXTENSIONS = [
         alias="index_uint8",
         features=True,
         conditions=["$feats.indexTypeUint8"]),
+    Extension("VK_KHR_image_format_list"),
+    Extension("VK_KHR_sampler_ycbcr_conversion"),
+    Extension("VK_KHR_imageless_framebuffer",
+        alias="imgless",
+        features=True,
+        conditions=["$feats.imagelessFramebuffer"]),
     Extension("VK_EXT_robustness2",
         alias="rb2",
         properties=True,
@@ -119,7 +139,6 @@ EXTENSIONS = [
        alias="shader_clock",
        features=True,
        conditions=["$feats.shaderSubgroupClock"]),
-    Extension("VK_EXT_shader_subgroup_ballot"),
     Extension("VK_EXT_sampler_filter_minmax",
         alias="reduction",
 	properties=True),
@@ -137,6 +156,10 @@ EXTENSIONS = [
         alias="dynamic_state",
         features=True,
         conditions=["$feats.extendedDynamicState"]),
+    Extension("VK_EXT_extended_dynamic_state2",
+        alias="dynamic_state2",
+        features=True,
+        conditions=["$feats.extendedDynamicState2"]),
     Extension("VK_EXT_pipeline_creation_cache_control",
         alias="pipeline_cache_control",
         features=True,
@@ -149,7 +172,7 @@ EXTENSIONS = [
         properties=True,
         features=True,
         guard=True),
-    Extension("VK_KHR_timeline_semaphore"),
+    Extension("VK_KHR_timeline_semaphore", alias="timeline", features=True),
     Extension("VK_EXT_4444_formats",
         alias="format_4444",
         features=True),
@@ -175,6 +198,21 @@ EXTENSIONS = [
         alias="line_rast",
         properties=True,
         features=True),
+    Extension("VK_EXT_vertex_input_dynamic_state",
+        alias="vertex_input",
+	features=True,
+	conditions=["$feats.vertexInputDynamicState"]),
+    Extension("VK_EXT_primitive_topology_list_restart",
+        alias="list_restart",
+	features=True,
+	conditions=["$feats.primitiveTopologyListRestart"]),
+    Extension("VK_KHR_dedicated_allocation",
+        alias="dedicated"),
+    Extension("VK_EXT_descriptor_indexing",
+        alias="desc_indexing",
+        features=True,
+        properties=True,
+        conditions=["$feats.descriptorBindingPartiallyBound"]),
 ]
 
 # constructor: Versions(device_version(major, minor, patch), struct_version(major, minor))
@@ -184,9 +222,7 @@ EXTENSIONS = [
 #
 #  - struct_version: Vulkan version, as tuple, to use with structures and macros
 VERSIONS = [
-    # VkPhysicalDeviceVulkan11Properties and VkPhysicalDeviceVulkan11Features is new from Vk 1.2, not Vk 1.1
-    # https://www.khronos.org/registry/vulkan/specs/1.2-extensions/html/vkspec.html#_new_structures
-    Version((1,2,0), (1,1)),
+    Version((1,1,0), (1,1)),
     Version((1,2,0), (1,2)),
 ]
 
@@ -195,6 +231,7 @@ VERSIONS = [
 REPLACEMENTS = {
     "ROBUSTNESS2": "ROBUSTNESS_2",
     "PROPERTIES_PROPERTIES": "PROPERTIES",
+    "EXTENDED_DYNAMIC_STATE2": "EXTENDED_DYNAMIC_STATE_2",
 }
 
 
@@ -252,6 +289,7 @@ struct zink_device_info {
 %endfor
 
    VkPhysicalDeviceMemoryProperties mem_props;
+   VkPhysicalDeviceIDProperties deviceid_props;
 
 %for ext in extensions:
 <%helpers:guard ext="${ext}">
@@ -320,30 +358,10 @@ zink_get_physical_device_info(struct zink_screen *screen)
          %for ext in extensions:
          <%helpers:guard ext="${ext}">
             if (!strcmp(extensions[i].extensionName, "${ext.name}")) {
-         %if ext.core_since:
-         %for version in versions:
-         %if ext.core_since.struct_version == version.struct_version:
-               if (${version.version()} >= screen->vk_version) {
-         %if not (ext.has_features or ext.has_properties):
-                  info->have_${ext.name_with_vendor()} = true;
-         %else:
-                  support_${ext.name_with_vendor()} = true;
-         %endif
-               } else {
-         %if not (ext.has_features or ext.has_properties):
-                  info->have_${ext.name_with_vendor()} = true;
-         %else:
-                  support_${ext.name_with_vendor()} = true;
-         %endif
-               }
-         %endif
-         %endfor
-         %else:
          %if not (ext.has_features or ext.has_properties):
                info->have_${ext.name_with_vendor()} = true;
          %else:
                support_${ext.name_with_vendor()} = true;
-         %endif
          %endif
             }
          </%helpers:guard>
@@ -360,7 +378,12 @@ zink_get_physical_device_info(struct zink_screen *screen)
       info->feats.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
 
 %for version in versions:
+%if version.device_version < (1,2,0):
+      if (VK_MAKE_VERSION(1,2,0) <= screen->vk_version) {
+         /* VkPhysicalDeviceVulkan11Features was added in 1.2, not 1.1 as one would think */
+%else:
       if (${version.version()} <= screen->vk_version) {
+%endif
          info->feats${version.struct()}.sType = ${version.stype("FEATURES")};
          info->feats${version.struct()}.pNext = info->feats.pNext;
          info->feats.pNext = &info->feats${version.struct()};
@@ -391,7 +414,12 @@ zink_get_physical_device_info(struct zink_screen *screen)
       props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 
 %for version in versions:
+%if version.device_version < (1,2,0):
+      if (VK_MAKE_VERSION(1,2,0) <= screen->vk_version) {
+         /* VkPhysicalDeviceVulkan11Properties was added in 1.2, not 1.1 as one would think */
+%else:
       if (${version.version()} <= screen->vk_version) {
+%endif
          info->props${version.struct()}.sType = ${version.stype("PROPERTIES")};
          info->props${version.struct()}.pNext = props.pNext;
          props.pNext = &info->props${version.struct()};
@@ -409,6 +437,12 @@ zink_get_physical_device_info(struct zink_screen *screen)
 </%helpers:guard>
 %endif
 %endfor
+
+      if (screen->vk_version < VK_MAKE_VERSION(1,2,0) && screen->instance_info.have_KHR_external_memory_capabilities) {
+         info->deviceid_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+         info->deviceid_props.pNext = props.pNext;
+         props.pNext = &info->deviceid_props;
+      }
 
       // note: setting up local VkPhysicalDeviceProperties2.
       screen->vk.GetPhysicalDeviceProperties2(screen->pdev, &props);
@@ -561,7 +595,6 @@ if __name__ == "__main__":
             if not (entry.properties_struct and ext.physical_device_struct("Properties") == entry.properties_struct):
                 error_count += 1
                 print("The extension {} does not provide a properties struct.".format(ext.name))
-                print(entry.properties_struct, ext.physical_device_struct("Properties"))
 
         if entry.promoted_in:
             ext.core_since = Version((*entry.promoted_in, 0))
