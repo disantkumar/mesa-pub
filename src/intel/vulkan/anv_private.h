@@ -1088,6 +1088,7 @@ struct anv_instance {
      * Workarounds for game bugs.
      */
     bool                                        assume_full_subgroups;
+    bool                                        sample_mask_out_opengl_behaviour;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
