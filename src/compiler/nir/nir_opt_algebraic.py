@@ -356,6 +356,14 @@ optimizations.extend([
 
    (('~flrp', a, 0.0, c), ('fadd', ('fmul', ('fneg', a), c), a)),
    (('ftrunc', a), ('bcsel', ('flt', a, 0.0), ('fneg', ('ffloor', ('fabs', a))), ('ffloor', ('fabs', a))), 'options->lower_ftrunc'),
+
+   # Approximate handling of fround_even for DX9 addressing from gallium nine on
+   # DX9-class hardware with no proper fround support.
+   (('fround_even', a), ('bcsel',
+                         ('feq', ('ffract', a), 0.5),
+                         ('fadd', ('ffloor', ('fadd', a, 0.5)), 1.0),
+                         ('ffloor', ('fadd', a, 0.5))), 'options->lower_fround_even'),
+
    (('ffloor', a), ('fsub', a, ('ffract', a)), 'options->lower_ffloor'),
    (('fadd', a, ('fneg', ('ffract', a))), ('ffloor', a), '!options->lower_ffloor'),
    (('ffract', a), ('fsub', a, ('ffloor', a)), 'options->lower_ffract'),
@@ -412,7 +420,7 @@ optimizations.extend([
 # bits of the second source.  These replacements must correctly handle the
 # case where (b % bitsize) + (c % bitsize) >= bitsize.
 for s in [8, 16, 32, 64]:
-   mask = (1 << s) - 1
+   mask = s - 1
 
    ishl = "ishl@{}".format(s)
    ishr = "ishr@{}".format(s)
@@ -1635,7 +1643,7 @@ optimizations.extend([
    (('fmod', a, b), ('fsub', a, ('fmul', b, ('ffloor', ('fdiv', a, b)))), 'options->lower_fmod'),
    (('frem', a, b), ('fsub', a, ('fmul', b, ('ftrunc', ('fdiv', a, b)))), 'options->lower_fmod'),
    (('uadd_carry', a, b), ('b2i', ('ult', ('iadd', a, b), a)), 'options->lower_uadd_carry'),
-   (('usub_borrow@32', a, b), ('b2i', ('ult', a, b)), 'options->lower_usub_borrow'),
+   (('usub_borrow', a, b), ('b2i', ('ult', a, b)), 'options->lower_usub_borrow'),
 
    (('bitfield_insert', 'base', 'insert', 'offset', 'bits'),
     ('bcsel', ('ult', 31, 'bits'), 'insert',

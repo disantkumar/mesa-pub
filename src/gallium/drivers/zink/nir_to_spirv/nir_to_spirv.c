@@ -2368,15 +2368,15 @@ emit_get_ssbo_size(struct ntv_context *ctx, nir_intrinsic_instr *intr)
    nir_const_value *const_block_index = nir_src_as_const_value(intr->src[0]);
    assert(const_block_index); // no dynamic indexing for now
    nir_variable *var = ctx->ssbo_vars[const_block_index->u32];
+   unsigned last_member_idx = glsl_get_length(var->interface_type) - 1;
    SpvId result = spirv_builder_emit_binop(&ctx->builder, SpvOpArrayLength, uint_type,
-                                             ctx->ssbos[const_block_index->u32][2], 1);
+                                             ctx->ssbos[const_block_index->u32][2], last_member_idx);
    /* this is going to be converted by nir to:
 
       length = (buffer_size - offset) / stride
 
       * so we need to un-convert it to avoid having the calculation performed twice
       */
-   unsigned last_member_idx = glsl_get_length(var->interface_type) - 1;
    const struct glsl_type *last_member = glsl_get_struct_field(var->interface_type, last_member_idx);
    /* multiply by stride */
    result = emit_binop(ctx, SpvOpIMul, uint_type, result, emit_uint_const(ctx, 32, glsl_get_explicit_stride(last_member)));
@@ -2449,7 +2449,22 @@ extract_sparse_load(struct ntv_context *ctx, SpvId result, SpvId dest_type, nir_
    uint32_t idx = 0;
    SpvId resident = spirv_builder_emit_composite_extract(&ctx->builder, spirv_builder_type_uint(&ctx->builder, 32), result, &idx, 1);
    idx = 1;
-   result = spirv_builder_emit_composite_extract(&ctx->builder, dest_type, result, &idx, 1);
+   /* normal vec4 return */
+   if (dest_ssa->num_components == 4)
+      result = spirv_builder_emit_composite_extract(&ctx->builder, dest_type, result, &idx, 1);
+   else {
+      /* shadow */
+      assert(dest_ssa->num_components == 1);
+      SpvId type = spirv_builder_type_float(&ctx->builder, dest_ssa->bit_size);
+      SpvId val[2];
+      /* pad to 2 components: the upcoming is_sparse_texels_resident instr will always use the
+       * separate residency value, but the shader still expects this return to be a vec2,
+       * so give it a vec2
+       */
+      val[0] = spirv_builder_emit_composite_extract(&ctx->builder, type, result, &idx, 1);
+      val[1] = emit_float_const(ctx, dest_ssa->bit_size, 0);
+      result = spirv_builder_emit_composite_construct(&ctx->builder, get_fvec_type(ctx, dest_ssa->bit_size, 2), val, 2);
+   }
    assert(resident != 0);
    assert(dest_ssa->index < ctx->num_defs);
    ctx->resident_defs[dest_ssa->index] = resident;
@@ -2720,8 +2735,7 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
       break;
 
    case nir_intrinsic_memory_barrier_tcs_patch:
-      spirv_builder_emit_memory_barrier(&ctx->builder, SpvScopeWorkgroup,
-                                        SpvMemorySemanticsOutputMemoryMask | SpvMemorySemanticsReleaseMask);
+      /* handled by subsequent nir_intrinsic_control_barrier */
       break;
 
    case nir_intrinsic_memory_barrier:
@@ -2738,7 +2752,10 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
 
    case nir_intrinsic_group_memory_barrier:
       spirv_builder_emit_memory_barrier(&ctx->builder, SpvScopeWorkgroup,
+                                        SpvMemorySemanticsImageMemoryMask |
+                                        SpvMemorySemanticsUniformMemoryMask |
                                         SpvMemorySemanticsWorkgroupMemoryMask |
+                                        SpvMemorySemanticsAtomicCounterMemoryMask |
                                         SpvMemorySemanticsAcquireReleaseMask);
       break;
 
@@ -2749,9 +2766,12 @@ emit_intrinsic(struct ntv_context *ctx, nir_intrinsic_instr *intr)
       break;
 
    case nir_intrinsic_control_barrier:
-      spirv_builder_emit_control_barrier(&ctx->builder, SpvScopeWorkgroup,
-                                         SpvScopeWorkgroup,
-                                         SpvMemorySemanticsWorkgroupMemoryMask | SpvMemorySemanticsAcquireMask);
+      if (ctx->stage == MESA_SHADER_COMPUTE)
+         spirv_builder_emit_control_barrier(&ctx->builder, SpvScopeWorkgroup,
+                                            SpvScopeWorkgroup,
+                                            SpvMemorySemanticsWorkgroupMemoryMask | SpvMemorySemanticsAcquireReleaseMask);
+      else
+         spirv_builder_emit_control_barrier(&ctx->builder, SpvScopeWorkgroup, SpvScopeInvocation, 0);
       break;
 
    case nir_intrinsic_interp_deref_at_centroid:
@@ -3227,6 +3247,8 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
          result = spirv_builder_emit_image_fetch(&ctx->builder, actual_dest_type,
                                                  image, coord, lod, sample, const_offset, offset, tex->is_sparse);
    } else {
+      if (tex->op == nir_texop_txl)
+         min_lod = 0;
       result = spirv_builder_emit_image_sample(&ctx->builder,
                                                actual_dest_type, load,
                                                coord,
@@ -3253,8 +3275,10 @@ emit_tex(struct ntv_context *ctx, nir_tex_instr *tex)
       result = emit_unop(ctx, SpvOpFConvert, dest_type, result);
    }
 
+   if (tex->is_sparse && tex->is_shadow)
+      tex->dest.ssa.num_components++;
    store_dest(ctx, &tex->dest, result, tex->dest_type);
-   if (tex->is_sparse)
+   if (tex->is_sparse && !tex->is_shadow)
       tex->dest.ssa.num_components++;
 }
 

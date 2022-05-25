@@ -484,7 +484,7 @@ iris_alloc_resource(struct pipe_screen *pscreen,
    res->base.b.screen = pscreen;
    res->orig_screen = iris_pscreen_ref(pscreen);
    pipe_reference_init(&res->base.b.reference, 1);
-   threaded_resource_init(&res->base.b, false, 0);
+   threaded_resource_init(&res->base.b, false);
 
    res->aux.possible_usages = 1 << ISL_AUX_USAGE_NONE;
    res->aux.sampler_usages = 1 << ISL_AUX_USAGE_NONE;
@@ -1605,14 +1605,18 @@ iris_resource_get_param(struct pipe_screen *pscreen,
       }
       return true;
    case PIPE_RESOURCE_PARAM_STRIDE:
-      *value = wants_cc ? 1 :
+      *value = wants_cc ? 64 :
                wants_aux ? res->aux.surf.row_pitch_B : res->surf.row_pitch_B;
 
       /* Mesa's implementation of eglCreateImage rejects strides of zero (see
        * dri2_check_dma_buf_attribs). Ensure we return a non-zero stride as
        * this value may be queried from GBM and passed into EGL.
+       *
+       * Also, although modifiers which use a clear color plane specify that
+       * the plane's pitch should be ignored, some kernels have been found to
+       * require 64-byte alignment.
        */
-      assert(*value);
+      assert(*value != 0 && (!wants_cc || *value % 64 == 0));
 
       return true;
    case PIPE_RESOURCE_PARAM_OFFSET:
@@ -2546,6 +2550,9 @@ iris_dirty_for_history(struct iris_context *ice,
 
    if (res->bind_history & PIPE_BIND_VERTEX_BUFFER)
       dirty |= IRIS_DIRTY_VERTEX_BUFFER_FLUSHES;
+
+   if (ice->state.streamout_active && (res->bind_history & PIPE_BIND_STREAM_OUTPUT))
+      dirty |= IRIS_DIRTY_SO_BUFFERS;
 
    ice->state.dirty |= dirty;
    ice->state.stage_dirty |= stage_dirty;

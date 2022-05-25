@@ -68,6 +68,7 @@ static const driOptionDescription anv_dri_options[] = {
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
       DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
+      DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(false)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -300,6 +301,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .EXT_shader_viewport_index_layer       = true,
       .EXT_subgroup_size_control             = true,
       .EXT_texel_buffer_alignment            = true,
+      .EXT_tooling_info                      = true,
       .EXT_transform_feedback                = true,
       .EXT_vertex_attribute_divisor          = true,
       .EXT_ycbcr_image_arrays                = true,
@@ -1092,6 +1094,9 @@ anv_init_dri_options(struct anv_instance *instance)
                        instance->vk.app_info.app_version,
                        instance->vk.app_info.engine_name,
                        instance->vk.app_info.engine_version);
+
+    instance->assume_full_subgroups =
+            driQueryOptionb(&instance->dri_options, "anv_assume_full_subgroups");
 }
 
 VkResult anv_CreateInstance(
@@ -1577,7 +1582,11 @@ void anv_GetPhysicalDeviceFeatures2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT: {
          VkPhysicalDeviceLineRasterizationFeaturesEXT *features =
             (VkPhysicalDeviceLineRasterizationFeaturesEXT *)ext;
-         features->rectangularLines = true;
+         /* Rectangular lines must use the strict algorithm, which is not
+          * supported for wide lines prior to ICL.  See rasterization_mode for
+          * details and how the HW states are programmed.
+          */
+         features->rectangularLines = pdevice->info.ver >= 10;
          features->bresenhamLines = true;
          /* Support for Smooth lines with MSAA was removed on gfx11.  From the
           * BSpec section "Multisample ModesState" table for "AA Line Support

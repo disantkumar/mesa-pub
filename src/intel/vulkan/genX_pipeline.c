@@ -913,34 +913,28 @@ emit_ms_state(struct anv_graphics_pipeline *pipeline,
               const VkPipelineMultisampleStateCreateInfo *info,
               uint32_t dynamic_states)
 {
-   /* Only lookup locations if the extensions is active, otherwise the default
-    * ones will be used either at device initialization time or through
-    * 3DSTATE_MULTISAMPLE on Gfx7/7.5 by passing NULL locations.
-    */
-   if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations) {
-      /* If the sample locations are dynamic, 3DSTATE_MULTISAMPLE on Gfx7/7.5
-       * will be emitted dynamically, so skip it here. On Gfx8+
-       * 3DSTATE_SAMPLE_PATTERN will be emitted dynamically, so skip it here.
-       */
-      if (!(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
 #if GFX_VER >= 8
-         genX(emit_sample_pattern)(&pipeline->base.batch,
-                                   pipeline->dynamic_state.sample_locations.samples,
-                                   pipeline->dynamic_state.sample_locations.locations);
+   /* On Gfx8+ 3DSTATE_MULTISAMPLE only holds the number of samples. */
+   genX(emit_multisample)(&pipeline->base.batch,
+                          info ? info->rasterizationSamples : 1,
+                          NULL);
 #endif
-      }
 
+   /* If EXT_sample_locations is enabled and the sample locations are not
+    * dynamic, then we need to emit those position in the pipeline batch. On
+    * Gfx8+ this is part of 3DSTATE_SAMPLE_PATTERN, prior to that this is in
+    * 3DSTATE_MULTISAMPLE.
+    */
+   if (pipeline->base.device->vk.enabled_extensions.EXT_sample_locations &&
+       !(dynamic_states & ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)) {
+#if GFX_VER >= 8
+      genX(emit_sample_pattern)(&pipeline->base.batch,
+                                pipeline->dynamic_state.sample_locations.samples,
+                                pipeline->dynamic_state.sample_locations.locations);
+#else
       genX(emit_multisample)(&pipeline->base.batch,
                              pipeline->dynamic_state.sample_locations.samples,
                              pipeline->dynamic_state.sample_locations.locations);
-   } else {
-      /* On Gfx8+ 3DSTATE_MULTISAMPLE does not hold anything we need to modify
-       * for sample locations, so we don't have to emit it dynamically.
-       */
-#if GFX_VER >= 8
-      genX(emit_multisample)(&pipeline->base.batch,
-                             info ? info->rasterizationSamples : 1,
-                             NULL);
 #endif
    }
 
@@ -2663,10 +2657,10 @@ emit_task_state(struct anv_graphics_pipeline *pipeline)
    /* Recommended values from "Task and Mesh Distribution Programming". */
    anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_TASK_REDISTRIB), redistrib) {
       redistrib.LocalBOTAccumulatorThreshold = MULTIPLIER_1;
-      redistrib.SmallTaskThreshold = MULTIPLIER_2;
-      redistrib.TargetMeshBatchSize = MULTIPLIER_4;
+      redistrib.SmallTaskThreshold = 1; /* 2^N */
+      redistrib.TargetMeshBatchSize = devinfo->num_slices > 2 ? 3 : 5; /* 2^N */
       redistrib.TaskRedistributionLevel = TASKREDISTRIB_BOM;
-      redistrib.TaskRedistributionMode = TASKREDISTRIB_RR_FREE;
+      redistrib.TaskRedistributionMode = TASKREDISTRIB_RR_STRICT;
    }
 }
 
@@ -2737,8 +2731,8 @@ emit_mesh_state(struct anv_graphics_pipeline *pipeline)
    /* Recommended values from "Task and Mesh Distribution Programming". */
    anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_MESH_DISTRIB), distrib) {
       distrib.DistributionMode = MESH_RR_FREE;
-      distrib.TaskDistributionBatchSize = 2; /* 2^2 thread groups */
-      distrib.MeshDistributionBatchSize = 3; /* 2^3 thread groups */
+      distrib.TaskDistributionBatchSize = devinfo->num_slices > 2 ? 8 : 9; /* 2^N thread groups */
+      distrib.MeshDistributionBatchSize = devinfo->num_slices > 2 ? 5 : 3; /* 2^N thread groups */
    }
 }
 #endif
@@ -2882,6 +2876,12 @@ genX(graphics_pipeline_create)(
 #endif
    } else {
       assert(anv_pipeline_is_mesh(pipeline));
+
+      /* BSpec 46303 forbids both 3DSTATE_MESH_CONTROL.MeshShaderEnable
+       * and 3DSTATE_STREAMOUT.SOFunctionEnable to be 1.
+       */
+      anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_STREAMOUT), so) {}
+
 #if GFX_VERx10 >= 125
       emit_task_state(pipeline);
       emit_mesh_state(pipeline);
