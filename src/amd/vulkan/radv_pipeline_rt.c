@@ -940,7 +940,7 @@ lower_any_hit_for_intersection(nir_shader *any_hit)
                 */
                nir_store_deref(b, commit, nir_imm_false(b), 0x1);
                nir_push_if(b, nir_imm_true(b));
-               nir_jump(b, nir_jump_halt);
+               nir_jump(b, nir_jump_return);
                nir_pop_if(b, NULL);
                break;
 
@@ -2346,4 +2346,14 @@ radv_GetRayTracingShaderGroupStackSizeKHR(VkDevice device, VkPipeline _pipeline,
       return stack_size->non_recursive_size;
    else
       return stack_size->recursive_size;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+radv_GetRayTracingCaptureReplayShaderGroupHandlesKHR(VkDevice _device, VkPipeline pipeline,
+                                                     uint32_t firstGroup, uint32_t groupCount,
+                                                     size_t dataSize, void *pData)
+{
+   RADV_FROM_HANDLE(radv_device, device, _device);
+   unreachable("Unimplemented");
+   return vk_error(device, VK_ERROR_FEATURE_NOT_PRESENT);
 }

@@ -2630,18 +2630,6 @@ radv_emit_index_buffer(struct radv_cmd_buffer *cmd_buffer, bool indirect)
    struct radeon_cmdbuf *cs = cmd_buffer->cs;
    struct radv_cmd_state *state = &cmd_buffer->state;
 
-   if (state->index_type != state->last_index_type) {
-      if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX9) {
-         radeon_set_uconfig_reg_idx(cmd_buffer->device->physical_device, cs,
-                                    R_03090C_VGT_INDEX_TYPE, 2, state->index_type);
-      } else {
-         radeon_emit(cs, PKT3(PKT3_INDEX_TYPE, 0, 0));
-         radeon_emit(cs, state->index_type);
-      }
-
-      state->last_index_type = state->index_type;
-   }
-
    /* For the direct indexed draws we use DRAW_INDEX_2, which includes
     * the index_va and max_index_count already. */
    if (!indirect)
@@ -2658,14 +2646,14 @@ radv_emit_index_buffer(struct radv_cmd_buffer *cmd_buffer, bool indirect)
 }
 
 void
-radv_set_db_count_control(struct radv_cmd_buffer *cmd_buffer)
+radv_set_db_count_control(struct radv_cmd_buffer *cmd_buffer, bool enable_occlusion_queries)
 {
    bool has_perfect_queries = cmd_buffer->state.perfect_occlusion_queries_enabled;
    struct radv_pipeline *pipeline = cmd_buffer->state.pipeline;
    uint32_t pa_sc_mode_cntl_1 = pipeline ? pipeline->graphics.ms.pa_sc_mode_cntl_1 : 0;
    uint32_t db_count_control;
 
-   if (!cmd_buffer->state.active_occlusion_queries) {
+   if (!enable_occlusion_queries) {
       if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX7) {
          if (G_028A4C_OUT_OF_ORDER_PRIMITIVE_ENABLE(pa_sc_mode_cntl_1) &&
              pipeline->graphics.disable_out_of_order_rast_for_occlusion && has_perfect_queries) {
@@ -2757,8 +2745,9 @@ union vs_prolog_key_header {
       uint32_t misaligned_mask : 1;
       uint32_t post_shuffle : 1;
       uint32_t nontrivial_divisors : 1;
+      uint32_t zero_divisors : 1;
       /* We need this to ensure the padding is zero. It's useful even if it's unused. */
-      uint32_t padding0 : 6;
+      uint32_t padding0 : 5;
    };
    uint32_t v;
 };
@@ -2800,6 +2789,7 @@ lookup_vs_prolog(struct radv_cmd_buffer *cmd_buffer, struct radv_shader *vs_shad
    uint32_t attribute_mask = BITFIELD_MASK(num_attributes);
 
    uint32_t instance_rate_inputs = state->instance_rate_inputs & attribute_mask;
+   uint32_t zero_divisors = state->zero_divisors & attribute_mask;
    *nontrivial_divisors = state->nontrivial_divisors & attribute_mask;
    enum chip_class chip = device->physical_device->rad_info.chip_class;
    const uint32_t misaligned_mask = chip == GFX6 || chip >= GFX10 ? cmd_buffer->state.vbo_misaligned_mask : 0;
@@ -2811,7 +2801,7 @@ lookup_vs_prolog(struct radv_cmd_buffer *cmd_buffer, struct radv_shader *vs_shad
        !misaligned_mask && !state->alpha_adjust_lo && !state->alpha_adjust_hi) {
       if (!instance_rate_inputs) {
          prolog = device->simple_vs_prologs[num_attributes - 1];
-      } else if (num_attributes <= 16 && !*nontrivial_divisors &&
+      } else if (num_attributes <= 16 && !*nontrivial_divisors && !zero_divisors &&
                  util_bitcount(instance_rate_inputs) ==
                     (util_last_bit(instance_rate_inputs) - ffs(instance_rate_inputs) + 1)) {
          unsigned index = radv_instance_rate_prolog_index(num_attributes, instance_rate_inputs);
@@ -2822,7 +2812,7 @@ lookup_vs_prolog(struct radv_cmd_buffer *cmd_buffer, struct radv_shader *vs_shad
       return prolog;
 
    /* if we couldn't use a pre-compiled prolog, find one in the cache or create one */
-   uint32_t key_words[16];
+   uint32_t key_words[17];
    unsigned key_size = 1;
 
    struct radv_vs_prolog_key key;
@@ -2850,6 +2840,10 @@ lookup_vs_prolog(struct radv_cmd_buffer *cmd_buffer, struct radv_shader *vs_shad
    if (*nontrivial_divisors) {
       header.nontrivial_divisors = true;
       key_words[key_size++] = *nontrivial_divisors;
+   }
+   if (zero_divisors) {
+      header.zero_divisors = true;
+      key_words[key_size++] = zero_divisors;
    }
    if (misaligned_mask) {
       header.misaligned_mask = true;
@@ -3079,7 +3073,8 @@ radv_cmd_buffer_flush_dynamic_state(struct radv_cmd_buffer *cmd_buffer, bool pip
    if (states & RADV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS)
       radv_emit_sample_locations(cmd_buffer);
 
-   if (states & RADV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE)
+   if (states & (RADV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE |
+                 RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY))
       radv_emit_line_stipple(cmd_buffer);
 
    if (states & (RADV_CMD_DIRTY_DYNAMIC_CULL_MODE | RADV_CMD_DIRTY_DYNAMIC_FRONT_FACE |
@@ -3702,7 +3697,8 @@ struct radv_draw_info {
 static uint32_t
 radv_get_primitive_reset_index(struct radv_cmd_buffer *cmd_buffer)
 {
-   switch (cmd_buffer->state.index_type) {
+   uint32_t index_type = G_028A7C_INDEX_TYPE(cmd_buffer->state.index_type);
+   switch (index_type) {
    case V_028A7C_VGT_INDEX_8:
       return 0xffu;
    case V_028A7C_VGT_INDEX_16:
@@ -3749,6 +3745,8 @@ radv_emit_draw_registers(struct radv_cmd_buffer *cmd_buffer, const struct radv_d
    struct radeon_info *info = &cmd_buffer->device->physical_device->rad_info;
    struct radv_cmd_state *state = &cmd_buffer->state;
    struct radeon_cmdbuf *cs = cmd_buffer->cs;
+   uint32_t topology = state->dynamic.primitive_topology;
+   bool disable_instance_packing = false;
 
    /* Draw state. */
    if (info->chip_class < GFX10) {
@@ -3782,6 +3780,35 @@ radv_emit_draw_registers(struct radv_cmd_buffer *cmd_buffer, const struct radv_d
       radeon_emit(cs, 0); /* unused */
 
       radv_cs_add_buffer(cmd_buffer->device->ws, cs, draw_info->strmout_buffer->bo);
+   }
+
+   /* RDNA2 is affected by a hardware bug when instance packing is enabled for adjacent primitive
+    * topologies and instance_count > 1, pipeline stats generated by GE are incorrect. It needs to
+    * be applied for indexed and non-indexed draws.
+    */
+   if (info->chip_class == GFX10_3 && state->active_pipeline_queries > 0 &&
+       (draw_info->instance_count > 1 || draw_info->indirect) &&
+        (topology == V_008958_DI_PT_LINELIST_ADJ ||
+         topology == V_008958_DI_PT_LINESTRIP_ADJ ||
+         topology == V_008958_DI_PT_TRILIST_ADJ ||
+         topology == V_008958_DI_PT_TRISTRIP_ADJ)) {
+      disable_instance_packing = true;
+   }
+
+   if ((draw_info->indexed && state->index_type != state->last_index_type) ||
+       (info->chip_class == GFX10_3 && (state->last_index_type == -1 ||
+         disable_instance_packing != G_028A7C_DISABLE_INSTANCE_PACKING(state->last_index_type)))) {
+      uint32_t index_type = state->index_type | S_028A7C_DISABLE_INSTANCE_PACKING(disable_instance_packing);
+
+      if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX9) {
+         radeon_set_uconfig_reg_idx(cmd_buffer->device->physical_device, cs,
+                                    R_03090C_VGT_INDEX_TYPE, 2, index_type);
+      } else {
+         radeon_emit(cs, PKT3(PKT3_INDEX_TYPE, 0, 0));
+         radeon_emit(cs, index_type);
+      }
+
+      state->last_index_type = index_type;
    }
 }
 
@@ -4690,7 +4717,8 @@ vk_to_index_type(VkIndexType type)
 static uint32_t
 radv_get_vgt_index_size(uint32_t type)
 {
-   switch (type) {
+   uint32_t index_type = G_028A7C_INDEX_TYPE(type);
+   switch (index_type) {
    case V_028A7C_VGT_INDEX_8:
       return 1;
    case V_028A7C_VGT_INDEX_16:
@@ -5502,7 +5530,7 @@ radv_CmdSetColorWriteEnableEXT(VkCommandBuffer commandBuffer, uint32_t attachmen
    struct radv_cmd_state *state = &cmd_buffer->state;
    uint32_t color_write_enable = 0;
 
-   assert(attachmentCount < MAX_RTS);
+   assert(attachmentCount <= MAX_RTS);
 
    for (uint32_t i = 0; i < attachmentCount; i++) {
       color_write_enable |= pColorWriteEnables[i] ? (0xfu << (i * 4)) : 0;
@@ -5545,8 +5573,11 @@ radv_CmdSetVertexInputEXT(VkCommandBuffer commandBuffer, uint32_t vertexBindingD
       if (binding->inputRate == VK_VERTEX_INPUT_RATE_INSTANCE) {
          state->instance_rate_inputs |= 1u << loc;
          state->divisors[loc] = binding->divisor;
-         if (binding->divisor != 1)
+         if (binding->divisor == 0) {
+            state->zero_divisors |= 1u << loc;
+         } else if (binding->divisor > 1) {
             state->nontrivial_divisors |= 1u << loc;
+         }
       }
       cmd_buffer->vertex_bindings[attrib->binding].stride = binding->stride;
       state->offsets[loc] = attrib->offset;
@@ -7504,6 +7535,17 @@ radv_CmdTraceRaysKHR(VkCommandBuffer commandBuffer,
    radv_rt_dispatch(cmd_buffer, &info);
 }
 
+VKAPI_ATTR void VKAPI_CALL
+radv_CmdTraceRaysIndirectKHR(VkCommandBuffer commandBuffer,
+                             const VkStridedDeviceAddressRegionKHR *pRaygenShaderBindingTable,
+                             const VkStridedDeviceAddressRegionKHR *pMissShaderBindingTable,
+                             const VkStridedDeviceAddressRegionKHR *pHitShaderBindingTable,
+                             const VkStridedDeviceAddressRegionKHR *pCallableShaderBindingTable,
+                             VkDeviceAddress indirectDeviceAddress)
+{
+   unreachable("Unimplemented");
+}
+
 static void
 radv_set_rt_stack_size(struct radv_cmd_buffer *cmd_buffer, uint32_t size)
 {
@@ -8348,16 +8390,10 @@ radv_barrier(struct radv_cmd_buffer *cmd_buffer, const VkDependencyInfoKHR *dep_
    /* Make sure CP DMA is idle because the driver might have performed a
     * DMA operation for copying or filling buffers/images.
     */
-   if (src_stage_mask & (VK_PIPELINE_STAGE_2_COPY_BIT_KHR |
-                         VK_PIPELINE_STAGE_2_RESOLVE_BIT_KHR |
-                         VK_PIPELINE_STAGE_2_BLIT_BIT_KHR |
-                         VK_PIPELINE_STAGE_2_CLEAR_BIT_KHR)) {
-      /* Be conservative for now. */
-      src_stage_mask |= VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
-   }
-
-   if (src_stage_mask & (VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR |
-                         VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT_KHR))
+   if (src_stage_mask &
+       (VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT |
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT |
+        VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT))
       si_cp_dma_wait_for_idle(cmd_buffer);
 
    cmd_buffer->state.flush_bits |= dst_flush_bits;
@@ -8525,7 +8561,7 @@ radv_CmdBeginConditionalRenderingEXT(
    bool draw_visible = true;
    uint64_t va;
 
-   va = radv_buffer_get_va(buffer->bo) + pConditionalRenderingBegin->offset;
+   va = radv_buffer_get_va(buffer->bo) + buffer->offset + pConditionalRenderingBegin->offset;
 
    /* By default, if the 32-bit value at offset in buffer memory is zero,
     * then the rendering commands are discarded, otherwise they are
@@ -8692,7 +8728,14 @@ radv_flush_vgt_streamout(struct radv_cmd_buffer *cmd_buffer)
    unsigned reg_strmout_cntl;
 
    /* The register is at different places on different ASICs. */
-   if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX7) {
+   if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX9) {
+      reg_strmout_cntl = R_0300FC_CP_STRMOUT_CNTL;
+      radeon_emit(cs, PKT3(PKT3_WRITE_DATA, 3, 0));
+      radeon_emit(cs, S_370_DST_SEL(V_370_MEM_MAPPED_REGISTER) | S_370_ENGINE_SEL(V_370_ME));
+      radeon_emit(cs, R_0300FC_CP_STRMOUT_CNTL >> 2);
+      radeon_emit(cs, 0);
+      radeon_emit(cs, 0);
+   } else if (cmd_buffer->device->physical_device->rad_info.chip_class >= GFX7) {
       reg_strmout_cntl = R_0300FC_CP_STRMOUT_CNTL;
       radeon_set_uconfig_reg(cs, reg_strmout_cntl, 0);
    } else {
