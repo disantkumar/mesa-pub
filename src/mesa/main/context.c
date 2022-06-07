@@ -143,10 +143,6 @@
 #include "macros.h"
 #include "git_sha1.h"
 
-#ifdef USE_SPARC_ASM
-#include "sparc/sparc.h"
-#endif
-
 #include "compiler/glsl_types.h"
 #include "compiler/glsl/builtin_functions.h"
 #include "compiler/glsl/glsl_parser_extras.h"
@@ -1080,6 +1076,8 @@ _mesa_initialize_context(struct gl_context *ctx,
       }
       break;
    }
+   ctx->VertexProgram.PointSizeEnabled = ctx->API == API_OPENGLES2;
+   ctx->PointSizeIsOne = GL_TRUE;
 
    ctx->FirstTimeCurrent = GL_TRUE;
 
