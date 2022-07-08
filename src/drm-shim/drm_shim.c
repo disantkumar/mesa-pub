@@ -293,6 +293,20 @@ PUBLIC int open(const char *path, int flags, ...)
 }
 PUBLIC int open64(const char*, int, ...) __attribute__((alias("open")));
 
+PUBLIC int __open64_2(const char *path, int flags)
+{
+   init_shim();
+
+   if (strcmp(path, render_node_path) != 0)
+      return real_open(path, flags, 0);
+
+   int fd = real_open("/dev/null", O_RDWR, 0);
+
+   drm_shim_fd_register(fd, NULL);
+
+   return fd;
+}
+
 PUBLIC int close(int fd)
 {
    init_shim();
