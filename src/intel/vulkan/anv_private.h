@@ -201,7 +201,7 @@ struct intel_perf_query_result;
 
 #define MAX_XFB_BUFFERS  4
 #define MAX_XFB_STREAMS  4
-#define MAX_SETS         8
+#define MAX_SETS        32
 #define MAX_RTS          8
 #define MAX_VIEWPORTS   16
 #define MAX_SCISSORS    16
@@ -1088,7 +1088,6 @@ struct anv_instance {
      * Workarounds for game bugs.
      */
     bool                                        assume_full_subgroups;
-    bool                                        sample_mask_out_opengl_behaviour;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);

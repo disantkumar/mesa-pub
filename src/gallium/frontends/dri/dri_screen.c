@@ -458,9 +458,6 @@ dri_get_egl_image(struct st_manager *smapi,
       stimg->internalformat = driGLFormatToSizedInternalGLFormat(mesa_format);
    }
 
-   stimg->yuv_color_space = img->yuv_color_space;
-   stimg->yuv_range = img->sample_range;
-
    return TRUE;
 }
 

@@ -261,6 +261,9 @@
 #define DRI_CONF_FORCE_GL_NAMES_REUSE(def) \
    DRI_CONF_OPT_B(force_gl_names_reuse, def, "Force GL names reuse")
 
+#define DRI_CONF_FORCE_GL_MAP_BUFFER_SYNCHRONIZED(def) \
+   DRI_CONF_OPT_B(force_gl_map_buffer_synchronized, def, "Override GL_MAP_UNSYNCHRONIZED_BIT.")
+
 #define DRI_CONF_TRANSCODE_ETC(def) \
    DRI_CONF_OPT_B(transcode_etc, def, "Transcode ETC formats to DXTC if unsupported")
 
@@ -587,9 +590,5 @@
 #define DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(def) \
    DRI_CONF_OPT_B(anv_assume_full_subgroups, def, \
                   "Allow assuming full subgroups requirement even when it's not specified explicitly")
-
-#define DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(def) \
-   DRI_CONF_OPT_B(anv_sample_mask_out_opengl_behaviour, def, \
-                  "Ignore sample mask out when having single sampled target")
 
 #endif

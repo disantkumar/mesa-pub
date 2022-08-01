@@ -69,7 +69,6 @@ static const driOptionDescription anv_dri_options[] = {
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
       DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
       DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(false)
-      DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(false)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -1102,8 +1101,6 @@ anv_init_dri_options(struct anv_instance *instance)
 
     instance->assume_full_subgroups =
             driQueryOptionb(&instance->dri_options, "anv_assume_full_subgroups");
-    instance->sample_mask_out_opengl_behaviour =
-            driQueryOptionb(&instance->dri_options, "anv_sample_mask_out_opengl_behaviour");
 }
 
 VkResult anv_CreateInstance(
@@ -1390,7 +1387,7 @@ anv_get_physical_device_features_1_2(struct anv_physical_device *pdevice,
    f->shaderInputAttachmentArrayDynamicIndexing          = false;
    f->shaderUniformTexelBufferArrayDynamicIndexing       = descIndexing;
    f->shaderStorageTexelBufferArrayDynamicIndexing       = descIndexing;
-   f->shaderUniformBufferArrayNonUniformIndexing         = descIndexing;
+   f->shaderUniformBufferArrayNonUniformIndexing         = false;
    f->shaderSampledImageArrayNonUniformIndexing          = descIndexing;
    f->shaderStorageBufferArrayNonUniformIndexing         = descIndexing;
    f->shaderStorageImageArrayNonUniformIndexing          = descIndexing;
@@ -4170,25 +4167,6 @@ void anv_UnmapMemory(
    mem->map_delta = 0;
 }
 
-static void
-clflush_mapped_ranges(struct anv_device         *device,
-                      uint32_t                   count,
-                      const VkMappedMemoryRange *ranges)
-{
-   for (uint32_t i = 0; i < count; i++) {
-      ANV_FROM_HANDLE(anv_device_memory, mem, ranges[i].memory);
-      uint64_t map_offset = ranges[i].offset + mem->map_delta;
-      if (map_offset >= mem->map_size)
-         continue;
-
-      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-         continue;
-
-      intel_clflush_range(mem->map + map_offset,
-                          MIN2(ranges[i].size, mem->map_size - map_offset));
-   }
-}
-
 VkResult anv_FlushMappedMemoryRanges(
     VkDevice                                    _device,
     uint32_t                                    memoryRangeCount,
@@ -4202,7 +4180,19 @@ VkResult anv_FlushMappedMemoryRanges(
    /* Make sure the writes we're flushing have landed. */
    __builtin_ia32_mfence();
 
-   clflush_mapped_ranges(device, memoryRangeCount, pMemoryRanges);
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      ANV_FROM_HANDLE(anv_device_memory, mem, pMemoryRanges[i].memory);
+      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
+      if (map_offset >= mem->map_size)
+         continue;
+
+      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+         continue;
+
+      intel_clflush_range(mem->map + map_offset,
+                          MIN2(pMemoryRanges[i].size,
+                               mem->map_size - map_offset));
+   }
 
    return VK_SUCCESS;
 }
@@ -4217,7 +4207,19 @@ VkResult anv_InvalidateMappedMemoryRanges(
    if (!device->physical->memory.need_clflush)
       return VK_SUCCESS;
 
-   clflush_mapped_ranges(device, memoryRangeCount, pMemoryRanges);
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      ANV_FROM_HANDLE(anv_device_memory, mem, pMemoryRanges[i].memory);
+      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
+      if (map_offset >= mem->map_size)
+         continue;
+
+      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+         continue;
+
+      intel_invalidate_range(mem->map + map_offset,
+                             MIN2(pMemoryRanges[i].size,
+                                  mem->map_size - map_offset));
+   }
 
    /* Make sure no reads get moved up above the invalidate. */
    __builtin_ia32_mfence();

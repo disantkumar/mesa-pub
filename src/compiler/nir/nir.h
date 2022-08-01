@@ -125,6 +125,13 @@ nir_num_components_valid(unsigned num_components)
            num_components == 16;
 }
 
+static inline nir_component_mask_t
+nir_component_mask(unsigned num_components)
+{
+   assert(nir_num_components_valid(num_components));
+   return (1u << num_components) - 1;
+}
+
 void
 nir_process_debug_variable(void);
 
@@ -417,7 +424,7 @@ typedef struct nir_variable {
        *
        * \sa nir_variable_mode
        */
-      unsigned mode:15;
+      unsigned mode:16;
 
       /**
        * Is the variable read-only?
@@ -4865,7 +4872,6 @@ typedef struct nir_lower_tex_options {
    unsigned lower_y41x_external;
    unsigned bt709_external;
    unsigned bt2020_external;
-   unsigned yuv_full_range_external;
 
    /**
     * To emulate certain texture wrap modes, this can be used
