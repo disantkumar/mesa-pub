@@ -6432,6 +6432,8 @@ iris_upload_dirty_render_state(struct iris_context *ice,
       // XXX: does this need to happen at 3DSTATE_BTP_PS time?
       iris_emit_pipe_control_flush(batch, "workaround: RT BTI change [draw]",
                                    PIPE_CONTROL_RENDER_TARGET_FLUSH |
+                                   PIPE_CONTROL_TILE_CACHE_FLUSH |
+                                   PIPE_CONTROL_STATE_CACHE_INVALIDATE |
                                    PIPE_CONTROL_STALL_AT_SCOREBOARD);
    }
 
