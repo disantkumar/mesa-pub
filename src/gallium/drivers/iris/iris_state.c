@@ -1058,12 +1058,10 @@ iris_init_render_context(struct iris_batch *batch)
    iris_init_common_context(batch);
 
 #if GFX_VERx10 == 120
-   if (devinfo->platform == INTEL_PLATFORM_ADL) {
-      iris_emit_reg(batch, GENX(COMMON_SLICE_CHICKEN1), c1) {
-         c1.RCCRHWOOptimizationDisableBit = true;
-         c1.RCCRHWOOptimizationDisableBitMask = true;
-      };
-   }
+   iris_emit_reg(batch, GENX(COMMON_SLICE_CHICKEN1), c1) {
+      c1.RCCRHWOOptimizationDisableBit = true;
+      c1.RCCRHWOOptimizationDisableBitMask = true;
+   };
 #endif
 
 #if GFX_VER >= 9
