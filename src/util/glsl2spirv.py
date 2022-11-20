@@ -108,8 +108,8 @@ def postprocess_file(args):
             w.writelines(lines)
 
 
-def preprocess_file(args, origin_file):
-    with io.open(origin_file.name + ".copy", "w") as copy_file:
+def preprocess_file(args, origin_file, directory):
+    with open(os.path.join(directory, os.path.basename(origin_file.name)), "w") as copy_file:
         lines = origin_file.readlines()
 
         if args.create_entry is not None:
@@ -125,7 +125,8 @@ def preprocess_file(args, origin_file):
 
 def process_file(args):
     with io.open(args.input, "r") as infile:
-        copy_file = preprocess_file(args, infile)
+        copy_file = preprocess_file(args, infile,
+                                    os.path.dirname(args.output))
 
         cmd_list = ["glslangValidator"]
 
