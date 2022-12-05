@@ -52,7 +52,7 @@
 #include "util/u_debug.h"
 #include "drm_shim.h"
 
-#define REAL_FUNCTION_POINTER(x) typeof(x) *real_##x
+#define REAL_FUNCTION_POINTER(x) __typeof__(x) *real_##x
 
 static mtx_t shim_lock = _MTX_INITIALIZER_NP;
 struct set *opendir_set;
@@ -293,18 +293,11 @@ PUBLIC int open(const char *path, int flags, ...)
 }
 PUBLIC int open64(const char*, int, ...) __attribute__((alias("open")));
 
+/* __open64_2 isn't declared unless _FORTIFY_SOURCE is defined. */
+PUBLIC int __open64_2(const char *path, int flags);
 PUBLIC int __open64_2(const char *path, int flags)
 {
-   init_shim();
-
-   if (strcmp(path, render_node_path) != 0)
-      return real_open(path, flags, 0);
-
-   int fd = real_open("/dev/null", O_RDWR, 0);
-
-   drm_shim_fd_register(fd, NULL);
-
-   return fd;
+   return open(path, flags, 0);
 }
 
 PUBLIC int close(int fd)

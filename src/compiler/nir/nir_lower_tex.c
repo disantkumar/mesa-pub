@@ -315,7 +315,7 @@ sample_plane(nir_builder *b, nir_tex_instr *tex, int plane,
    nir_tex_instr *plane_tex =
       nir_tex_instr_create(b->shader, tex->num_srcs + 1);
    for (unsigned i = 0; i < tex->num_srcs; i++) {
-      nir_src_copy(&plane_tex->src[i].src, &tex->src[i].src);
+      nir_src_copy(&plane_tex->src[i].src, &tex->src[i].src, &plane_tex->instr);
       plane_tex->src[i].src_type = tex->src[i].src_type;
    }
    plane_tex->src[tex->num_srcs].src = nir_src_for_ssa(nir_imm_int(b, plane));
@@ -812,7 +812,7 @@ lower_tex_to_txd(nir_builder *b, nir_tex_instr *tex)
 
    /* reuse existing srcs */
    for (unsigned i = 0; i < tex->num_srcs; i++) {
-      nir_src_copy(&txd->src[i].src, &tex->src[i].src);
+      nir_src_copy(&txd->src[i].src, &tex->src[i].src, &txd->instr);
       txd->src[i].src_type = tex->src[i].src_type;
    }
    int coord = nir_tex_instr_src_index(tex, nir_tex_src_coord);
@@ -852,7 +852,7 @@ lower_txb_to_txl(nir_builder *b, nir_tex_instr *tex)
    /* reuse all but bias src */
    for (int i = 0; i < 2; i++) {
       if (tex->src[i].src_type != nir_tex_src_bias) {
-         nir_src_copy(&txl->src[i].src, &tex->src[i].src);
+         nir_src_copy(&txl->src[i].src, &tex->src[i].src, &txl->instr);
          txl->src[i].src_type = tex->src[i].src_type;
       }
    }
@@ -1101,6 +1101,27 @@ lower_tex_packing(nir_builder *b, nir_tex_instr *tex,
 }
 
 static bool
+lower_array_layer_round_even(nir_builder *b, nir_tex_instr *tex)
+{
+   int coord_index = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   if (coord_index < 0 || nir_tex_instr_src_type(tex, coord_index) != nir_type_float)
+      return false;
+
+   assert(tex->src[coord_index].src.is_ssa);
+   nir_ssa_def *coord = tex->src[coord_index].src.ssa;
+
+   b->cursor = nir_before_instr(&tex->instr);
+
+   unsigned layer = tex->coord_components - 1;
+   nir_ssa_def *rounded_layer = nir_fround_even(b, nir_channel(b, coord, layer));
+   nir_ssa_def *new_coord = nir_vector_insert_imm(b, coord, rounded_layer, layer);
+
+   nir_instr_rewrite_src_ssa(&tex->instr, &tex->src[coord_index].src, new_coord);
+
+   return true;
+}
+
+static bool
 sampler_index_lt(nir_tex_instr *tex, unsigned max)
 {
    assert(nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref) == -1);
@@ -1143,7 +1164,7 @@ lower_tg4_offsets(nir_builder *b, nir_tex_instr *tex)
       tex_copy->dest_type = tex->dest_type;
 
       for (unsigned j = 0; j < tex->num_srcs; ++j) {
-         nir_src_copy(&tex_copy->src[j].src, &tex->src[j].src);
+         nir_src_copy(&tex_copy->src[j].src, &tex->src[j].src, &tex_copy->instr);
          tex_copy->src[j].src_type = tex->src[j].src_type;
       }
 
@@ -1233,7 +1254,7 @@ nir_lower_txs_cube_array(nir_builder *b, nir_tex_instr *tex)
    assert(tex->dest.is_ssa);
    assert(tex->dest.ssa.num_components == 3);
    nir_ssa_def *size = &tex->dest.ssa;
-   size = nir_vec3(b, nir_channel(b, size, 0),
+   size = nir_vec3(b, nir_channel(b, size, 1),
                       nir_channel(b, size, 1),
                       nir_idiv(b, nir_channel(b, size, 2),
                                   nir_imm_int(b, 6)));
@@ -1489,6 +1510,11 @@ nir_lower_tex_block(nir_block *block, nir_builder *b,
          progress = true;
       }
 
+      if (options->lower_array_layer_round_even && tex->is_array &&
+          tex->op != nir_texop_lod) {
+         progress |= lower_array_layer_round_even(b, tex);
+      }
+
       if (tex->op == nir_texop_txd &&
           (options->lower_txd ||
            (options->lower_txd_shadow && tex->is_shadow) ||
@@ -1525,7 +1551,8 @@ nir_lower_tex_block(nir_block *block, nir_builder *b,
        * use an explicit LOD of 0.
        * But don't touch RECT samplers because they don't have mips.
        */
-      if (nir_tex_instr_has_implicit_derivative(tex) &&
+      if (options->lower_invalid_implicit_lod &&
+          nir_tex_instr_has_implicit_derivative(tex) &&
           tex->sampler_dim != GLSL_SAMPLER_DIM_RECT &&
           !nir_shader_supports_implicit_lod(b->shader)) {
          lower_zero_lod(b, tex);
