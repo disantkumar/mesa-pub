@@ -136,6 +136,12 @@ Core Mesa environment variables
    integers, such as ``130``. Mesa will not really implement all the
    features of the given language version if it's higher than what's
    normally reported. (for developers only)
+
+:envvar:`MESA_DRICONF_EXECUTABLE_OVERRIDE`
+   if set, overrides the "executable" string used specifically for driconf
+   option matching. This takes higher precedence over more general process
+   name override (e.g. MESA_PROCESS_NAME).
+
 :envvar:`MESA_SHADER_CACHE_DISABLE`
    if set to ``true``, disables the on-disk shader cache. If set to
    ``false``, enables the on-disk shader cache when it is disabled by
