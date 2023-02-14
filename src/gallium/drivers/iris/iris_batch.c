@@ -212,7 +212,7 @@ iris_init_batch(struct iris_context *ice,
    batch->bos_written =
       rzalloc_array(NULL, BITSET_WORD, BITSET_WORDS(batch->exec_array_size));
 
-   batch->cache.render = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
+   batch->bo_aux_modes = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
                                                  _mesa_key_pointer_equal);
 
    batch->num_other_batches = 0;
@@ -593,7 +593,7 @@ iris_batch_free(struct iris_batch *batch)
 
    u_trace_fini(&batch->trace);
 
-   _mesa_hash_table_destroy(batch->cache.render, NULL);
+   _mesa_hash_table_destroy(batch->bo_aux_modes, NULL);
 
    if (INTEL_DEBUG(DEBUG_ANY))
       intel_batch_decode_ctx_finish(&batch->decoder);
