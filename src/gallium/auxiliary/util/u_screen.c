@@ -522,6 +522,9 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_QUERY_TIMESTAMP_BITS:
       return 64;
 
+   case PIPE_CAP_ASTC_VOID_EXTENTS_NEED_DENORM_FLUSH:
+      return 0;
+
    default:
       unreachable("bad PIPE_CAP_*");
    }
