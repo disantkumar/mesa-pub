@@ -524,6 +524,7 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
       return 64;
 
    case PIPE_CAP_VALIDATE_ALL_DIRTY_STATES:
+   case PIPE_CAP_ASTC_VOID_EXTENTS_NEED_DENORM_FLUSH:
       return 0;
 
    default:
