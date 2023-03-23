@@ -1418,6 +1418,7 @@ functions_to_detect = {
   'strtok_r': '',
   'getrandom': '',
   'qsort_s': '',
+  'posix_fallocate': '',
 }
 
 foreach f, prefix: functions_to_detect
