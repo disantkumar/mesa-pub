@@ -32,6 +32,7 @@
 #include "vk_util.h"
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/dma-buf.h"
+#include "drm-uapi/virtgpu_drm.h"
 
 #include <errno.h>
 #include <time.h>
@@ -39,6 +40,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <xf86drm.h>
+
+#include <../../virtio/virtio-gpu/virgl_hw.h>
+#include <../../virtio/virtio-gpu/virgl_protocol.h>
+
 
 static VkResult
 wsi_dma_buf_export_sync_file(int dma_buf_fd, int *sync_file_fd)
@@ -253,6 +258,156 @@ wsi_common_drm_devices_equal(int fd_a, int fd_b)
    return result;
 }
 
+static bool
+is_virtgpu(int fd) {
+   drmVersionPtr drm_version;
+   drm_version = drmGetVersion(fd);
+   
+   if (!drm_version) {
+      return false;
+   }
+
+   if (!strcmp(drm_version->name, "virtio_gpu")) {
+      drmFreeVersion(drm_version);
+      return true;
+   }
+
+   drmFreeVersion(drm_version);
+
+   return false;
+}
+
+#define VIRGL_DRM_CAPSET_VIRGL2 2
+
+static VkResult
+virtgpu_init_context(int fd)
+{
+   int ret;
+   struct drm_virtgpu_context_init init = { 0 };
+   struct drm_virtgpu_context_set_param ctx_set_param = { 0 };
+
+   ctx_set_param.param = VIRTGPU_CONTEXT_PARAM_CAPSET_ID;
+   ctx_set_param.value = VIRGL_DRM_CAPSET_VIRGL2;
+
+   init.ctx_set_params = (unsigned long)(void *)&ctx_set_param;
+   init.num_params = 1;
+
+   ret = drmIoctl(fd, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &init);
+   /*
+    * EEXIST happens when a compositor does DUMB_CREATE before initializing
+    * virgl.
+    */
+   if (ret && errno != EEXIST) {
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
+
+   return VK_SUCCESS;
+}
+
+int
+virtgpu_alloc_and_export(int fd, uint32_t linear_stride, uint32_t linear_size);
+
+/* from gallium/include/p_defines.h 
+   why this is not part of the protocol? */
+enum pipe_texture_target
+{
+   PIPE_BUFFER,
+   PIPE_TEXTURE_1D,
+   PIPE_TEXTURE_2D,
+   PIPE_TEXTURE_3D,
+   PIPE_TEXTURE_CUBE,
+   PIPE_TEXTURE_RECT,
+   PIPE_TEXTURE_1D_ARRAY,
+   PIPE_TEXTURE_2D_ARRAY,
+   PIPE_TEXTURE_CUBE_ARRAY,
+   PIPE_MAX_TEXTURE_TYPES,
+};
+
+
+static int32_t blob_id = 0;
+int
+virtgpu_alloc_and_export(int fd, uint32_t linear_stride, uint32_t linear_size)
+{
+   int ret;
+   struct drm_virtgpu_resource_create_blob drm_rc_blob;
+   struct drm_virtgpu_execbuffer eb;
+   struct drm_virtgpu_3d_wait waitcmd;
+   struct drm_prime_handle prime_handle;
+   struct drm_gem_close gem_close;
+   uint32_t cmd[VIRGL_PIPE_RES_CREATE_SIZE + 1];
+
+   cmd[0] = VIRGL_CMD0(VIRGL_CCMD_PIPE_RESOURCE_CREATE, 0, VIRGL_PIPE_RES_CREATE_SIZE);
+   cmd[VIRGL_PIPE_RES_CREATE_FORMAT] = VIRGL_FORMAT_B8G8R8X8_UNORM; //   pipe_to_virgl_format(format);
+   // 0x54000a
+   // 22,20,18,3,1
+   cmd[VIRGL_PIPE_RES_CREATE_BIND] = VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SCANOUT | VIRGL_BIND_LINEAR | VIRGL_BIND_SHARED;
+   cmd[VIRGL_PIPE_RES_CREATE_TARGET] = PIPE_TEXTURE_2D;
+   cmd[VIRGL_PIPE_RES_CREATE_WIDTH] = linear_stride >> 2;
+   cmd[VIRGL_PIPE_RES_CREATE_HEIGHT] = linear_size / linear_stride;
+   cmd[VIRGL_PIPE_RES_CREATE_DEPTH] = 1;
+   cmd[VIRGL_PIPE_RES_CREATE_ARRAY_SIZE] = 1;
+   cmd[VIRGL_PIPE_RES_CREATE_LAST_LEVEL] = 0;
+   cmd[VIRGL_PIPE_RES_CREATE_NR_SAMPLES] = 0;
+   cmd[VIRGL_PIPE_RES_CREATE_FLAGS] = 0; // VIRGL_RESOURCE_FLAG_MAP_PERSISTENT;
+   cmd[VIRGL_PIPE_RES_CREATE_BLOB_ID] = ++blob_id;
+
+   memset(&drm_rc_blob, 0, sizeof(drm_rc_blob));
+   drm_rc_blob.cmd = (uintptr_t)cmd;
+   drm_rc_blob.cmd_size = 4 * (VIRGL_PIPE_RES_CREATE_SIZE + 1);
+   drm_rc_blob.size = linear_size;
+   drm_rc_blob.blob_mem = VIRTGPU_BLOB_MEM_HOST3D;
+   drm_rc_blob.blob_flags = VIRTGPU_BLOB_FLAG_USE_MAPPABLE | VIRTGPU_BLOB_FLAG_USE_SHAREABLE | VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
+   drm_rc_blob.blob_id = blob_id;
+
+   ret = drmIoctl(fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB, &drm_rc_blob);
+   if (ret != 0) {
+      return ret;
+   }
+   /* WORKAROUND
+    * send empty execbuffer and a wait, to prevent race between virtio-gpu and virtio-iommu in crosvm resulting in
+    * [devices/src/virtio/iommu.rs:625] execute_request failed: memory mapper failed: failed to find host address
+   */
+   cmd[0] = 0;
+   memset(&eb, 0, sizeof(eb));
+   eb.command = (uintptr_t)cmd;
+   eb.size = 0;
+   eb.num_bo_handles = 1;
+   eb.bo_handles = (uintptr_t)&drm_rc_blob.bo_handle;
+
+   ret = drmIoctl(fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &eb);
+   if (ret == -1) {
+      //_debug_printf("failed to send execbuffer: %s", strerror(errno));
+   }
+
+   memset(&waitcmd, 0, sizeof(waitcmd));
+   waitcmd.handle = drm_rc_blob.bo_handle;
+
+   ret = drmIoctl(fd, DRM_IOCTL_VIRTGPU_WAIT, &waitcmd);
+   if (ret) {
+      // _debug_printf("waiting got error - %d, slow gpu or hang?\n", errno);
+   }
+
+   // export the dma_buf
+
+   memset(&prime_handle, 0, sizeof(prime_handle));
+   prime_handle.handle = drm_rc_blob.bo_handle;
+
+   ret = drmIoctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime_handle);
+   if (ret < 0)
+      return ret;
+
+   // we can close the handle now
+   memset(&gem_close, 0, sizeof(gem_close));
+   gem_close.handle = drm_rc_blob.bo_handle;
+
+   ret = drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
+   if (ret) {
+      /* Weird! */
+   }
+
+   return prime_handle.fd;
+}
+
 bool
 wsi_device_matches_drm_fd(const struct wsi_device *wsi, int drm_fd)
 {
@@ -322,6 +477,8 @@ wsi_configure_native_image(const struct wsi_swapchain *chain,
    VkResult result = wsi_configure_image(chain, pCreateInfo, handle_type, info);
    if (result != VK_SUCCESS)
       return result;
+   info->display_device_fd = -1;
+   info->display_device_is_virtgpu = false;
 
    if (num_modifier_lists == 0) {
       /* If we don't have modifiers, fall back to the legacy "scanout" flag */
@@ -592,6 +749,7 @@ wsi_configure_prime_image(UNUSED const struct wsi_swapchain *chain,
                           const VkSwapchainCreateInfoKHR *pCreateInfo,
                           bool use_modifier,
                           wsi_memory_type_select_cb select_buffer_memory_type,
+                          const struct wsi_drm_image_params *params,
                           struct wsi_image_info *info)
 {
    VkResult result = wsi_configure_image(chain, pCreateInfo,
@@ -607,6 +765,15 @@ wsi_configure_prime_image(UNUSED const struct wsi_swapchain *chain,
    info->create_mem = wsi_create_prime_image_mem;
    info->select_blit_dst_memory_type = select_buffer_memory_type;
    info->select_image_memory_type = wsi_select_device_memory_type;
+   info->display_device_fd = -1;
+   info->display_device_is_virtgpu = false;
+   if (is_virtgpu(params->display_device_fd)) {
+      result = virtgpu_init_context(params->display_device_fd);
+      if (result != VK_SUCCESS)
+         return result;
+      info->display_device_fd = params->display_device_fd;
+      info->display_device_is_virtgpu = true;
+   }
 
    return VK_SUCCESS;
 }
@@ -638,7 +805,7 @@ wsi_drm_configure_image(const struct wsi_swapchain *chain,
          params->same_gpu ? wsi_select_device_memory_type :
                             prime_select_buffer_memory_type;
       return wsi_configure_prime_image(chain, pCreateInfo, use_modifier,
-                                       select_buffer_memory_type, info);
+                                       select_buffer_memory_type, params, info);
    } else {
       return wsi_configure_native_image(chain, pCreateInfo,
                                         params->num_modifier_lists,

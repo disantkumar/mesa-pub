@@ -245,6 +245,110 @@ virgl_drm_winsys_resource_create_blob(struct virgl_winsys *qws,
    return res;
 }
 
+
+static struct virgl_hw_res *
+virgl_drm_winsys_resource_create_shared_scanout(struct virgl_winsys *qws,
+                                      enum pipe_texture_target target,
+                                      uint32_t format,
+                                      uint32_t bind,
+                                      uint32_t width,
+                                      uint32_t height,
+                                      uint32_t depth,
+                                      uint32_t array_size,
+                                      uint32_t last_level,
+                                      uint32_t nr_samples,
+                                      uint32_t flags,
+                                      uint32_t size)
+{
+   int ret;
+   int32_t blob_id;
+   uint32_t cmd[VIRGL_PIPE_RES_CREATE_SIZE + 1] = { 0 };
+   struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
+   struct drm_virtgpu_resource_create_blob drm_rc_blob = { 0 };
+   struct drm_virtgpu_execbuffer eb = { 0 };
+   struct drm_virtgpu_3d_wait waitcmd = { 0 };
+   struct virgl_hw_res *res;
+   struct virgl_resource_params params = { .size = size,
+                                           .bind = bind,
+                                           .format = format,
+                                           .flags = flags,
+                                           .nr_samples = nr_samples,
+                                           .width = width,
+                                           .height = height,
+                                           .depth = depth,
+                                           .array_size = array_size,
+                                           .last_level = last_level,
+                                           .target = target };
+
+   res = CALLOC_STRUCT(virgl_hw_res);
+   if (!res)
+      return NULL;
+ 
+   /* We assume here the allocator on the host is going to align linear shared scanout buffers allocations to 256 bytes. */
+
+   size = ALIGN(size, getpagesize());
+
+   blob_id = p_atomic_inc_return(&qdws->blob_id);
+   cmd[0] = VIRGL_CMD0(VIRGL_CCMD_PIPE_RESOURCE_CREATE, 0, VIRGL_PIPE_RES_CREATE_SIZE);
+   cmd[VIRGL_PIPE_RES_CREATE_FORMAT] = pipe_to_virgl_format(format);
+   cmd[VIRGL_PIPE_RES_CREATE_BIND] = bind;
+   cmd[VIRGL_PIPE_RES_CREATE_TARGET] = target;
+   cmd[VIRGL_PIPE_RES_CREATE_WIDTH] = width;
+   cmd[VIRGL_PIPE_RES_CREATE_HEIGHT] = height;
+   cmd[VIRGL_PIPE_RES_CREATE_DEPTH] = depth;
+   cmd[VIRGL_PIPE_RES_CREATE_ARRAY_SIZE] = array_size;
+   cmd[VIRGL_PIPE_RES_CREATE_LAST_LEVEL] = last_level;
+   cmd[VIRGL_PIPE_RES_CREATE_NR_SAMPLES] = nr_samples;
+   cmd[VIRGL_PIPE_RES_CREATE_FLAGS] = flags;
+   cmd[VIRGL_PIPE_RES_CREATE_BLOB_ID] = blob_id;
+
+   drm_rc_blob.cmd = (uintptr_t)cmd;
+   drm_rc_blob.cmd_size = 4 * (VIRGL_PIPE_RES_CREATE_SIZE + 1);
+   drm_rc_blob.size = size;
+   drm_rc_blob.blob_mem = VIRTGPU_BLOB_MEM_HOST3D;
+   drm_rc_blob.blob_flags = VIRTGPU_BLOB_FLAG_USE_MAPPABLE | VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
+   drm_rc_blob.blob_id = (uint64_t) blob_id;
+
+   ret = drmIoctl(qdws->fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB, &drm_rc_blob);
+   if (ret != 0) {
+      FREE(res);
+      return NULL;
+   }
+   /* WORKAROUND
+    * send empty execbuffer and a wait, to prevent race between virtio-gpu and virtio-iommu in crosvm resulting in
+    * [devices/src/virtio/iommu.rs:625] execute_request failed: memory mapper failed: failed to find host address
+   */
+   cmd[0] = 0;
+   eb.command = (uintptr_t)cmd;
+   eb.size = 0;
+   eb.num_bo_handles = 1;
+   eb.bo_handles = (uintptr_t)&drm_rc_blob.bo_handle;
+
+   ret = drmIoctl(qdws->fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &eb);
+   if (ret == -1)
+      _debug_printf("failed to send execbuffer: %s", strerror(errno));
+
+   waitcmd.handle = drm_rc_blob.bo_handle;
+
+   ret = drmIoctl(qdws->fd, DRM_IOCTL_VIRTGPU_WAIT, &waitcmd);
+   if (ret)
+      _debug_printf("waiting got error - %d, slow gpu or hang?\n", errno);
+
+   res->bind = bind;
+   res->res_handle = drm_rc_blob.res_handle;
+   res->bo_handle = drm_rc_blob.bo_handle;
+   res->size = size;
+   res->flags = flags;
+   res->maybe_untyped = false;
+   pipe_reference_init(&res->reference, 1);
+   p_atomic_set(&res->external, false);
+   p_atomic_set(&res->num_cs_references, 0);
+   virgl_resource_cache_entry_init(&res->cache_entry, params);
+
+   return res;
+}
+
+
 static struct virgl_hw_res *
 virgl_drm_winsys_resource_create(struct virgl_winsys *qws,
                                  enum pipe_texture_target target,
@@ -454,7 +558,12 @@ alloc:
    if (target == PIPE_BUFFER && (bind & VIRGL_BIND_CUSTOM))
        need_sync = true;
 
-   if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
+   if ((bind & (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED)) == (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED))
+         res = virgl_drm_winsys_resource_create_shared_scanout(qws, target, format, bind,
+                                                  width, height, depth,
+                                                  array_size, last_level,
+                                                  nr_samples, flags, size);
+   else if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
                 VIRGL_RESOURCE_FLAG_MAP_COHERENT))
       res = virgl_drm_winsys_resource_create_blob(qws, target, format, bind,
                                                   width, height, depth,

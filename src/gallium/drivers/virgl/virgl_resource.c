@@ -616,8 +616,13 @@ static void virgl_resource_layout(struct pipe_resource *pt,
          slices = pt->array_size;
 
       nblocksy = util_format_get_nblocksy(pt->format, height);
-      metadata->stride[level] = winsys_stride ? winsys_stride :
-                                util_format_get_stride(pt->format, width);
+      if ((pt->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) == (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) {
+         /* Shared scanout buffers need to be aligned to 256 bytes */
+         metadata->stride[level] = ALIGN(util_format_get_stride(pt->format, width), 256);
+      } else {
+         metadata->stride[level] = winsys_stride ? winsys_stride :
+                                 util_format_get_stride(pt->format, width);
+      }
       metadata->layer_stride[level] = nblocksy * metadata->stride[level];
       metadata->level_offset[level] = buffer_size;
 

@@ -63,6 +63,7 @@ struct wsi_drm_image_params {
    struct wsi_base_image_params base;
 
    bool same_gpu;
+   int display_device_fd;
 
    uint32_t num_modifier_lists;
    const uint32_t *num_modifiers;
@@ -83,6 +84,10 @@ struct wsi_image_info {
    VkExternalMemoryImageCreateInfo ext_mem;
    VkImageFormatListCreateInfo format_list;
    VkImageDrmFormatModifierListCreateInfoEXT drm_mod_list;
+#ifndef WIN32
+   int display_device_fd;
+   bool display_device_is_virtgpu;
+#endif
 
    bool prime_use_linear_modifier;
 

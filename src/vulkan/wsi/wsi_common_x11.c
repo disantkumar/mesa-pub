@@ -143,12 +143,15 @@ wsi_dri3_open(xcb_connection_t *conn,
  */
 static bool
 wsi_x11_check_dri3_compatible(const struct wsi_device *wsi_dev,
-                              xcb_connection_t *conn)
+                              xcb_connection_t *conn,
+                              int *return_fd)
 {
    xcb_screen_iterator_t screen_iter =
       xcb_setup_roots_iterator(xcb_get_setup(conn));
    xcb_screen_t *screen = screen_iter.data;
 
+   if (return_fd)
+      *return_fd = -1;
    /* Open the DRI3 device from the X server. If we do not retrieve one we
     * assume our local device is compatible.
     */
@@ -158,7 +161,10 @@ wsi_x11_check_dri3_compatible(const struct wsi_device *wsi_dev,
 
    bool match = wsi_device_matches_drm_fd(wsi_dev, dri3_fd);
 
-   close(dri3_fd);
+   if (!match && return_fd) 
+      *return_fd = dri3_fd;
+   else
+      close(dri3_fd);
 
    return match;
 }
@@ -2349,6 +2355,50 @@ out:
    *num_tranches_in = 0;
 }
 
+static bool
+wsi_x11_swapchain_query_dri3_modifiers_changed(struct x11_swapchain *chain)
+{
+   const struct wsi_device *wsi_device = chain->base.wsi;
+
+   if (wsi_device->sw || !wsi_device->supports_modifiers)
+      return false;
+
+   struct wsi_drm_image_params drm_image_params;
+   uint64_t *modifiers[2] = {NULL, NULL};
+   uint32_t num_modifiers[2] = {0, 0};
+
+   struct wsi_x11_connection *wsi_conn =
+         wsi_x11_get_connection((struct wsi_device*)chain->base.wsi, chain->conn);
+
+   xcb_get_geometry_reply_t *geometry =
+         xcb_get_geometry_reply(chain->conn, xcb_get_geometry(chain->conn, chain->window), NULL);
+   if (geometry == NULL)
+      return false;
+   uint32_t bit_depth = geometry->depth;
+   free(geometry);
+
+   drm_image_params = (struct wsi_drm_image_params){
+      .base.image_type = WSI_IMAGE_TYPE_DRM,
+      .same_gpu = wsi_x11_check_dri3_compatible(wsi_device, chain->conn, NULL),
+   };
+
+   wsi_x11_get_dri3_modifiers(wsi_conn, chain->conn, chain->window, bit_depth, 32,
+                              modifiers, num_modifiers,
+                              &drm_image_params.num_modifier_lists,
+                              &wsi_device->instance_alloc);
+
+   drm_image_params.num_modifiers = num_modifiers;
+   drm_image_params.modifiers = (const uint64_t **)modifiers;
+
+   blake3_hash hash;
+   wsi_x11_recompute_dri3_modifier_hash(&hash, &drm_image_params);
+
+   for (int i = 0; i < ARRAY_SIZE(modifiers); i++)
+      vk_free(&wsi_device->instance_alloc, modifiers[i]);
+
+   return memcmp(hash, chain->dri3_modifier_hash, sizeof(hash)) != 0;
+}
+
 static VkResult
 x11_swapchain_destroy(struct wsi_swapchain *anv_chain,
                       const VkAllocationCallbacks *pAllocator)
@@ -2692,10 +2742,12 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       };
       image_params = &cpu_image_params.base;
    } else {
+      int display_device_fd = -1;
       drm_image_params = (struct wsi_drm_image_params) {
          .base.image_type = WSI_IMAGE_TYPE_DRM,
-         .same_gpu = wsi_x11_check_dri3_compatible(wsi_device, conn),
+         .same_gpu = wsi_x11_check_dri3_compatible(wsi_device, conn, &display_device_fd),
       };
+      drm_image_params.display_device_fd = display_device_fd;
       if (wsi_device->supports_modifiers) {
          wsi_x11_get_dri3_modifiers(wsi_conn, conn, window, bit_depth, 32,
                                     pCreateInfo->compositeAlpha,

@@ -22,6 +22,7 @@
  */
 
 #include "wsi_common_private.h"
+#include "wsi_common_drm.h"
 #include "wsi_common_entrypoints.h"
 #include "util/u_debug.h"
 #include "util/macros.h"
@@ -1764,6 +1765,22 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
       };
       __vk_append_struct(&buf_mem_info, &memory_export_info);
    }
+#ifndef _WIN32
+   VkImportMemoryFdInfoKHR memory_fd_info;
+
+   if (info->display_device_is_virtgpu)
+   {
+      int fd = 0;
+
+      fd = virtgpu_alloc_and_export(info->display_device_fd, info->linear_stride, info->linear_size);
+      memory_fd_info = (VkImportMemoryFdInfoKHR){
+         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+         .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+         .fd = fd
+      };
+      __vk_append_struct(&buf_mem_info, &memory_fd_info);
+   }
+#endif
 
    result = wsi->AllocateMemory(chain->device, &buf_mem_info,
                                 &chain->alloc, &image->blit.memory);
