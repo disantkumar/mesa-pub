@@ -101,6 +101,7 @@ struct loader_dri3_extensions {
    const __DRI2configQueryExtension *config;
    const __DRItexBufferExtension *tex_buffer;
    const __DRIimageExtension *image;
+   const __DRIimageExtension *display_image;
 };
 
 struct loader_dri3_drawable;

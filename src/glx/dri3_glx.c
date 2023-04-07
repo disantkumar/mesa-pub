@@ -588,7 +588,7 @@ dri3_destroy_screen(struct glx_screen *base)
    /* Free the direct rendering per screen data */
    if (psc->fd_render_gpu != psc->fd_display_gpu && psc->driScreenDisplayGPU) {
       loader_dri3_close_screen(psc->driScreenDisplayGPU);
-      psc->core->destroyScreen(psc->driScreenDisplayGPU);
+      psc->display_core->destroyScreen(psc->driScreenDisplayGPU);
    }
    if (psc->fd_render_gpu != psc->fd_display_gpu)
       close(psc->fd_display_gpu);
@@ -755,6 +755,18 @@ dri3_bind_extensions(struct dri3_screen *psc, struct glx_display * priv,
 
    if (psc->interop)
       __glXEnableDirectExtension(&psc->base, "GLX_MESA_gl_interop");
+
+   if (psc->display_image_driver == psc->image_driver) {
+      psc->display_image = psc->image;
+   } else {
+      const __DRIextension **disp_extensions;
+      disp_extensions = psc->display_core->getExtensions(psc->driScreenDisplayGPU);
+
+      static const struct dri_extension_match disp_exts[] = {
+         { __DRI_IMAGE, 1, offsetof(struct dri3_screen, display_image), true },
+      };
+      loader_bind_extensions(psc, disp_exts, ARRAY_SIZE(disp_exts), disp_extensions);
+   }
 }
 
 static char *
@@ -790,6 +802,7 @@ dri3_create_screen(int screen, struct glx_display * priv, bool driver_name_is_in
 {
    xcb_connection_t *c = XGetXCBConnection(priv->dpy);
    const __DRIconfig **driver_configs;
+   const __DRIconfig **disp_driver_configs;
    const __DRIextension **extensions;
    struct dri3_screen *psc;
    __GLXDRIscreen *psp;
@@ -848,23 +861,34 @@ dri3_create_screen(int screen, struct glx_display * priv, bool driver_name_is_in
    if (!loader_bind_extensions(psc, exts, ARRAY_SIZE(exts), extensions))
       goto handle_error;
 
+   psc->display_image_driver = psc->image_driver;
+   psc->display_core = psc->core;
+
    if (psc->fd_render_gpu != psc->fd_display_gpu) {
       driverNameDisplayGPU = loader_get_driver_for_fd(psc->fd_display_gpu);
       if (driverNameDisplayGPU) {
+         const __DRIextension **disp_extensions;
+         static const struct dri_extension_match disp_exts[] = {
+            { __DRI_CORE, 1, offsetof(struct dri3_screen, display_core), false },
+            { __DRI_IMAGE_DRIVER, 1, offsetof(struct dri3_screen, display_image_driver), false },
+         };
 
          /* check if driver name is matching so that non mesa drivers
           * will not crash. Also need this check since image extension
           * pointer from render gpu is shared with display gpu. Image
           * extension pointer is shared because it keeps things simple.
           */
-         if (strcmp(driverName, driverNameDisplayGPU) == 0) {
-            psc->driScreenDisplayGPU =
-               psc->image_driver->createNewScreen3(screen, psc->fd_display_gpu,
-                                                   loader_extensions,
-                                                   extensions,
-                                                   &driver_configs, driver_name_is_inferred, psc);
+         if (strcmp(driverName, driverNameDisplayGPU)) {
+            disp_extensions = driOpenDriver(driverNameDisplayGPU, &psc->display_driver, driver_name_is_inferred);
+            if (!loader_bind_extensions(psc, disp_exts, ARRAY_SIZE(disp_exts), disp_extensions))
+               goto handle_error;
          }
 
+         psc->driScreenDisplayGPU =
+            psc->image_driver->createNewScreen3(screen, psc->fd_display_gpu,
+                                                pdp->loader_extensions,
+                                                extensions,
+                                                &driver_configs, driver_name_is_inferred, psc);
          free(driverNameDisplayGPU);
       }
    }
@@ -918,6 +942,7 @@ dri3_create_screen(int screen, struct glx_display * priv, bool driver_name_is_in
    psc->loader_dri3_ext.flush = psc->f;
    psc->loader_dri3_ext.tex_buffer = psc->texBuffer;
    psc->loader_dri3_ext.image = psc->image;
+   psc->loader_dri3_ext.display_image = psc->display_image;
    psc->loader_dri3_ext.config = psc->config;
 
    configs = driConvertConfigs(psc->core, psc->base.configs, driver_configs);
@@ -1023,7 +1048,7 @@ handle_error:
        psc->core->destroyScreen(psc->driScreenRenderGPU);
    psc->driScreenRenderGPU = NULL;
    if (psc->fd_render_gpu != psc->fd_display_gpu && psc->driScreenDisplayGPU)
-       psc->core->destroyScreen(psc->driScreenDisplayGPU);
+       psc->display_core->destroyScreen(psc->driScreenDisplayGPU);
    psc->driScreenDisplayGPU = NULL;
    if (psc->fd_display_gpu >= 0 && psc->fd_render_gpu != psc->fd_display_gpu)
       close(psc->fd_display_gpu);

@@ -64,6 +64,7 @@ struct wsi_drm_image_params {
 
    bool same_gpu;
    bool explicit_sync;
+   int display_device_fd;
 
    uint32_t num_modifier_lists;
    const uint32_t *num_modifiers;
@@ -84,6 +85,10 @@ struct wsi_image_info {
    VkExternalMemoryImageCreateInfo ext_mem;
    VkImageFormatListCreateInfo format_list;
    VkImageDrmFormatModifierListCreateInfoEXT drm_mod_list;
+#ifndef WIN32
+   int display_device_fd;
+   bool display_device_is_virtgpu;
+#endif
 
    enum wsi_image_type image_type;
    bool explicit_sync;
@@ -120,7 +125,7 @@ enum wsi_explicit_sync_timelines
    WSI_ES_ACQUIRE,
    WSI_ES_RELEASE,
 
-   WSI_ES_COUNT, 
+   WSI_ES_COUNT,
 };
 
 struct wsi_image_explicit_sync_timeline {
@@ -183,7 +188,7 @@ struct wsi_swapchain {
 
    struct wsi_image_info image_info;
    uint32_t image_count;
-   
+
    uint64_t present_serial;
 
    struct {
