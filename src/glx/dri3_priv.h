@@ -98,7 +98,13 @@ struct dri3_screen {
    const __DRI2interopExtension *interop;
    const __DRIconfig **driver_configs;
 
+   /* display driver extensions */
+   const __DRIimageExtension *display_image;
+   const __DRIimageDriverExtension *display_image_driver;
+   const __DRIcoreExtension *display_core;
+
    void *driver;
+   void *display_driver;
    /* fd of the GPU used for rendering. */
    int fd_render_gpu;
    /* fd of the GPU used for display. If the same GPU is used for display

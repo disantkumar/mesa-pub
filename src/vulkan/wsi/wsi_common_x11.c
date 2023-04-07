@@ -147,12 +147,15 @@ wsi_dri3_open(xcb_connection_t *conn,
  */
 static bool
 wsi_x11_check_dri3_compatible(const struct wsi_device *wsi_dev,
-                              xcb_connection_t *conn)
+                              xcb_connection_t *conn,
+                              int *return_fd)
 {
    xcb_screen_iterator_t screen_iter =
       xcb_setup_roots_iterator(xcb_get_setup(conn));
    xcb_screen_t *screen = screen_iter.data;
 
+   if (return_fd)
+      *return_fd = -1;
    /* Open the DRI3 device from the X server. If we do not retrieve one we
     * assume our local device is compatible.
     */
@@ -162,7 +165,10 @@ wsi_x11_check_dri3_compatible(const struct wsi_device *wsi_dev,
 
    bool match = wsi_device_matches_drm_fd(wsi_dev, dri3_fd);
 
-   close(dri3_fd);
+   if (!match && return_fd)
+      *return_fd = dri3_fd;
+   else
+      close(dri3_fd);
 
    return match;
 }
@@ -2358,8 +2364,8 @@ wsi_x11_swapchain_query_dri3_modifiers_changed(struct x11_swapchain *chain)
 
    drm_image_params = (struct wsi_drm_image_params){
       .base.image_type = WSI_IMAGE_TYPE_DRM,
-      .same_gpu = wsi_x11_check_dri3_compatible(wsi_device, chain->conn),
       .explicit_sync = chain->base.image_info.explicit_sync,
+      .same_gpu = wsi_x11_check_dri3_compatible(wsi_device, chain->conn, NULL),
    };
 
    wsi_x11_get_dri3_modifiers(wsi_conn, chain->conn, chain->window, bit_depth, 32,
@@ -2617,9 +2623,10 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       };
       image_params = &cpu_image_params.base;
    } else {
+      int display_device_fd = -1;
       drm_image_params = (struct wsi_drm_image_params) {
          .base.image_type = WSI_IMAGE_TYPE_DRM,
-         .same_gpu = wsi_x11_check_dri3_compatible(wsi_device, conn),
+         .same_gpu = wsi_x11_check_dri3_compatible(wsi_device, conn, &display_device_fd),
          .explicit_sync =
 #ifdef HAVE_DRI3_EXPLICIT_SYNC
             wsi_conn->has_dri3_explicit_sync &&
@@ -2629,6 +2636,7 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
             false,
 #endif
       };
+      drm_image_params.display_device_fd = display_device_fd;
       if (wsi_device->supports_modifiers) {
          wsi_x11_get_dri3_modifiers(wsi_conn, conn, window, bit_depth, 32,
                                     modifiers, num_modifiers,

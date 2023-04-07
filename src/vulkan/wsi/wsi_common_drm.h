@@ -31,6 +31,9 @@ extern "C" {
 bool
 wsi_common_drm_devices_equal(int fd_a, int fd_b);
 
+int
+virtgpu_alloc_and_export(int fd, uint32_t linear_stride, uint32_t linear_size);
+
 #ifdef __cplusplus
 }
 #endif
