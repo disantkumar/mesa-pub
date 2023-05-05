@@ -78,10 +78,10 @@ const char *ac_get_family_name(enum radeon_family family)
       return "RAVEN2";
    case CHIP_RENOIR:
       return "RENOIR";
-   case CHIP_ARCTURUS:
-      return "ARCTURUS";
-   case CHIP_ALDEBARAN:
-      return "ALDEBARAN";
+   case CHIP_MI100:
+      return "MI100";
+   case CHIP_MI200:
+      return "MI200";
    case CHIP_NAVI10:
       return "NAVI10";
    case CHIP_NAVI12:
@@ -108,8 +108,10 @@ const char *ac_get_family_name(enum radeon_family family)
       return "GFX1101";
    case CHIP_GFX1102:
       return "GFX1102";
-   case CHIP_GFX1103:
-      return "GFX1103";
+   case CHIP_GFX1103_R1:
+      return "GFX1103_R1";
+   case CHIP_GFX1103_R2:
+      return "GFX1103_R2";
    default:
       unreachable("Unknown GPU family");
    }

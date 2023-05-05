@@ -81,6 +81,7 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    {"vm", DBG(VM), "Print virtual addresses when creating resources"},
    {"cache_stats", DBG(CACHE_STATS), "Print shader cache statistics."},
    {"ib", DBG(IB), "Print command buffers."},
+   {"elements", DBG(VERTEX_ELEMENTS), "Print vertex elements."},
 
    /* Driver options: */
    {"nowc", DBG(NO_WC), "Disable GTT write combining"},
@@ -1141,6 +1142,8 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
                   sscreen->options.enable_sam,
                   sscreen->options.disable_sam);
 
+   sscreen->info.smart_access_memory = false; /* VRAM has slower CPU access */
+
    if (sscreen->info.gfx_level >= GFX9) {
       sscreen->se_tile_repeat = 32 * sscreen->info.max_se;
    } else {
@@ -1485,8 +1488,12 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
 
 struct pipe_screen *radeonsi_screen_create(int fd, const struct pipe_screen_config *config)
 {
-   drmVersionPtr version = drmGetVersion(fd);
    struct radeon_winsys *rw = NULL;
+   drmVersionPtr version;
+
+   version = drmGetVersion(fd);
+   if (!version)
+     return NULL;
 
    driParseConfigFiles(config->options, config->options_info, 0, "radeonsi",
                        NULL, NULL, NULL, 0, NULL, 0);

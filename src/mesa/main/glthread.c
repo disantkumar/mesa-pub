@@ -152,6 +152,9 @@ _mesa_glthread_init(struct gl_context *ctx)
 
    glthread->LastDListChangeBatchIndex = -1;
 
+   /* glthread takes over all L3 pinning */
+   ctx->st->pin_thread_counter = ST_L3_PINNING_DISABLED;
+
    /* Execute the thread initialization function in the thread. */
    struct util_queue_fence fence;
    util_queue_fence_init(&fence);
@@ -186,6 +189,7 @@ _mesa_glthread_destroy(struct gl_context *ctx, const char *reason)
 
    _mesa_HashDeleteAll(glthread->VAOs, free_vao, NULL);
    _mesa_DeleteHashTable(glthread->VAOs);
+   _mesa_glthread_release_upload_buffer(ctx);
 
    ctx->GLThread.enabled = false;
    ctx->CurrentClientDispatch = ctx->CurrentServerDispatch;

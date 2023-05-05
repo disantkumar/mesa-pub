@@ -1044,6 +1044,9 @@ struct LdsDirectVALUHazardGlobalState {
 struct LdsDirectVALUHazardBlockState {
    unsigned num_valu = 0;
    bool has_trans = false;
+
+   unsigned num_instrs = 0;
+   unsigned num_blocks = 0;
 };
 
 bool
@@ -1052,9 +1055,7 @@ handle_lds_direct_valu_hazard_instr(LdsDirectVALUHazardGlobalState& global_state
                                     aco_ptr<Instruction>& instr)
 {
    if (instr->isVALU() || instr->isVINTERP_INREG()) {
-      instr_class cls = instr_info.classes[(int)instr->opcode];
-      block_state.has_trans |= cls == instr_class::valu_transcendental32 ||
-                               cls == instr_class::valu_double_transcendental;
+      block_state.has_trans |= instr->isTrans();
 
       bool uses_vgpr = false;
       for (Definition& def : instr->definitions)
@@ -1076,6 +1077,14 @@ handle_lds_direct_valu_hazard_instr(LdsDirectVALUHazardGlobalState& global_state
    if (parse_vdst_wait(instr) == 0)
       return true;
 
+   block_state.num_instrs++;
+   if (block_state.num_instrs > 256 || block_state.num_blocks > 32) {
+      /* Exit to limit compile times and set wait_vdst to be safe. */
+      global_state.wait_vdst =
+         MIN2(global_state.wait_vdst, block_state.has_trans ? 0 : block_state.num_valu);
+      return true;
+   }
+
    return block_state.num_valu >= global_state.wait_vdst;
 }
 
@@ -1088,6 +1097,8 @@ handle_lds_direct_valu_hazard_block(LdsDirectVALUHazardGlobalState& global_state
          return false;
       global_state.loop_headers_visited.insert(block->index);
    }
+
+   block_state.num_blocks++;
 
    return true;
 }
@@ -1129,6 +1140,9 @@ struct VALUPartialForwardingHazardBlockState {
    enum VALUPartialForwardingHazardState state = nothing_written;
    unsigned num_valu_since_read = 0;
    unsigned num_valu_since_write = 0;
+
+   unsigned num_instrs = 0;
+   unsigned num_blocks = 0;
 };
 
 bool
@@ -1191,6 +1205,13 @@ handle_valu_partial_forwarding_hazard_instr(VALUPartialForwardingHazardGlobalSta
    if (block_state.num_vgprs_read == 0)
       return true; /* All VGPRs have been written and a hazard was never found. */
 
+   block_state.num_instrs++;
+   if (block_state.num_instrs > 256 || block_state.num_blocks > 32) {
+      /* Exit to limit compile times and set hazard_found=true to be safe. */
+      global_state.hazard_found = true;
+      return true;
+   }
+
    return false;
 }
 
@@ -1204,6 +1225,8 @@ handle_valu_partial_forwarding_hazard_block(VALUPartialForwardingHazardGlobalSta
          return false;
       global_state.loop_headers_visited.insert(block->index);
    }
+
+   block_state.num_blocks++;
 
    return true;
 }
@@ -1340,9 +1363,7 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
       ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
 
    if (instr->isVALU() || instr->isVINTERP_INREG()) {
-      instr_class cls = instr_info.classes[(int)instr->opcode];
-      bool is_trans = cls == instr_class::valu_transcendental32 ||
-                      cls == instr_class::valu_double_transcendental;
+      bool is_trans = instr->isTrans();
 
       ctx.valu_since_wr_by_trans.inc();
       if (is_trans)

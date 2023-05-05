@@ -25,7 +25,7 @@
 #include "ac_nir.h"
 #include "nir_builder.h"
 #include "amdgfxregs.h"
-#include "u_math.h"
+#include "util/u_math.h"
 
 /*
  * These NIR passes are used to lower NIR cross-stage I/O intrinsics
@@ -211,7 +211,7 @@ task_draw_ready_bit(nir_builder *b,
    nir_ssa_def *workgroup_index = task_workgroup_index(b, s);
 
    nir_ssa_def *idx = nir_iadd_nuw(b, ring_entry, workgroup_index);
-   return nir_ubfe(b, idx, nir_imm_int(b, util_bitcount(s->num_entries - 1)), nir_imm_int(b, 1));
+   return nir_u2u8(b, nir_ubfe(b, idx, nir_imm_int(b, util_bitcount(s->num_entries - 1)), nir_imm_int(b, 1)));
 }
 
 static nir_ssa_def *
@@ -269,9 +269,13 @@ lower_task_launch_mesh_workgroups(nir_builder *b,
     * so we assume that all invocations are active here.
     */
 
-   /* Wait for all necessary stores to finish. */
+   /* Wait for all necessary stores to finish.
+    * Device memory scope is necessary because we need to ensure there is
+    * always a waitcnt_vscnt instruction in order to avoid a race condition
+    * between payload stores and their loads after mesh shaders launch.
+    */
    nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                         .memory_scope = NIR_SCOPE_WORKGROUP,
+                         .memory_scope = NIR_SCOPE_DEVICE,
                          .memory_semantics = NIR_MEMORY_ACQ_REL,
                          .memory_modes = nir_var_mem_task_payload | nir_var_shader_out |
                                          nir_var_mem_ssbo | nir_var_mem_global);
@@ -284,9 +288,13 @@ lower_task_launch_mesh_workgroups(nir_builder *b,
       nir_ssa_def *x = nir_channel(b, dimensions, 0);
       nir_ssa_def *y = nir_channel(b, dimensions, 1);
       nir_ssa_def *z = nir_channel(b, dimensions, 2);
-      nir_ssa_def *rdy = task_draw_ready_bit(b, s);
-      nir_ssa_def *store_val = nir_vec4(b, x, y, z, rdy);
-      task_write_draw_ring(b, store_val, 0, s);
+
+      /* Dispatch dimensions of mesh shader workgroups. */
+      task_write_draw_ring(b, nir_vec3(b, x, y, z), 0, s);
+      /* Prevent the two stores from being reordered. */
+      nir_scoped_memory_barrier(b, NIR_SCOPE_INVOCATION, NIR_MEMORY_RELEASE, nir_var_shader_out);
+      /* Ready bit, only write the low 8 bits. */
+      task_write_draw_ring(b, task_draw_ready_bit(b, s), 12, s);
    }
    nir_pop_if(b, if_invocation_index_zero);
 

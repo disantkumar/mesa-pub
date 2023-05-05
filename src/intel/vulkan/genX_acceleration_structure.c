@@ -31,6 +31,7 @@
 
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
+#include "genxml/genX_rt_pack.h"
 
 #if GFX_VERx10 >= 125
 
@@ -167,7 +168,7 @@ get_gpu_size_estimate(const VkAccelerationStructureBuildGeometryInfoKHR *pInfo,
    struct MKSizeEstimate est = {};
 
    uint64_t size = sizeof(BVHBase);
-   size = align_u64(size, 64);
+   size = align64(size, 64);
 
    /* Must immediately follow BVHBase because we use fixed offset to nodes. */
    est.node_data_start = size;
@@ -258,25 +259,25 @@ get_gpu_size_estimate(const VkAccelerationStructureBuildGeometryInfoKHR *pInfo,
       unreachable("Unsupported acceleration structure type");
    }
 
-   size = align_u64(size, 64);
+   size = align64(size, 64);
    est.instance_descs_start = size;
    size += sizeof(struct InstanceDesc) * num_instances;
 
    est.geo_meta_data_start = size;
    size += sizeof(struct GeoMetaData) * pInfo->geometryCount;
-   size = align_u64(size, 64);
+   size = align64(size, 64);
 
-   assert(size == align_u64(size, 64));
+   assert(size == align64(size, 64));
    est.back_pointer_start = size;
 
    const bool alloc_backpointers = false; /* RT TODO */
    if (alloc_backpointers) {
       size += est.max_inner_nodes * sizeof(uint32_t);
-      size = align_u64(size, 64);
+      size = align64(size, 64);
    }
 
    assert(size < UINT32_MAX);
-   est.sizeTotal = align_u64(size, 64);
+   est.sizeTotal = align64(size, 64);
 
    return est;
 }
@@ -523,7 +524,10 @@ vk_to_grl_VertexFormat(VkFormat format)
 
 static struct Geo
 vk_to_grl_Geo(const VkAccelerationStructureGeometryKHR *pGeometry,
-              uint32_t prim_count)
+              uint32_t prim_count,
+              uint32_t transform_offset,
+              uint32_t primitive_offset,
+              uint32_t first_vertex)
 {
    struct Geo geo = {
       .Flags = vk_to_grl_GeometryFlags(pGeometry->flags),
@@ -544,18 +548,25 @@ vk_to_grl_Geo(const VkAccelerationStructureGeometryKHR *pGeometry,
          vk_tri->vertexData.deviceAddress;
       geo.Desc.Triangles.VertexBufferByteStride = vk_tri->vertexStride;
 
+      if (geo.Desc.Triangles.pTransformBuffer)
+         geo.Desc.Triangles.pTransformBuffer += transform_offset;
+
       if (vk_tri->indexType == VK_INDEX_TYPE_NONE_KHR) {
          geo.Desc.Triangles.IndexCount = 0;
          geo.Desc.Triangles.VertexCount = prim_count * 3;
          geo.Desc.Triangles.IndexFormat = INDEX_FORMAT_NONE;
+         geo.Desc.Triangles.pVertexBuffer += primitive_offset;
       } else {
          geo.Desc.Triangles.IndexCount = prim_count * 3;
          geo.Desc.Triangles.VertexCount = vk_tri->maxVertex;
          geo.Desc.Triangles.IndexFormat =
             vk_to_grl_IndexFormat(vk_tri->indexType);
+         geo.Desc.Triangles.pIndexBuffer += primitive_offset;
       }
+
       geo.Desc.Triangles.VertexFormat =
          vk_to_grl_VertexFormat(vk_tri->vertexFormat);
+      geo.Desc.Triangles.pVertexBuffer += vk_tri->vertexStride * first_vertex;
       break;
    }
 
@@ -563,7 +574,8 @@ vk_to_grl_Geo(const VkAccelerationStructureGeometryKHR *pGeometry,
       const VkAccelerationStructureGeometryAabbsDataKHR *vk_aabbs =
          &pGeometry->geometry.aabbs;
       geo.Type = GEOMETRY_TYPE_PROCEDURAL;
-      geo.Desc.Procedural.pAABBs_GPUVA = vk_aabbs->data.deviceAddress;
+      geo.Desc.Procedural.pAABBs_GPUVA =
+         vk_aabbs->data.deviceAddress + primitive_offset;
       geo.Desc.Procedural.AABBByteStride = vk_aabbs->stride;
       geo.Desc.Procedural.AABBCount = prim_count;
       break;
@@ -818,7 +830,10 @@ cmd_build_acceleration_structures(
       for (unsigned g = 0; g < bs->num_geometries; g++) {
          const VkAccelerationStructureGeometryKHR *pGeometry = get_geometry(pInfo, g);
          uint32_t prim_count = pBuildRangeInfos[g].primitiveCount;
-         geos[g] = vk_to_grl_Geo(pGeometry, prim_count);
+         geos[g] = vk_to_grl_Geo(pGeometry, prim_count,
+                                 pBuildRangeInfos[g].transformOffset,
+                                 pBuildRangeInfos[g].primitiveOffset,
+                                 pBuildRangeInfos[g].firstVertex);
 
          prefixes[g] = prefix_sum;
          prefix_sum += prim_count;

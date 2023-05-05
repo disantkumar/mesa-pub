@@ -181,7 +181,13 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
 
    context->desc.av1.picture_parameter.matrix_coefficients =
       av1->matrix_coefficients;
-   context->desc.av1.picture_parameter.current_frame_id = av1->current_frame;
+
+   context->desc.av1.film_grain_target = NULL;
+   if (av1->film_grain_info.film_grain_info_fields.bits.apply_grain)
+      context->desc.av1.picture_parameter.current_frame_id = av1->current_display_picture;
+   else
+      context->desc.av1.picture_parameter.current_frame_id = av1->current_frame;
+
    context->desc.av1.picture_parameter.order_hint = av1->order_hint;
    context->desc.av1.picture_parameter.primary_ref_frame = av1->primary_ref_frame;
    context->desc.av1.picture_parameter.frame_width = av1->frame_width_minus1 + 1;
@@ -380,7 +386,7 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
    }
 }
 
-void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slice_buffers, unsigned num_slices)
+void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices)
 {
    for (uint32_t buffer_idx = 0; buffer_idx < buf->num_elements; buffer_idx++) {
       uint32_t slice_index =

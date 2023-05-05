@@ -88,6 +88,9 @@ clear_in_rp(struct pipe_context *pctx,
 
    VkClearRect cr = {0};
    if (scissor_state) {
+      /* invalid clear */
+      if (scissor_state->minx > ctx->fb_state.width || scissor_state->miny > ctx->fb_state.height)
+         return;
       cr.rect.offset.x = scissor_state->minx;
       cr.rect.offset.y = scissor_state->miny;
       cr.rect.extent.width = MIN2(fb->width, scissor_state->maxx - scissor_state->minx);
@@ -452,8 +455,10 @@ zink_clear_texture(struct pipe_context *pctx,
       util_blitter_save_framebuffer(ctx->blitter, &ctx->fb_state);
       set_clear_fb(pctx, surf, NULL);
       ctx->blitting = true;
+      ctx->queries_disabled = true;
       pctx->clear(pctx, PIPE_CLEAR_COLOR0, &scissor, &color, 0, 0);
       util_blitter_restore_fb_state(ctx->blitter);
+      ctx->queries_disabled = false;
       ctx->blitting = false;
    } else {
       float depth = 0.0;
@@ -474,8 +479,10 @@ zink_clear_texture(struct pipe_context *pctx,
       util_blitter_save_framebuffer(ctx->blitter, &ctx->fb_state);
       ctx->blitting = true;
       set_clear_fb(pctx, NULL, surf);
+      ctx->queries_disabled = true;
       pctx->clear(pctx, flags, &scissor, NULL, depth, stencil);
       util_blitter_restore_fb_state(ctx->blitter);
+      ctx->queries_disabled = false;
       ctx->blitting = false;
    }
    /* this will never destroy the surface */

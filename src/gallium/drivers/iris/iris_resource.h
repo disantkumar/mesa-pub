@@ -44,7 +44,7 @@ struct iris_format_info {
 #define IRIS_RESOURCE_FLAG_SHADER_MEMZONE   (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
 #define IRIS_RESOURCE_FLAG_SURFACE_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
 #define IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
-#define IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
+#define IRIS_RESOURCE_FLAG_SCRATCH_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
 #define IRIS_RESOURCE_FLAG_DEVICE_MEM       (PIPE_RESOURCE_FLAG_DRV_PRIV << 4)
 
 /**
@@ -280,8 +280,6 @@ struct iris_transfer {
    struct pipe_resource *staging;
    struct blorp_context *blorp;
    struct iris_batch *batch;
-
-   bool dest_had_defined_contents;
 
    void (*unmap)(struct iris_transfer *);
 };

@@ -93,6 +93,7 @@ static const struct debug_named_value
 zink_descriptor_options[] = {
    { "auto", ZINK_DESCRIPTOR_MODE_AUTO, "Automatically detect best mode" },
    { "lazy", ZINK_DESCRIPTOR_MODE_LAZY, "Don't cache, do least amount of updates" },
+   { "db", ZINK_DESCRIPTOR_MODE_DB, "Use descriptor buffers" },
    DEBUG_NAMED_VALUE_END
 };
 
@@ -103,7 +104,7 @@ enum zink_descriptor_mode zink_descriptor_mode;
 static const char *
 zink_get_vendor(struct pipe_screen *pscreen)
 {
-   return "Collabora Ltd";
+   return "Mesa";
 }
 
 static const char *
@@ -336,8 +337,7 @@ cache_get_job(void *data, void *gdata, int thread_index)
    VkPipelineCacheCreateInfo pcci;
    pcci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
    pcci.pNext = NULL;
-   pcci.flags = screen->info.have_EXT_pipeline_creation_cache_control || screen->info.feats13.pipelineCreationCacheControl ?
-                VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT : 0;
+   pcci.flags = 0;
    pcci.initialDataSize = 0;
    pcci.pInitialData = NULL;
 
@@ -524,6 +524,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_NATIVE_FENCE_FD:
       return screen->instance_info.have_KHR_external_semaphore_capabilities && screen->info.have_KHR_external_semaphore_fd;
 
+   case PIPE_CAP_VALIDATE_ALL_DIRTY_STATES:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
    case PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE:
    case PIPE_CAP_SHAREABLE_SHADERS:
@@ -594,9 +595,13 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.feats.features.multiDrawIndirect;
 
    case PIPE_CAP_IMAGE_ATOMIC_FLOAT_ADD:
-      return screen->info.have_EXT_shader_atomic_float;
+      return (screen->info.have_EXT_shader_atomic_float &&
+              screen->info.atomic_float_feats.shaderSharedFloat32AtomicAdd &&
+              screen->info.atomic_float_feats.shaderBufferFloat32AtomicAdd);
    case PIPE_CAP_SHADER_ATOMIC_INT64:
-      return screen->info.have_KHR_shader_atomic_int64;
+      return (screen->info.have_KHR_shader_atomic_int64 &&
+              screen->info.atomic_int_feats.shaderSharedInt64Atomics &&
+              screen->info.atomic_int_feats.shaderBufferInt64Atomics);
 
    case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
       return screen->info.have_KHR_draw_indirect_count;
@@ -687,7 +692,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    }
 
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
-      return screen->info.props.limits.maxImageDimension2D;
+      return MIN2(screen->info.props.limits.maxImageDimension1D,
+                  screen->info.props.limits.maxImageDimension2D);
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
       return 1 + util_logbase2(screen->info.props.limits.maxImageDimension3D);
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
@@ -715,7 +721,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.props.limits.maxImageArrayLayers;
 
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
-      return !screen->driver_workarounds.depth_clip_control_missing;
+      return screen->info.have_EXT_depth_clip_enable;
 
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
       return screen->info.have_EXT_shader_stencil_export;
@@ -762,7 +768,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_BINDLESS_TEXTURE:
-      return screen->info.have_EXT_descriptor_indexing;
+      return zink_descriptor_mode != ZINK_DESCRIPTOR_MODE_DB && screen->info.have_EXT_descriptor_indexing;
 
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return screen->info.props.limits.minTexelBufferOffsetAlignment;
@@ -876,8 +882,12 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS:
       return screen->info.feats.features.sparseResidencyImage2D ? 1 : 0;
    case PIPE_CAP_QUERY_SPARSE_TEXTURE_RESIDENCY:
+      return screen->info.feats.features.sparseResidency2Samples &&
+             screen->info.feats.features.shaderResourceResidency ? 1 : 0;
    case PIPE_CAP_CLAMP_SPARSE_TEXTURE_LOD:
-      return screen->info.feats.features.sparseResidency2Samples ? 1 : 0;
+      return screen->info.feats.features.shaderResourceMinLod &&
+             screen->info.feats.features.sparseResidency2Samples &&
+             screen->info.feats.features.shaderResourceResidency ? 1 : 0;
 
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
       return screen->info.props.limits.viewportSubPixelBits;
@@ -2099,7 +2109,7 @@ zink_get_dmabuf_modifier_planes(struct pipe_screen *pscreen, uint64_t modifier, 
    for (unsigned i = 0; i < screen->modifier_props[format].drmFormatModifierCount; i++)
       if (screen->modifier_props[format].pDrmFormatModifierProperties[i].drmFormatModifier == modifier)
          return screen->modifier_props[format].pDrmFormatModifierProperties[i].drmFormatModifierPlaneCount;
-   return 0;
+   return util_format_get_num_planes(format);
 }
 
 static int
@@ -2347,6 +2357,37 @@ init_driver_workarounds(struct zink_screen *screen)
       /* performance */
       screen->info.border_color_feats.customBorderColorWithoutFormat = VK_FALSE;
    }
+
+   if ((!screen->info.have_EXT_line_rasterization ||
+        !screen->info.line_rast_feats.stippledBresenhamLines) &&
+       screen->info.feats.features.geometryShader &&
+       screen->info.feats.features.sampleRateShading) {
+      /* we're using stippledBresenhamLines as a proxy for all of these, to
+       * avoid accidentally changing behavior on VK-drivers where we don't
+       * want to add emulation.
+       */
+      screen->driver_workarounds.no_linestipple = true;
+   }
+
+   if (screen->info.driver_props.driverID ==
+       VK_DRIVER_ID_IMAGINATION_PROPRIETARY) {
+      assert(screen->info.feats.features.geometryShader);
+      screen->driver_workarounds.no_linesmooth = true;
+   }
+
+   /* This is a workarround for the lack of
+    * gl_PointSize + glPolygonMode(..., GL_LINE), in the imagination
+    * proprietary driver.
+    */
+   switch (screen->info.driver_props.driverID) {
+   case VK_DRIVER_ID_IMAGINATION_PROPRIETARY:
+      screen->driver_workarounds.no_hw_gl_point = true;
+      break;
+   default:
+      screen->driver_workarounds.no_hw_gl_point = false;
+      break;
+   }
+
    if (screen->info.driver_props.driverID == VK_DRIVER_ID_AMD_OPEN_SOURCE || 
        screen->info.driver_props.driverID == VK_DRIVER_ID_AMD_PROPRIETARY || 
        screen->info.driver_props.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY || 
@@ -2457,7 +2498,6 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       goto fail;
 
    screen->instance_info.loader_version = zink_get_loader_version(screen);
-#if WITH_XMLCONFIG
    if (config) {
       driParseConfigFiles(config->options, config->options_info, 0, "zink",
                           NULL, NULL, NULL, 0, NULL, 0);
@@ -2466,7 +2506,6 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       //screen->driconf.inline_uniforms = driQueryOptionb(config->options, "radeonsi_inline_uniforms");
       screen->instance_info.disable_xcb_surface = driQueryOptionb(config->options, "disable_xcb_surface");
    }
-#endif
 
    if (!zink_create_instance(screen))
       goto fail;
@@ -2686,6 +2725,51 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
          screen->resizable_bar = true;
    }
 
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB) {
+      if (!screen->info.have_EXT_descriptor_buffer) {
+         mesa_loge("Cannot use db descriptor mode without EXT_descriptor_buffer");
+         goto fail;
+      }
+      if (!screen->resizable_bar) {
+         mesa_loge("Cannot use db descriptor mode without resizable bar");
+         goto fail;
+      }
+      if (!screen->info.have_EXT_non_seamless_cube_map) {
+         mesa_loge("Cannot use db descriptor mode without EXT_non_seamless_cube_map");
+         goto fail;
+      }
+      if (!screen->info.rb2_feats.nullDescriptor) {
+         mesa_loge("Cannot use db descriptor mode without robustness2.nullDescriptor");
+         goto fail;
+      }
+      if (screen->compact_descriptors) {
+         /* TODO: bindless */
+         if (screen->info.db_props.maxDescriptorBufferBindings < 3) {
+            mesa_loge("Cannot use db descriptor mode with compact descriptors with maxDescriptorBufferBindings < 3");
+            goto fail;
+         }
+      } else {
+         if (screen->info.db_props.maxDescriptorBufferBindings < 5) {
+            mesa_loge("Cannot use db descriptor mode with maxDescriptorBufferBindings < 5");
+            goto fail;
+         }
+      }
+      const uint32_t sampler_size = MAX2(screen->info.db_props.combinedImageSamplerDescriptorSize, screen->info.db_props.robustUniformTexelBufferDescriptorSize);
+      const uint32_t image_size = MAX2(screen->info.db_props.storageImageDescriptorSize, screen->info.db_props.robustStorageTexelBufferDescriptorSize);
+      if (screen->compact_descriptors) {
+         screen->db_size[ZINK_DESCRIPTOR_TYPE_UBO] = screen->info.db_props.robustUniformBufferDescriptorSize +
+                                                     screen->info.db_props.robustStorageBufferDescriptorSize;
+         screen->db_size[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] = sampler_size + image_size;
+      } else {
+         screen->db_size[ZINK_DESCRIPTOR_TYPE_UBO] = screen->info.db_props.robustUniformBufferDescriptorSize;
+         screen->db_size[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] = sampler_size;
+         screen->db_size[ZINK_DESCRIPTOR_TYPE_SSBO] = screen->info.db_props.robustStorageBufferDescriptorSize;
+         screen->db_size[ZINK_DESCRIPTOR_TYPE_IMAGE] = image_size;
+      }
+      screen->db_size[ZINK_DESCRIPTOR_TYPE_UNIFORMS] = screen->info.db_props.robustUniformBufferDescriptorSize;
+      screen->info.have_KHR_push_descriptor = false;
+   }
+
    simple_mtx_init(&screen->dt_lock, mtx_plain);
 
    util_idalloc_mt_init_tc(&screen->buffer_ids);
@@ -2718,7 +2802,12 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       goto fail;
    }
 
-   screen->optimal_keys = !screen->need_decompose_attrs && screen->info.have_EXT_non_seamless_cube_map && !screen->driconf.inline_uniforms;
+   screen->optimal_keys = !screen->need_decompose_attrs &&
+                          screen->info.have_EXT_non_seamless_cube_map &&
+                          !screen->driconf.inline_uniforms &&
+                          !screen->driver_workarounds.no_linestipple &&
+                          !screen->driver_workarounds.no_linesmooth &&
+                          !screen->driver_workarounds.no_hw_gl_point;
    if (!screen->optimal_keys)
       screen->info.have_EXT_graphics_pipeline_library = false;
 

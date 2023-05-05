@@ -686,19 +686,15 @@ brw_nir_lower_storage_image_instr(nir_builder *b,
 {
    if (instr->type != nir_instr_type_intrinsic)
       return false;
-   const struct brw_nir_lower_storage_image_opts *opts = cb_data;
+   const struct intel_device_info *devinfo = cb_data;
 
    nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
    switch (intrin->intrinsic) {
    case nir_intrinsic_image_deref_load:
-      if (opts->lower_loads)
-         return lower_image_load_instr(b, opts->devinfo, intrin);
-      return false;
+      return lower_image_load_instr(b, devinfo, intrin);
 
    case nir_intrinsic_image_deref_store:
-      if (opts->lower_stores)
-         return lower_image_store_instr(b, opts->devinfo, intrin);
-      return false;
+      return lower_image_store_instr(b, devinfo, intrin);
 
    case nir_intrinsic_image_deref_atomic_add:
    case nir_intrinsic_image_deref_atomic_imin:
@@ -710,14 +706,10 @@ brw_nir_lower_storage_image_instr(nir_builder *b,
    case nir_intrinsic_image_deref_atomic_xor:
    case nir_intrinsic_image_deref_atomic_exchange:
    case nir_intrinsic_image_deref_atomic_comp_swap:
-      if (opts->lower_atomics)
-         return lower_image_atomic_instr(b, opts->devinfo, intrin);
-      return false;
+      return lower_image_atomic_instr(b, devinfo, intrin);
 
    case nir_intrinsic_image_deref_size:
-      if (opts->lower_get_size)
-         return lower_image_size_instr(b, opts->devinfo, intrin);
-      return false;
+      return lower_image_size_instr(b, devinfo, intrin);
 
    default:
       /* Nothing to do */
@@ -727,7 +719,7 @@ brw_nir_lower_storage_image_instr(nir_builder *b,
 
 bool
 brw_nir_lower_storage_image(nir_shader *shader,
-                            const struct brw_nir_lower_storage_image_opts *opts)
+                            const struct intel_device_info *devinfo)
 {
    bool progress = false;
 
@@ -740,7 +732,7 @@ brw_nir_lower_storage_image(nir_shader *shader,
    progress |= nir_shader_instructions_pass(shader,
                                             brw_nir_lower_storage_image_instr,
                                             nir_metadata_none,
-                                            (void *)opts);
+                                            (void *)devinfo);
 
    return progress;
 }

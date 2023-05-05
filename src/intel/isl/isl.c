@@ -107,7 +107,12 @@ isl_device_setup_mocs(struct isl_device *dev)
    dev->mocs.protected_mask = 0;
 
    if (dev->info->ver >= 12) {
-      if (intel_device_info_is_dg2(dev->info)) {
+      if (intel_device_info_is_mtl(dev->info)) {
+         /* Cached L3+L4; BSpec: 45101 */
+         dev->mocs.internal = 1 << 1;
+         /* Displayables cached to L3+L4:WT */
+         dev->mocs.external = 14 << 1;
+      } else if (intel_device_info_is_dg2(dev->info)) {
          /* L3CC=WB; BSpec: 45101 */
          dev->mocs.internal = 3 << 1;
          dev->mocs.external = 3 << 1;
@@ -308,16 +313,26 @@ isl_device_init(struct isl_device *dev,
       dev->ds.hiz_offset = 0;
    }
 
-   if (ISL_GFX_VER(dev) >= 7) {
-      /* From the IVB PRM, SURFACE_STATE::Height,
-       *
-       *    For typed buffer and structured buffer surfaces, the number
-       *    of entries in the buffer ranges from 1 to 2^27. For raw buffer
-       *    surfaces, the number of entries in the buffer is the number of bytes
-       *    which can range from 1 to 2^30.
-       *
-       * This limit is only concerned with raw buffers.
-       */
+   /* From the IVB PRM, SURFACE_STATE::Height,
+    *
+    *    For typed buffer and structured buffer surfaces, the number
+    *    of entries in the buffer ranges from 1 to 2^27. For raw buffer
+    *    surfaces, the number of entries in the buffer is the number of bytes
+    *    which can range from 1 to 2^30.
+    *
+    * From the SKL PRM, SURFACE_STATE::Width/Height/Depth for RAW buffers,
+    *
+    *    Width  : bits [6:0]
+    *    Height : bits [20:7]
+    *    Depth  : bits [31:21]
+    *
+    *    So we can address 4Gb
+    *
+    * This limit is only concerned with raw buffers.
+    */
+   if (ISL_GFX_VER(dev) >= 9) {
+      dev->max_buffer_size = 1ull << 32;
+   } else if (ISL_GFX_VER(dev) >= 7) {
       dev->max_buffer_size = 1ull << 30;
    } else {
       dev->max_buffer_size = 1ull << 27;
@@ -1957,17 +1972,18 @@ isl_surf_init_s(const struct isl_device *dev,
       if (tiling == ISL_TILING_GFX12_CCS)
          base_alignment_B = MAX(base_alignment_B, 4096);
 
-      /* Platforms using an aux map require that images be 64K-aligned if
-       * they're going to used with CCS. This is because the Aux translation
-       * table maps main surface addresses to aux addresses at a 64K (in the
-       * main surface) granularity. Because we don't know for sure in ISL if
-       * a surface will use CCS, we have to guess based on the DISABLE_AUX
-       * usage bit. The one thing we do know is that we haven't enable CCS on
-       * linear images yet so we can avoid the extra alignment there.
+      /* Platforms using an aux map require that images be granularity-aligned
+       * if they're going to used with CCS. This is because the Aux translation
+       * table maps main surface addresses to aux addresses at a granularity in
+       * the main surface. Because we don't know for sure in ISL if a surface
+       * will use CCS, we have to guess based on the DISABLE_AUX usage bit. The
+       * one thing we do know is that we haven't enable CCS on linear images
+       * yet so we can avoid the extra alignment there.
        */
       if (dev->info->has_aux_map &&
           !(info->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)) {
-         base_alignment_B = MAX(base_alignment_B, 64 * 1024);
+         base_alignment_B = MAX(base_alignment_B, dev->info->verx10 >= 125 ?
+               1024 * 1024 : 64 * 1024);
       }
    }
 
@@ -2228,14 +2244,11 @@ isl_surf_supports_ccs(const struct isl_device *dev,
       if (surf->row_pitch_B % 512 != 0)
          return false;
 
-      /* According to Wa_1406738321, 3D textures need a blit to a new
+      /* TODO: According to Wa_1406738321, 3D textures need a blit to a new
        * surface in order to perform a resolve. For now, just disable CCS.
        */
-      if (surf->dim == ISL_SURF_DIM_3D) {
-         isl_finishme("%s:%s: CCS for 3D textures is disabled, but a workaround"
-                      " is available.", __FILE__, __func__);
+      if (surf->dim == ISL_SURF_DIM_3D)
          return false;
-      }
 
       /* Wa_1207137018
        *

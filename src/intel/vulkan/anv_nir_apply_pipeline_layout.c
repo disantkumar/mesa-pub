@@ -1017,8 +1017,11 @@ lower_image_intrinsic(nir_builder *b, nir_intrinsic_instr *intrin,
    b->cursor = nir_before_instr(&intrin->instr);
 
    if (binding_offset > MAX_BINDING_TABLE_SIZE) {
-      nir_ssa_def *handle =
-         build_load_var_deref_descriptor_mem(b, deref, 0, 1, 32, state);
+      const unsigned desc_comp =
+         image_binding_needs_lowered_surface(var) ? 1 : 0;
+      nir_ssa_def *desc =
+         build_load_var_deref_descriptor_mem(b, deref, 0, 2, 32, state);
+      nir_ssa_def *handle = nir_channel(b, desc, desc_comp);
       nir_rewrite_image_intrinsic(intrin, handle, true);
    } else {
       unsigned array_size =
@@ -1074,6 +1077,21 @@ lower_load_constant(nir_builder *b, nir_intrinsic_instr *intrin,
                                intrin->dest.ssa.bit_size);
 
    nir_ssa_def_rewrite_uses(&intrin->dest.ssa, data);
+
+   return true;
+}
+
+static bool
+lower_base_workgroup_id(nir_builder *b, nir_intrinsic_instr *intrin,
+                        struct apply_pipeline_layout_state *state)
+{
+   b->cursor = nir_instr_remove(&intrin->instr);
+
+   nir_ssa_def *base_workgroup_id =
+      nir_load_push_constant(b, 3, 32, nir_imm_int(b, 0),
+                             .base = offsetof(struct anv_push_constants, cs.base_work_group_id),
+                             .range = 3 * sizeof(uint32_t));
+   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, base_workgroup_id);
 
    return true;
 }
@@ -1276,6 +1294,8 @@ apply_pipeline_layout(nir_builder *b, nir_instr *instr, void *_state)
          return lower_image_intrinsic(b, intrin, state);
       case nir_intrinsic_load_constant:
          return lower_load_constant(b, intrin, state);
+      case nir_intrinsic_load_base_workgroup_id:
+         return lower_base_workgroup_id(b, intrin, state);
       case nir_intrinsic_load_ray_query_global_intel:
          return lower_ray_query_globals(b, intrin, state);
       default:
@@ -1511,6 +1531,9 @@ anv_nir_apply_pipeline_layout(nir_shader *shader,
       for (unsigned i = 0; i < array_size; i++) {
          assert(pipe_binding[i].set == set);
          assert(pipe_binding[i].index == bind_layout->descriptor_index + i);
+
+         pipe_binding[i].lowered_storage_surface =
+            image_binding_needs_lowered_surface(var);
       }
    }
 

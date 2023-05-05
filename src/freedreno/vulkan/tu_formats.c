@@ -8,6 +8,7 @@
 
 #include "fdl/fd6_format_table.h"
 
+#include "vk_enum_defines.h"
 #include "vk_util.h"
 #include "drm-uapi/drm_fourcc.h"
 
@@ -272,18 +273,23 @@ tu_physical_device_get_format_properties(
       optimal |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
                  VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
                  VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT |
-                 VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT |
-                 VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT;
+                 VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
 
       /* no blit src bit for YUYV/NV12/I420 formats */
       if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED &&
           desc->layout != UTIL_FORMAT_LAYOUT_PLANAR2 &&
-          desc->layout != UTIL_FORMAT_LAYOUT_PLANAR3)
+          desc->layout != UTIL_FORMAT_LAYOUT_PLANAR3) {
          optimal |= VK_FORMAT_FEATURE_BLIT_SRC_BIT;
+      } else {
+         optimal |= VK_FORMAT_FEATURE_MIDPOINT_CHROMA_SAMPLES_BIT;
 
-      if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED)
-         optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+         if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
+            optimal |= VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT |
+                       VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+            if (physical_device->info->a6xx.has_separate_chroma_filter)
+               optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_SEPARATE_RECONSTRUCTION_FILTER_BIT;
+         }
+      }
 
       if (!vk_format_is_int(vk_format)) {
          optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
@@ -407,9 +413,12 @@ tu_GetPhysicalDeviceFormatProperties2(
       physical_device, format, props3);
 
    pFormatProperties->formatProperties = (VkFormatProperties) {
-      .linearTilingFeatures = props3->linearTilingFeatures,
-      .optimalTilingFeatures = props3->optimalTilingFeatures,
-      .bufferFeatures = props3->bufferFeatures,
+      .linearTilingFeatures =
+         vk_format_features2_to_features(props3->linearTilingFeatures),
+      .optimalTilingFeatures =
+         vk_format_features2_to_features(props3->optimalTilingFeatures),
+      .bufferFeatures =
+         vk_format_features2_to_features(props3->bufferFeatures),
    };
 
    VkDrmFormatModifierPropertiesListEXT *list =

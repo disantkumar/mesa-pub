@@ -1707,6 +1707,13 @@ struct isl_surf_fill_state_info {
 
    /* Intra-tile offset */
    uint16_t x_offset_sa, y_offset_sa;
+
+   /**
+    * Robust image access enabled
+    *
+    * This is used to turn off a performance workaround.
+    */
+   bool robust_image_access;
 };
 
 struct isl_buffer_fill_state_info {
@@ -2071,8 +2078,7 @@ void isl_color_value_unpack(union isl_color_value *value,
                             enum isl_format format,
                             const uint32_t *data_in);
 
-bool isl_is_storage_image_format(const struct intel_device_info *devinfo,
-                                 enum isl_format fmt);
+bool isl_is_storage_image_format(enum isl_format fmt);
 
 enum isl_format
 isl_lower_storage_image_format(const struct intel_device_info *devinfo,

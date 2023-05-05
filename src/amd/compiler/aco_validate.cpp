@@ -264,6 +264,7 @@ validate_ir(Program* program)
                                    instr->opcode == aco_opcode::p_jump_to_epilog ||
                                    instr->opcode == aco_opcode::p_dual_src_export_gfx11 ||
                                    (instr->opcode == aco_opcode::p_interp_gfx11 && i == 0) ||
+                                   (instr->opcode == aco_opcode::p_bpermute_gfx11w64 && i == 0) ||
                                    (flat && i == 1) || (instr->isMIMG() && (i == 1 || i == 2)) ||
                                    ((instr->isMUBUF() || instr->isMTBUF()) && i == 1) ||
                                    (instr->isScratch() && i == 0);
@@ -533,9 +534,8 @@ validate_ir(Program* program)
                check(instr->definitions[2].getTemp().type() == RegType::vgpr &&
                         instr->definitions[2].getTemp().size() == 1,
                      "Third definition of p_dual_src_export_gfx11 must be a v1", instr.get());
-               check(instr->definitions[3].getTemp().type() == RegType::sgpr &&
-                        instr->definitions[3].getTemp().size() == 2,
-                     "Fourth definition of p_dual_src_export_gfx11 must be a s2", instr.get());
+               check(instr->definitions[3].regClass() == program->lane_mask,
+                     "Fourth definition of p_dual_src_export_gfx11 must be a lane mask", instr.get());
                check(instr->definitions[4].physReg() == vcc,
                      "Fifth definition of p_dual_src_export_gfx11 must be vcc", instr.get());
                check(instr->definitions[5].physReg() == scc,
@@ -652,13 +652,20 @@ validate_ir(Program* program)
             check(instr->operands.size() == 4 || program->gfx_level >= GFX10,
                   "NSA is only supported on GFX10+", instr.get());
             for (unsigned i = 3; i < instr->operands.size(); i++) {
-               if (instr->operands.size() == 4) {
-                  check(instr->operands[i].hasRegClass() &&
-                           instr->operands[i].regClass().type() == RegType::vgpr,
-                        "MIMG operands[3] (VADDR) must be VGPR", instr.get());
-               } else {
-                  check(instr->operands[i].regClass() == v1, "MIMG VADDR must be v1 if NSA is used",
-                        instr.get());
+               check(instr->operands[i].hasRegClass() &&
+                        instr->operands[i].regClass().type() == RegType::vgpr,
+                     "MIMG operands[3+] (VADDR) must be VGPR", instr.get());
+               if (instr->operands.size() > 4) {
+                  if (program->gfx_level < GFX11) {
+                     check(instr->operands[i].regClass() == v1,
+                           "GFX10 MIMG VADDR must be v1 if NSA is used", instr.get());
+                  } else {
+                     if (instr->opcode != aco_opcode::image_bvh_intersect_ray &&
+                         instr->opcode != aco_opcode::image_bvh64_intersect_ray && i < 7) {
+                        check(instr->operands[i].regClass() == v1,
+                              "first 4 GFX11 MIMG VADDR must be v1 if NSA is used", instr.get());
+                     }
+                  }
                }
             }
 

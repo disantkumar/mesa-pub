@@ -1999,7 +1999,8 @@ radv_GetDeviceImageSparseMemoryRequirements(VkDevice device,
     * creating an image.
     * TODO: Avoid creating an image.
     */
-   result = radv_CreateImage(device, pInfo->pCreateInfo, NULL, &image);
+   result = radv_image_create(
+      device, &(struct radv_image_create_info){.vk_info = pInfo->pCreateInfo}, NULL, &image, true);
    assert(result == VK_SUCCESS);
 
    VkImageSparseMemoryRequirementsInfo2 info2 = {
@@ -2056,13 +2057,8 @@ static void
 radv_get_dcc_channel_type(const struct util_format_description *desc, enum dcc_channel_type *type,
                           unsigned *size)
 {
-   int i;
-
-   /* Find the first non-void channel. */
-   for (i = 0; i < desc->nr_channels; i++)
-      if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID)
-         break;
-   if (i == desc->nr_channels) {
+   int i = util_format_get_first_non_void_channel(desc->format);
+   if (i == -1) {
       *type = dcc_channel_incompatible;
       return;
    }
@@ -2096,10 +2092,6 @@ radv_dcc_formats_compatible(enum amd_gfx_level gfx_level, VkFormat format1, VkFo
    unsigned size1, size2;
    int i;
 
-   /* All formats are compatible on GFX11. */
-   if (gfx_level >= GFX11)
-      return true;
-
    if (format1 == format2)
       return true;
 
@@ -2122,8 +2114,16 @@ radv_dcc_formats_compatible(enum amd_gfx_level gfx_level, VkFormat format1, VkFo
        (type1 == dcc_channel_float) != (type2 == dcc_channel_float) || size1 != size2)
       return false;
 
-   if (type1 != type2)
+   if (type1 != type2) {
+      /* FIXME: All formats should be compatible on GFX11 but for some reasons DCC with signedness
+       * reinterpretation doesn't work as expected, like R8_UINT<->R8_SINT. Note that disabling
+       * fast-clears doesn't help.
+       */
+      if (gfx_level >= GFX11)
+         return false;
+
       *sign_reinterpret = true;
+   }
 
    return true;
 }

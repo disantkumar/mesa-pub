@@ -49,10 +49,9 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include "util/u_queue.h"
-#include "GL/gl.h"
 #include "compiler/shader_enums.h"
 #include "main/config.h"
-#include "glheader.h"
+#include "util/glheader.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,6 +76,7 @@ struct glthread_vao {
    GLbitfield BufferEnabled; /**< "Enabled" converted to buffer bindings. */
    GLbitfield BufferInterleaved; /**< Bitmask of buffers used by multiple attribs. */
    GLbitfield UserPointerMask; /**< Bitmask of buffer bindings. */
+   GLbitfield NonNullPointerMask; /**< Bitmask of buffer bindings with non-NULL user pointers. */
    GLbitfield NonZeroDivisorMask; /**< Bitmask of buffer bindings. */
 
    struct {
@@ -275,6 +275,7 @@ void _mesa_glthread_init_dispatch7(struct gl_context *ctx,
 void _mesa_glthread_flush_batch(struct gl_context *ctx);
 void _mesa_glthread_finish(struct gl_context *ctx);
 void _mesa_glthread_finish_before(struct gl_context *ctx, const char *func);
+void _mesa_glthread_release_upload_buffer(struct gl_context *ctx);
 void _mesa_glthread_upload(struct gl_context *ctx, const void *data,
                            GLsizeiptr size, unsigned *out_offset,
                            struct gl_buffer_object **out_buffer,

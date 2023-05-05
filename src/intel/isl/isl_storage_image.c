@@ -25,8 +25,7 @@
 #include "compiler/brw_compiler.h"
 
 bool
-isl_is_storage_image_format(const struct intel_device_info *devinfo,
-                            enum isl_format format)
+isl_is_storage_image_format(enum isl_format format)
 {
    /* XXX: Maybe we should put this in the CSV? */
 
@@ -95,24 +94,9 @@ isl_lower_storage_image_format(const struct intel_device_info *devinfo,
     *
     *   "The surface format for the typed atomic integer operations must
     *    be R32_UINT or R32_SINT."
-    *
-    * But checking the BSpec 1706, you find a different restriction. There the
-    * wording is :
-    *
-    *    "The surface format must be one of R32_UINT, R32_SINT or R32_FLOAT"
-    *
-    * The confusion is probably related to atomic integer messages. For
-    * example an IADD instruction would require a R32_UINT/R32_SINT surface.
-    * But a CMPXCHG instruction does not really care about the type, it just
-    * does bit to bit comparison and swap.
-    *
-    * The confusion seems to have propagated to the simulation environment.
-    * Gfx12 has the same restrictions as Gfx11 regarding doing a CMPXCHG on a
-    * R32_FLOAT surface, but the Gfx11 environment will report an error while
-    * Gfx12 passes fine. More importantly HW doesn't seem to mind.
     */
    case ISL_FORMAT_R32_FLOAT:
-      return format;
+      return ISL_FORMAT_R32_UINT;
 
    /* From HSW to BDW the only 64bpp format supported for typed access is
     * RGBA_UINT16.  IVB falls back to untyped.
@@ -166,55 +150,39 @@ isl_lower_storage_image_format(const struct intel_device_info *devinfo,
    case ISL_FORMAT_R8_SINT:
       return (devinfo->ver >= 9 ? format : ISL_FORMAT_R8_UINT);
 
-   /* Here the PRMs are a bit out of date. But according to BSpec 47635
-    * (Gfx12.5), the 2/10/10/10 and the 11/11/10 packed formats are supported
+   /* Neither the 2/10/10/10 nor the 11/11/10 packed formats are supported
     * by the hardware.
     */
    case ISL_FORMAT_R10G10B10A2_UINT:
    case ISL_FORMAT_R10G10B10A2_UNORM:
    case ISL_FORMAT_R11G11B10_FLOAT:
-      return devinfo->verx10 >= 125 ? format : ISL_FORMAT_R32_UINT;
+      return ISL_FORMAT_R32_UINT;
 
-   /* No normalized fixed-point formats are supported by the hardware until Gfx11. */
+   /* No normalized fixed-point formats are supported by the hardware. */
    case ISL_FORMAT_R16G16B16A16_UNORM:
    case ISL_FORMAT_R16G16B16A16_SNORM:
-      if (devinfo->ver >= 11)
-         return format;
-      if (devinfo->ver >= 9)
-         return ISL_FORMAT_R32G32_UINT;
-      if (devinfo->verx10 >= 75)
-         return ISL_FORMAT_R16G16B16A16_UINT;
-      return ISL_FORMAT_R32G32_UINT;
+      return (devinfo->ver >= 11 ? format :
+              devinfo->verx10 >= 75 ?
+              ISL_FORMAT_R16G16B16A16_UINT :
+              ISL_FORMAT_R32G32_UINT);
 
    case ISL_FORMAT_R8G8B8A8_UNORM:
    case ISL_FORMAT_R8G8B8A8_SNORM:
-      if (devinfo->ver >= 11)
-         return format;
-      if (devinfo->ver >= 9)
-         return ISL_FORMAT_R32_UINT;
-      if (devinfo->verx10 >= 75)
-         return ISL_FORMAT_R8G8B8A8_UINT;
-      return ISL_FORMAT_R32_UINT;
+      return (devinfo->ver >= 11 ? format :
+              devinfo->verx10 >= 75 ?
+              ISL_FORMAT_R8G8B8A8_UINT : ISL_FORMAT_R32_UINT);
 
    case ISL_FORMAT_R16G16_UNORM:
    case ISL_FORMAT_R16G16_SNORM:
-      if (devinfo->ver >= 11)
-         return format;
-      if (devinfo->ver >= 9)
-         return ISL_FORMAT_R32_UINT;
-      if (devinfo->verx10 >= 75)
-         return ISL_FORMAT_R16G16_UINT;
-      return ISL_FORMAT_R32_UINT;
+      return (devinfo->ver >= 11 ? format :
+              devinfo->verx10 >= 75 ?
+              ISL_FORMAT_R16G16_UINT : ISL_FORMAT_R32_UINT);
 
    case ISL_FORMAT_R8G8_UNORM:
    case ISL_FORMAT_R8G8_SNORM:
-      if (devinfo->ver >= 11)
-         return format;
-      if (devinfo->ver >= 9)
-         return ISL_FORMAT_R16_UINT;
-      if (devinfo->verx10 >= 75)
-         return ISL_FORMAT_R8G8_UINT;
-      return ISL_FORMAT_R16_UINT;
+      return (devinfo->ver >= 11 ? format :
+              devinfo->verx10 >= 75 ?
+              ISL_FORMAT_R8G8_UINT : ISL_FORMAT_R16_UINT);
 
    case ISL_FORMAT_R16_UNORM:
    case ISL_FORMAT_R16_SNORM:

@@ -256,9 +256,11 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
             dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT;
             if (screen->info.feats.features.alphaToOne)
                dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_ALPHA_TO_ONE_ENABLE_EXT;
-            dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
-            dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
-            dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+            if (state->rendering_info.colorAttachmentCount) {
+               dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
+               dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
+               dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+            }
          }
       }
    }
@@ -268,7 +270,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    assert(state->rast_prim != PIPE_PRIM_MAX);
 
    VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
-   if (screen->info.have_EXT_line_rasterization) {
+   if (screen->info.have_EXT_line_rasterization &&
+       !state->shader_keys.key[MESA_SHADER_FRAGMENT].key.fs.lower_line_smooth) {
       rast_line_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT;
       rast_line_state.pNext = rast_state.pNext;
       rast_line_state.stippledLineEnable = VK_FALSE;
@@ -292,7 +295,18 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
          mode_idx += hw_rast_state->line_stipple_enable * 3;
          if (*(feat + mode_idx))
             rast_line_state.lineRasterizationMode = hw_rast_state->line_mode;
-         else
+         else if (hw_rast_state->line_stipple_enable &&
+                  screen->driver_workarounds.no_linestipple) {
+            /* drop line stipple, we can emulate it */
+            mode_idx -= hw_rast_state->line_stipple_enable * 3;
+            if (*(feat + mode_idx))
+               rast_line_state.lineRasterizationMode = hw_rast_state->line_mode;
+            /* non-strictLine default lines are either parallelogram or bresenham which while not in GL spec,
+             * in practice end up being within the two-pixel exception in the GL spec.
+             */
+            else if (mode_idx || screen->info.props.limits.strictLines)
+               warn_missing_feature(warned[mode_idx], features[hw_rast_state->line_mode][0]);
+         } else if (mode_idx || screen->info.props.limits.strictLines)
             warn_missing_feature(warned[mode_idx], features[hw_rast_state->line_mode][hw_rast_state->line_stipple_enable]);
       }
 
@@ -328,6 +342,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       else
          warn_missing_feature(feedback_warn, "EXT_attachment_feedback_loop_layout");
    }
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
+      pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pci.layout = prog->base.layout;
    if (state->render_pass)
       pci.renderPass = state->render_pass->render_pass;
@@ -389,6 +405,8 @@ zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_pro
    VkComputePipelineCreateInfo pci = {0};
    pci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
    pci.layout = comp->base.layout;
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
+      pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
 
    VkPipelineShaderStageCreateInfo stage = {0};
    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -472,9 +490,11 @@ zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipe
          dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT;
          if (screen->info.feats.features.alphaToOne)
             dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_ALPHA_TO_ONE_ENABLE_EXT;
-         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
-         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
-         dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+         if (state->rendering_info.colorAttachmentCount) {
+            dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT;
+            dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT;
+            dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT;
+         }
       }
    } else {
       if (state->blend_state) {
@@ -528,6 +548,8 @@ zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipe
       else
          warn_missing_feature(feedback_warn, "EXT_attachment_feedback_loop_layout");
    }
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
+      pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pci.pColorBlendState = &blend_state;
    pci.pMultisampleState = &ms_state;
    pci.pDynamicState = &pipelineDynamicStateCreateInfo;
@@ -604,6 +626,8 @@ zink_create_gfx_pipeline_input(struct zink_screen *screen,
    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
    pci.pNext = &gplci;
    pci.flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT;
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
+      pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pci.pVertexInputState = &vertex_input_state;
    pci.pInputAssemblyState = &primitive_state;
    pci.pDynamicState = &pipelineDynamicStateCreateInfo;
@@ -677,7 +701,7 @@ zink_create_gfx_pipeline_library(struct zink_screen *screen, struct zink_gfx_pro
    dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_LINE_RASTERIZATION_MODE_EXT;
    if (screen->info.dynamic_state3_feats.extendedDynamicState3LineStippleEnable)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_LINE_STIPPLE_ENABLE_EXT;
-   if (screen->info.have_EXT_line_rasterization)
+   if (!screen->driver_workarounds.no_linestipple)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_LINE_STIPPLE_EXT;
    assert(state_count < ARRAY_SIZE(dynamicStateEnables));
 
@@ -690,6 +714,8 @@ zink_create_gfx_pipeline_library(struct zink_screen *screen, struct zink_gfx_pro
    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
    pci.pNext = &gplci;
    pci.flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR | VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT;
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
+      pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pci.layout = prog->base.layout;
    pci.pRasterizationState = &rast_state;
    pci.pViewportState = &viewport_state;
@@ -755,6 +781,8 @@ zink_create_gfx_pipeline_combined(struct zink_screen *screen, struct zink_gfx_pr
       pci.flags = VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT;
    else
       pci.flags = VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
+      pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pci.pNext = &libstate;
 
    VkPipeline pipeline;

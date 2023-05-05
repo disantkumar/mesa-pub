@@ -170,8 +170,6 @@ static inline void
 lp_mem_type_from_format_desc(const struct util_format_description *format_desc,
                              struct lp_type* type)
 {
-   unsigned i;
-
    if (format_expands_to_float_soa(format_desc)) {
       /* just make this a uint with width of block */
       type->floating = false;
@@ -183,11 +181,7 @@ lp_mem_type_from_format_desc(const struct util_format_description *format_desc,
       return;
    }
 
-   for (i = 0; i < 4; i++) {
-      if (format_desc->channel[i].type != UTIL_FORMAT_TYPE_VOID)
-         break;
-   }
-   unsigned chan = i;
+   int chan = util_format_get_first_non_void_channel(format_desc->format);
 
    memset(type, 0, sizeof(struct lp_type));
    type->floating = format_desc->channel[chan].type == UTIL_FORMAT_TYPE_FLOAT;
@@ -1730,11 +1724,7 @@ lp_blend_type_from_format_desc(const struct util_format_description *format_desc
       return;
    }
 
-   unsigned i;
-   for (i = 0; i < 4; i++)
-      if (format_desc->channel[i].type != UTIL_FORMAT_TYPE_VOID)
-         break;
-   const unsigned chan = i;
+   const int chan = util_format_get_first_non_void_channel(format_desc->format);
 
    memset(type, 0, sizeof(struct lp_type));
    type->floating = format_desc->channel[chan].type == UTIL_FORMAT_TYPE_FLOAT;
@@ -3476,7 +3466,9 @@ generate_fragment(struct llvmpipe_context *lp,
 
    /* Loop over color outputs / color buffers to do blending */
    for (unsigned cbuf = 0; cbuf < key->nr_cbufs; cbuf++) {
-      if (key->cbuf_format[cbuf] != PIPE_FORMAT_NONE) {
+      if (key->cbuf_format[cbuf] != PIPE_FORMAT_NONE &&
+          (key->blend.rt[cbuf].blend_enable || key->blend.logicop_enable ||
+           find_output_by_semantic(&shader->info.base, TGSI_SEMANTIC_COLOR, cbuf) != -1)) {
          LLVMValueRef color_ptr;
          LLVMValueRef stride;
          LLVMValueRef sample_stride = NULL;
@@ -3981,7 +3973,12 @@ llvmpipe_create_fs_state(struct pipe_context *pipe,
       shader->base.tokens = tgsi_dup_tokens(templ->tokens);
    } else {
       shader->base.ir.nir = templ->ir.nir;
-      nir_tgsi_scan_shader(templ->ir.nir, &shader->info.base, true);
+
+      /* lower FRAG_RESULT_COLOR -> DATA[0-7] to correctly handle unused attachments */
+      nir_shader *nir = shader->base.ir.nir;
+      NIR_PASS_V(nir, nir_lower_fragcolor, nir->info.fs.color_is_dual_source ? 1 : 8);
+
+      nir_tgsi_scan_shader(nir, &shader->info.base, true);
    }
 
    shader->draw_data = draw_create_fragment_shader(llvmpipe->draw, templ);

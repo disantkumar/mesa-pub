@@ -29,7 +29,7 @@
 #define PIPE_VIDEO_STATE_H
 
 #include "pipe/p_defines.h"
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_state.h"
 #include "pipe/p_screen.h"
 #include "util/u_hash_table.h"
@@ -44,6 +44,7 @@ extern "C" {
 #define PIPE_DEFAULT_FRAME_RATE_DEN   1
 #define PIPE_DEFAULT_FRAME_RATE_NUM   30
 #define PIPE_H2645_EXTENDED_SAR       255
+#define PIPE_DEFAULT_DECODER_FEEDBACK_TIMEOUT_NS 1000000000
 
 /*
  * see table 6-12 in the spec
@@ -166,6 +167,8 @@ struct pipe_picture_desc
    uint32_t key_size;
    enum pipe_format input_format;
    enum pipe_format output_format;
+   /* A fence used on PIPE_VIDEO_ENTRYPOINT_DECODE to signal job completion */
+   struct pipe_fence_handle **fence;
 };
 
 struct pipe_quant_matrix
@@ -498,6 +501,8 @@ struct pipe_h264_enc_picture_desc
    struct pipe_h264_enc_motion_estimation motion_est;
    struct pipe_h264_enc_pic_control pic_ctrl;
    struct pipe_h264_enc_dbk_param dbk;
+
+   unsigned intra_idr_period;
 
    unsigned quant_i_frames;
    unsigned quant_p_frames;
@@ -862,12 +867,15 @@ struct pipe_vp9_picture_desc
    struct {
       uint16_t frame_width;
       uint16_t frame_height;
+      uint16_t prev_frame_width;
+      uint16_t prev_frame_height;
 
       struct {
          uint32_t  subsampling_x:1;
          uint32_t  subsampling_y:1;
          uint32_t  frame_type:1;
          uint32_t  show_frame:1;
+         uint32_t  prev_show_frame:1;
          uint32_t  error_resilient_mode:1;
          uint32_t  intra_only:1;
          uint32_t  allow_high_precision_mv:1;
@@ -932,7 +940,7 @@ struct pipe_av1_picture_desc
    struct pipe_picture_desc base;
 
    struct pipe_video_buffer *ref[16];
-
+   struct pipe_video_buffer *film_grain_target;
    struct {
       uint8_t profile;
       uint8_t order_hint_bits_minus_1;

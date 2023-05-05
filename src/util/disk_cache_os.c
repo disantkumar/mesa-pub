@@ -200,12 +200,24 @@ choose_lru_file_matching(const char *dir_path,
    if (dir == NULL)
       return NULL;
 
+   const int dir_fd = dirfd(dir);
+
    /* First count the number of files in the directory */
    unsigned total_file_count = 0;
    while ((dir_ent = readdir(dir)) != NULL) {
+#ifdef HAVE_DIRENT_D_TYPE
       if (dir_ent->d_type == DT_REG) { /* If the entry is a regular file */
          total_file_count++;
       }
+#else
+      struct stat st;
+
+      if (fstatat(dir_fd, dir_ent->d_name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+         if (S_ISREG(st.st_mode)) {
+            total_file_count++;
+         }
+      }
+#endif
    }
 
    /* Reset to the start of the directory */
@@ -225,7 +237,7 @@ choose_lru_file_matching(const char *dir_path,
          break;
 
       struct stat sb;
-      if (fstatat(dirfd(dir), dir_ent->d_name, &sb, 0) == 0) {
+      if (fstatat(dir_fd, dir_ent->d_name, &sb, 0) == 0) {
          struct lru_file *entry = NULL;
          if (!list_is_empty(lru_file_list))
             entry = list_first_entry(lru_file_list, struct lru_file, node);
@@ -1007,20 +1019,8 @@ disk_cache_mmap_cache_index(void *mem_ctx, struct disk_cache *cache,
    /* Force the index file to be the expected size. */
    size_t size = sizeof(*cache->size) + CACHE_INDEX_MAX_KEYS * CACHE_KEY_SIZE;
    if (sb.st_size != size) {
-#if HAVE_POSIX_FALLOCATE
-      /* posix_fallocate() ensures disk space is allocated otherwise it
-       * fails if there is not enough space on the disk.
-       */
-      if (posix_fallocate(fd, 0, size) != 0)
-         goto path_fail;
-#else
-      /* ftruncate() allocates disk space lazily. If the disk is full
-       * and it is unable to allocate disk space when accessed via
-       * mmap, it will crash with a SIGBUS.
-       */
       if (ftruncate(fd, size) == -1)
          goto path_fail;
-#endif
    }
 
    /* We map this shared so that other processes see updates that we

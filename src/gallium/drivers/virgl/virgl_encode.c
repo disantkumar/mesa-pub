@@ -504,26 +504,6 @@ int virgl_encode_rasterizer_state(struct virgl_context *ctx,
    return 0;
 }
 
-static enum virgl_shader_stage virgl_shader_stage_convert(enum pipe_shader_type type)
-{
-   switch (type) {
-   case PIPE_SHADER_VERTEX:
-      return VIRGL_SHADER_VERTEX;
-   case PIPE_SHADER_TESS_CTRL:
-      return VIRGL_SHADER_TESS_CTRL;
-   case PIPE_SHADER_TESS_EVAL:
-      return VIRGL_SHADER_TESS_EVAL;
-   case PIPE_SHADER_GEOMETRY:
-      return VIRGL_SHADER_GEOMETRY;
-   case PIPE_SHADER_FRAGMENT:
-      return VIRGL_SHADER_FRAGMENT;
-   case PIPE_SHADER_COMPUTE:
-      return VIRGL_SHADER_COMPUTE;
-   default:
-      unreachable("virgl: unknown shader stage.\n");
-   }
-}
-
 static void virgl_emit_shader_header(struct virgl_context *ctx,
                                      uint32_t handle, uint32_t len,
                                      uint32_t type, uint32_t offlen,
@@ -1640,7 +1620,10 @@ void virgl_encode_emit_string_marker(struct virgl_context *ctx,
 void virgl_encode_create_video_codec(struct virgl_context *ctx,
                                      struct virgl_video_codec *cdc)
 {
-   virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_CODEC, 0, 7));
+   struct virgl_screen *rs = virgl_screen(ctx->base.screen);
+   uint32_t len = rs->caps.caps.v2.host_feature_check_version >= 14 ? 8 : 7;
+
+   virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_CODEC, 0, len));
    virgl_encoder_write_dword(ctx->cbuf, cdc->handle);
    virgl_encoder_write_dword(ctx->cbuf, cdc->base.profile);
    virgl_encoder_write_dword(ctx->cbuf, cdc->base.entrypoint);
@@ -1648,6 +1631,8 @@ void virgl_encode_create_video_codec(struct virgl_context *ctx,
    virgl_encoder_write_dword(ctx->cbuf, cdc->base.level);
    virgl_encoder_write_dword(ctx->cbuf, cdc->base.width);
    virgl_encoder_write_dword(ctx->cbuf, cdc->base.height);
+   if (rs->caps.caps.v2.host_feature_check_version >= 14)
+       virgl_encoder_write_dword(ctx->cbuf, cdc->base.max_references);
 }
 
 void virgl_encode_destroy_video_codec(struct virgl_context *ctx,
@@ -1699,6 +1684,19 @@ void virgl_encode_decode_bitstream(struct virgl_context *ctx,
    virgl_encoder_write_res(ctx, virgl_resource(cdc->desc_buffers[cdc->cur_buffer]));
    virgl_encoder_write_res(ctx, virgl_resource(cdc->bs_buffers[cdc->cur_buffer]));
    virgl_encoder_write_dword(ctx->cbuf, cdc->bs_size);
+}
+
+void virgl_encode_encode_bitstream(struct virgl_context *ctx,
+                                   struct virgl_video_codec *cdc,
+                                   struct virgl_video_buffer *buf,
+                                   struct virgl_resource *tgt)
+{
+   virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
+   virgl_encoder_write_dword(ctx->cbuf, cdc->handle);
+   virgl_encoder_write_dword(ctx->cbuf, buf->handle);
+   virgl_encoder_write_res(ctx, tgt);
+   virgl_encoder_write_res(ctx, virgl_resource(cdc->desc_buffers[cdc->cur_buffer]));
+   virgl_encoder_write_res(ctx, virgl_resource(cdc->feed_buffers[cdc->cur_buffer]));
 }
 
 void virgl_encode_end_frame(struct virgl_context *ctx,

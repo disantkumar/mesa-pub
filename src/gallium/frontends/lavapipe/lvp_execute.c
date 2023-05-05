@@ -39,6 +39,7 @@
 #include "util/u_sampler.h"
 #include "util/u_box.h"
 #include "util/u_inlines.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_prim.h"
 #include "util/u_prim_restart.h"
@@ -312,6 +313,9 @@ update_inline_shader_state(struct rendering_state *state, enum pipe_shader_type 
    if (constbuf_dirty) {
       struct pipe_box box = {0};
       u_foreach_bit(slot, pipeline->inlines[stage].can_inline) {
+         /* this is already inlined above */
+         if (slot == 0)
+            continue;
          unsigned count = pipeline->inlines[stage].count[slot];
          struct pipe_constant_buffer *cbuf = &state->const_buffer[sh][slot - 1];
          struct pipe_resource *pres = cbuf->buffer;
@@ -743,10 +747,13 @@ static void handle_graphics_pipeline(struct vk_cmd_queue_entry *cmd,
       if (BITSET_TEST(ps->dynamic, MESA_VK_DYNAMIC_RS_DEPTH_CLIP_ENABLE)) {
          state->depth_clamp_sets_clip = false;
       } else {
-         state->rs_state.depth_clip_near = state->rs_state.depth_clip_far =
-            vk_rasterization_state_depth_clip_enable(ps->rs);
          state->depth_clamp_sets_clip =
             ps->rs->depth_clip_enable == VK_MESA_DEPTH_CLIP_ENABLE_NOT_CLAMP;
+         if (state->depth_clamp_sets_clip)
+            state->rs_state.depth_clip_near = state->rs_state.depth_clip_far = !state->rs_state.depth_clamp;
+         else
+            state->rs_state.depth_clip_near = state->rs_state.depth_clip_far =
+               vk_rasterization_state_depth_clip_enable(ps->rs);
       }
 
       if (!BITSET_TEST(ps->dynamic, MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE))
@@ -1232,8 +1239,6 @@ static void handle_descriptor(struct rendering_state *state,
       break;
    }
    case VK_DESCRIPTOR_TYPE_SAMPLER:
-      if (!descriptor->sampler)
-         return;
       fill_sampler_stage(state, dyn_info, stage, p_stage, array_idx, descriptor, binding);
       break;
    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
@@ -1851,6 +1856,8 @@ static void handle_begin_rendering(struct vk_cmd_queue_entry *cmd,
             state->color_att[i].imgv = create_multisample_surface(state, imgv, state->forced_sample_count,
                                                                   att_needs_replicate(state, imgv, state->color_att[i].load_op));
          state->framebuffer.cbufs[i] = state->color_att[i].imgv->surface;
+         assert(state->render_area.offset.x + state->render_area.extent.width <= state->framebuffer.cbufs[i]->texture->width0);
+         assert(state->render_area.offset.y + state->render_area.extent.height <= state->framebuffer.cbufs[i]->texture->height0);
       } else {
          state->framebuffer.cbufs[i] = NULL;
       }
@@ -1882,6 +1889,8 @@ static void handle_begin_rendering(struct vk_cmd_queue_entry *cmd,
                                                      att_needs_replicate(state, imgv, load_op));
       }
       state->framebuffer.zsbuf = state->ds_imgv->surface;
+      assert(state->render_area.offset.x + state->render_area.extent.width <= state->framebuffer.zsbuf->texture->width0);
+      assert(state->render_area.offset.y + state->render_area.extent.height <= state->framebuffer.zsbuf->texture->height0);
    } else {
       state->ds_imgv = NULL;
       state->framebuffer.zsbuf = NULL;
@@ -2535,7 +2544,7 @@ static void handle_draw_indexed(struct vk_cmd_queue_entry *cmd,
 
    state->info.index_bounds_valid = false;
    state->info.min_index = 0;
-   state->info.max_index = ~0;
+   state->info.max_index = ~0U;
    state->info.index_size = state->index_size;
    state->info.index.resource = state->index_buffer;
    state->info.start_instance = cmd->u.draw_indexed.first_instance;
@@ -2547,7 +2556,8 @@ static void handle_draw_indexed(struct vk_cmd_queue_entry *cmd,
    draw.count = cmd->u.draw_indexed.index_count;
    draw.index_bias = cmd->u.draw_indexed.vertex_offset;
    /* TODO: avoid calculating multiple times if cmdbuf is submitted again */
-   draw.start = (state->index_offset / state->index_size) + cmd->u.draw_indexed.first_index;
+   draw.start = util_clamped_uadd(state->index_offset / state->index_size,
+                                  cmd->u.draw_indexed.first_index);
 
    state->info.index_bias_varies = !cmd->u.draw_indexed.vertex_offset;
    state->pctx->set_patch_vertices(state->pctx, state->patch_vertices);
@@ -2562,7 +2572,7 @@ static void handle_draw_multi_indexed(struct vk_cmd_queue_entry *cmd,
 
    state->info.index_bounds_valid = false;
    state->info.min_index = 0;
-   state->info.max_index = ~0;
+   state->info.max_index = ~0U;
    state->info.index_size = state->index_size;
    state->info.index.resource = state->index_buffer;
    state->info.start_instance = cmd->u.draw_multi_indexed_ext.first_instance;
@@ -2583,7 +2593,8 @@ static void handle_draw_multi_indexed(struct vk_cmd_queue_entry *cmd,
 
    /* TODO: avoid calculating multiple times if cmdbuf is submitted again */
    for (unsigned i = 0; i < cmd->u.draw_multi_indexed_ext.draw_count; i++)
-      draws[i].start = (state->index_offset / state->index_size) + draws[i].start;
+      draws[i].start = util_clamped_uadd(state->index_offset / state->index_size,
+                                         draws[i].start);
 
    state->info.index_bias_varies = !cmd->u.draw_multi_indexed_ext.vertex_offset;
    state->pctx->set_patch_vertices(state->pctx, state->patch_vertices);
@@ -2602,7 +2613,7 @@ static void handle_draw_indirect(struct vk_cmd_queue_entry *cmd,
       state->info.index_bounds_valid = false;
       state->info.index_size = state->index_size;
       state->info.index.resource = state->index_buffer;
-      state->info.max_index = ~0;
+      state->info.max_index = ~0U;
       if (state->info.primitive_restart)
          state->info.restart_index = util_prim_restart_index_from_size(state->info.index_size);
    } else
@@ -2986,7 +2997,7 @@ static void handle_clear_ds_image(struct vk_cmd_queue_entry *cmd,
                                           cmd->u.clear_depth_stencil_image.depth_stencil->depth,
                                           cmd->u.clear_depth_stencil_image.depth_stencil->stencil,
                                           0, 0,
-                                          width, height, true);
+                                          width, height, false);
          state->pctx->surface_destroy(state->pctx, surf);
       }
    }
@@ -3105,7 +3116,7 @@ static void handle_draw_indirect_count(struct vk_cmd_queue_entry *cmd,
       state->info.index_bounds_valid = false;
       state->info.index_size = state->index_size;
       state->info.index.resource = state->index_buffer;
-      state->info.max_index = ~0;
+      state->info.max_index = ~0U;
    } else
       state->info.index_size = 0;
    state->indirect_info.offset = cmd->u.draw_indirect_count.offset;

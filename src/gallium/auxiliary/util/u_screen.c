@@ -423,7 +423,7 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
       return 0;
 
    case PIPE_CAP_DMABUF:
-#if defined(PIPE_OS_LINUX) || defined(PIPE_OS_BSD)
+#if DETECT_OS_LINUX || DETECT_OS_BSD
       return 1;
 #else
       return 0;
@@ -497,6 +497,7 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_QUERY_SPARSE_TEXTURE_RESIDENCY:
    case PIPE_CAP_CLAMP_SPARSE_TEXTURE_LOD:
    case PIPE_CAP_TIMELINE_SEMAPHORE_IMPORT:
+   case PIPE_CAP_ALLOW_GLTHREAD_BUFFER_SUBDATA_OPT:
       return 0;
 
    case PIPE_CAP_MAX_CONSTANT_BUFFER_SIZE_UINT:
@@ -522,7 +523,7 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_QUERY_TIMESTAMP_BITS:
       return 64;
 
-   case PIPE_CAP_ASTC_VOID_EXTENTS_NEED_DENORM_FLUSH:
+   case PIPE_CAP_VALIDATE_ALL_DIRTY_STATES:
       return 0;
 
    default:

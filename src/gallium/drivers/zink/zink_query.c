@@ -9,7 +9,7 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 
-#if defined(PIPE_ARCH_X86_64) || defined(PIPE_ARCH_PPC_64) || defined(PIPE_ARCH_AARCH64) || defined(PIPE_ARCH_MIPS64)
+#if DETECT_ARCH_X86_64 || DETECT_ARCH_PPC_64 || DETECT_ARCH_AARCH64 || DETECT_ARCH_MIPS64
 #define NUM_QUERIES 5000
 #else
 #define NUM_QUERIES 500
@@ -1070,8 +1070,8 @@ zink_resume_queries(struct zink_context *ctx, struct zink_batch *batch)
 {
    struct zink_query *query, *next;
    LIST_FOR_EACH_ENTRY_SAFE(query, next, &ctx->suspended_queries, active_list) {
-      begin_query(ctx, batch, query);
       list_delinit(&query->active_list);
+      begin_query(ctx, batch, query);
    }
 }
 

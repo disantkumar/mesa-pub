@@ -114,7 +114,7 @@ static void si_emit_cb_render_state(struct si_context *sctx)
       if (sctx->gfx_level >= GFX11) {
          radeon_opt_set_context_reg(sctx, R_028424_CB_FDCC_CONTROL, SI_TRACKED_CB_DCC_CONTROL,
                                     S_028424_SAMPLE_MASK_TRACKER_DISABLE(oc_disable) |
-                                    S_028424_SAMPLE_MASK_TRACKER_WATERMARK(15));
+                                    S_028424_SAMPLE_MASK_TRACKER_WATERMARK(0));
       } else {
          radeon_opt_set_context_reg(
             sctx, R_028424_CB_DCC_CONTROL, SI_TRACKED_CB_DCC_CONTROL,
@@ -193,7 +193,8 @@ static void si_emit_cb_render_state(struct si_context *sctx)
                 spi_format == V_028714_SPI_SHADER_UINT16_ABGR ||
                 spi_format == V_028714_SPI_SHADER_SINT16_ABGR) {
                sx_ps_downconvert |= V_028754_SX_RT_EXPORT_8_8_8_8 << (i * 4);
-               sx_blend_opt_epsilon |= V_028758_8BIT_FORMAT << (i * 4);
+               if (G_028C70_NUMBER_TYPE(surf->cb_color_info) != V_028C70_NUMBER_SRGB)
+                  sx_blend_opt_epsilon |= V_028758_8BIT_FORMAT << (i * 4);
             }
             break;
 
@@ -2522,12 +2523,8 @@ static void si_initialize_color_surface(struct si_context *sctx, struct si_surfa
    unsigned blend_clamp = 0, blend_bypass = 0;
 
    desc = util_format_description(surf->base.format);
-   for (firstchan = 0; firstchan < 4; firstchan++) {
-      if (desc->channel[firstchan].type != UTIL_FORMAT_TYPE_VOID) {
-         break;
-      }
-   }
-   if (firstchan == 4 || desc->channel[firstchan].type == UTIL_FORMAT_TYPE_FLOAT) {
+   firstchan = util_format_get_first_non_void_channel(surf->base.format);
+   if (firstchan == -1 || desc->channel[firstchan].type == UTIL_FORMAT_TYPE_FLOAT) {
       ntype = V_028C70_NUMBER_FLOAT;
    } else {
       ntype = V_028C70_NUMBER_UNORM;
@@ -3302,6 +3299,11 @@ static void si_emit_framebuffer_state(struct si_context *sctx)
                            S_028C78_DISABLE_CONSTANT_ENCODE_REG(1) |
                            S_028C78_FDCC_ENABLE(vi_dcc_enabled(tex, cb->base.u.tex.level));
 
+         if (sctx->family >= CHIP_GFX1103_R2) {
+            cb_fdcc_control |= S_028C78_ENABLE_MAX_COMP_FRAG_OVERRIDE(1) |
+                               S_028C78_MAX_COMP_FRAGS(cb->base.texture->nr_samples >= 4);
+         }
+
          radeon_set_context_reg_seq(R_028C6C_CB_COLOR0_VIEW + i * 0x3C, 4);
          radeon_emit(cb->cb_color_view);                      /* CB_COLOR0_VIEW */
          radeon_emit(cb_color_info);                          /* CB_COLOR0_INFO */
@@ -3808,7 +3810,8 @@ static void si_emit_msaa_config(struct si_context *sctx)
    unsigned sc_line_cntl = 0;
    unsigned sc_aa_config = 0;
 
-   if (coverage_samples > 1 && rs->multisample_enable) {
+   if (coverage_samples > 1 && (rs->multisample_enable ||
+                                sctx->smoothing_enabled)) {
       /* distance from the pixel center, indexed by log2(nr_samples) */
       static unsigned max_dist[] = {
          0, /* unused */
@@ -3830,7 +3833,8 @@ static void si_emit_msaa_config(struct si_context *sctx)
                      S_028BE0_COVERED_CENTROID_IS_CENTER(sctx->gfx_level >= GFX10_3);
    }
 
-   if (sctx->framebuffer.nr_samples > 1) {
+   if (sctx->framebuffer.nr_samples > 1 ||
+       sctx->smoothing_enabled) {
       if (sctx->framebuffer.state.zsbuf) {
          z_samples = sctx->framebuffer.state.zsbuf->texture->nr_samples;
          z_samples = MAX2(1, z_samples);
@@ -4875,6 +4879,15 @@ static void *si_create_vertex_elements(struct pipe_context *ctx, unsigned count,
                                        const struct pipe_vertex_element *elements)
 {
    struct si_screen *sscreen = (struct si_screen *)ctx->screen;
+
+   if (sscreen->debug_flags & DBG(VERTEX_ELEMENTS)) {
+      for (int i = 0; i < count; ++i) {
+         const struct pipe_vertex_element *e = elements + i;
+         fprintf(stderr, "elements[%d]: offset %2d, buffer_index %d, dual_slot %d, format %3d, divisor %u\n",
+                i, e->src_offset, e->vertex_buffer_index, e->dual_slot, e->src_format, e->instance_divisor);
+      }
+   }
+
    struct si_vertex_elements *v = CALLOC_STRUCT(si_vertex_elements);
    struct si_fast_udiv_info32 divisor_factors[SI_MAX_ATTRIBS] = {};
    STATIC_ASSERT(sizeof(struct si_fast_udiv_info32) == 16);
@@ -5585,9 +5598,9 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
       si_pm4_set_reg(pm4, R_028AC8_DB_PRELOAD_CONTROL, 0x0);
       si_pm4_set_reg(pm4, R_02800C_DB_RENDER_OVERRIDE, 0);
       si_pm4_set_reg(pm4, R_028A8C_VGT_PRIMITIVEID_RESET, 0x0);
-      si_pm4_set_reg(pm4, R_028B98_VGT_STRMOUT_BUFFER_CONFIG, 0x0);
 
       if (sctx->gfx_level < GFX11) {
+         si_pm4_set_reg(pm4, R_028B98_VGT_STRMOUT_BUFFER_CONFIG, 0x0);
          si_pm4_set_reg(pm4, R_028A5C_VGT_GS_PER_VS, 0x2);
          si_pm4_set_reg(pm4, R_028AB8_VGT_VTX_CNT_EN, 0x0);
       }

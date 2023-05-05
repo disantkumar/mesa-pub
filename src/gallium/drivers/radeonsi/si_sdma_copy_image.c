@@ -76,13 +76,8 @@ bool si_translate_format_to_hw(struct si_context *sctx, enum pipe_format format,
    const struct util_format_description *desc = util_format_description(format);
    *hw_fmt = si_translate_colorformat(sctx->gfx_level, format);
 
-   int firstchan;
-   for (firstchan = 0; firstchan < 4; firstchan++) {
-      if (desc->channel[firstchan].type != UTIL_FORMAT_TYPE_VOID) {
-         break;
-      }
-   }
-   if (firstchan == 4 || desc->channel[firstchan].type == UTIL_FORMAT_TYPE_FLOAT) {
+   int firstchan = util_format_get_first_non_void_channel(format);
+   if (firstchan == -1 || desc->channel[firstchan].type == UTIL_FORMAT_TYPE_FLOAT) {
       *hw_type = V_028C70_NUMBER_FLOAT;
    } else {
       *hw_type = V_028C70_NUMBER_UNORM;
@@ -139,7 +134,7 @@ bool si_sdma_v4_v5_copy_texture(struct si_context *sctx, struct si_texture *sdst
       radeon_emit(CIK_SDMA_PACKET(CIK_SDMA_OPCODE_COPY,
                                   CIK_SDMA_COPY_SUB_OPCODE_LINEAR,
                                   (tmz ? 4 : 0)));
-      radeon_emit(bytes);
+      radeon_emit(bytes - 1);
       radeon_emit(0);
       radeon_emit(src_address);
       radeon_emit(src_address >> 32);

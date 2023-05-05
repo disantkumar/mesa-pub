@@ -153,7 +153,7 @@ radv_hash_shaders(unsigned char *hash, const struct radv_pipeline_stage *stages,
 
 void
 radv_hash_rt_shaders(unsigned char *hash, const VkRayTracingPipelineCreateInfoKHR *pCreateInfo,
-                     uint32_t flags)
+                     const struct radv_pipeline_key *key, uint32_t flags)
 {
    RADV_FROM_HANDLE(radv_pipeline_layout, layout, pCreateInfo->layout);
    struct mesa_sha1 ctx;
@@ -161,6 +161,8 @@ radv_hash_rt_shaders(unsigned char *hash, const VkRayTracingPipelineCreateInfoKH
    _mesa_sha1_init(&ctx);
    if (layout)
       _mesa_sha1_update(&ctx, layout->sha1, sizeof(layout->sha1));
+
+   _mesa_sha1_update(&ctx, key, sizeof(*key));
 
    for (uint32_t i = 0; i < pCreateInfo->stageCount; ++i) {
       RADV_FROM_HANDLE(vk_shader_module, module, pCreateInfo->pStages[i].module);
@@ -204,7 +206,11 @@ radv_hash_rt_shaders(unsigned char *hash, const VkRayTracingPipelineCreateInfoKH
 
    const uint32_t pipeline_flags =
       pCreateInfo->flags & (VK_PIPELINE_CREATE_RAY_TRACING_SKIP_TRIANGLES_BIT_KHR |
-                            VK_PIPELINE_CREATE_RAY_TRACING_SKIP_AABBS_BIT_KHR);
+                            VK_PIPELINE_CREATE_RAY_TRACING_SKIP_AABBS_BIT_KHR |
+                            VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_ANY_HIT_SHADERS_BIT_KHR |
+                            VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_CLOSEST_HIT_SHADERS_BIT_KHR |
+                            VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_MISS_SHADERS_BIT_KHR |
+                            VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_INTERSECTION_SHADERS_BIT_KHR);
    _mesa_sha1_update(&ctx, &pipeline_flags, 4);
 
    _mesa_sha1_update(&ctx, &flags, 4);

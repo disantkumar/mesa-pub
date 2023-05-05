@@ -118,7 +118,7 @@ tc_clear_driver_thread(struct threaded_context *tc)
 
 /* ensure the batch's array of renderpass data is large enough for the current index */
 static void
-tc_batch_renderpass_infos_resize(struct tc_batch *batch)
+tc_batch_renderpass_infos_resize(struct threaded_context *tc, struct tc_batch *batch)
 {
    unsigned size = batch->renderpass_infos.capacity;
    unsigned cur_num = batch->renderpass_info_idx;
@@ -126,6 +126,10 @@ tc_batch_renderpass_infos_resize(struct tc_batch *batch)
    if (size / sizeof(struct tc_renderpass_info) > cur_num)
       return;
 
+   struct tc_renderpass_info *infos = batch->renderpass_infos.data;
+   unsigned old_idx = batch->renderpass_info_idx - 1;
+   bool redo = tc->renderpass_info_recording &&
+               tc->renderpass_info_recording == &infos[old_idx];
    if (!util_dynarray_resize(&batch->renderpass_infos, struct tc_renderpass_info, cur_num + 10))
       mesa_loge("tc: memory alloc fail!");
 
@@ -136,9 +140,12 @@ tc_batch_renderpass_infos_resize(struct tc_batch *batch)
       unsigned start = size / sizeof(struct tc_renderpass_info);
       unsigned count = (batch->renderpass_infos.capacity - size) /
                        sizeof(struct tc_renderpass_info);
-      struct tc_renderpass_info *infos = batch->renderpass_infos.data;
+      infos = batch->renderpass_infos.data;
       for (unsigned i = 0; i < count; i++)
          util_queue_fence_init(&infos[start + i].ready);
+      /* re-set current recording info on resize */
+      if (redo)
+         tc->renderpass_info_recording = &infos[old_idx];
    }
 }
 
@@ -164,7 +171,7 @@ tc_batch_increment_renderpass_info(struct threaded_context *tc, bool full_copy)
    tc_signal_renderpass_info_ready(tc);
    /* increment rp info and initialize it */
    batch->renderpass_info_idx++;
-   tc_batch_renderpass_infos_resize(batch);
+   tc_batch_renderpass_infos_resize(tc, batch);
    tc_info = batch->renderpass_infos.data;
 
    if (full_copy) {
@@ -4340,8 +4347,13 @@ tc_clear(struct pipe_context *_pipe, unsigned buffers, const struct pipe_scissor
       if (info) {
          /* full clears use a different load operation, but are only valid if draws haven't occurred yet */
          info->cbuf_clear |= (buffers >> 2) & ~info->cbuf_load;
-         if (buffers & PIPE_CLEAR_DEPTHSTENCIL && !info->zsbuf_load && !info->zsbuf_clear_partial)
-            info->zsbuf_clear = true;
+         if (buffers & PIPE_CLEAR_DEPTHSTENCIL) {
+            if (!info->zsbuf_load && !info->zsbuf_clear_partial)
+               info->zsbuf_clear = true;
+            else if (!info->zsbuf_clear)
+               /* this is a clear that occurred after a draw: flag as partial to ensure it isn't ignored */
+               info->zsbuf_clear_partial = true;
+         }
       }
    }
    p->scissor_state_set = !!scissor_state;
@@ -4858,7 +4870,7 @@ threaded_context_create(struct pipe_context *pipe,
       tc->batch_slots[i].renderpass_info_idx = -1;
       if (tc->options.parse_renderpass_info) {
          util_dynarray_init(&tc->batch_slots[i].renderpass_infos, NULL);
-         tc_batch_renderpass_infos_resize(&tc->batch_slots[i]);
+         tc_batch_renderpass_infos_resize(tc, &tc->batch_slots[i]);
       }
    }
    for (unsigned i = 0; i < TC_MAX_BUFFER_LISTS; i++)

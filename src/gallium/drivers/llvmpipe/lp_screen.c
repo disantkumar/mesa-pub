@@ -103,7 +103,7 @@ static const struct debug_named_value lp_perf_flags[] = {
 static const char *
 llvmpipe_get_vendor(struct pipe_screen *screen)
 {
-   return "Mesa/X.org";
+   return "Mesa";
 }
 
 
@@ -564,7 +564,7 @@ llvmpipe_get_compute_param(struct pipe_screen *_screen,
    case PIPE_COMPUTE_CAP_ADDRESS_BITS:
       if (ret) {
          uint32_t *address_bits = ret;
-         *address_bits = 64;
+         *address_bits = sizeof(void*) * 8;
       }
       return sizeof(uint32_t);
    }
@@ -1089,9 +1089,6 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->use_tgsi = (LP_DEBUG & DEBUG_TGSI_IR);
    screen->num_threads = util_get_cpu_caps()->nr_cpus > 1
       ? util_get_cpu_caps()->nr_cpus : 0;
-#ifdef EMBEDDED_DEVICE
-   screen->num_threads = MIN2(screen->num_threads, 2);
-#endif
    screen->num_threads = debug_get_num_option("LP_NUM_THREADS",
                                               screen->num_threads);
    screen->num_threads = MIN2(screen->num_threads, LP_MAX_THREADS);

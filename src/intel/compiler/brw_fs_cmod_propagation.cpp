@@ -225,7 +225,7 @@ static bool
 opt_cmod_propagation_local(const intel_device_info *devinfo, bblock_t *block)
 {
    bool progress = false;
-   int ip = block->end_ip + 1;
+   UNUSED int ip = block->end_ip + 1;
 
    foreach_inst_in_block_reverse_safe(fs_inst, inst, block) {
       ip--;
@@ -301,6 +301,10 @@ opt_cmod_propagation_local(const intel_device_info *devinfo, bblock_t *block)
             if (scan_inst->is_partial_write() ||
                 scan_inst->dst.offset != inst->src[0].offset ||
                 scan_inst->exec_size != inst->exec_size)
+               break;
+
+            /* If the write mask is different we can't propagate. */
+            if (scan_inst->force_writemask_all != inst->force_writemask_all)
                break;
 
             /* CMP's result is the same regardless of dest type. */

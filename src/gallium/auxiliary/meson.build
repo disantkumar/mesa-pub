@@ -112,10 +112,11 @@ files_libgallium = files(
   'hud/hud_driver_query.c',
   'hud/hud_fps.c',
   'hud/hud_private.h',
-  'os/os_mman.h',
-  'os/os_process.c',
+  'indices/u_indices.h',
+  'indices/u_indices_priv.h',
+  'indices/u_primconvert.c',
+  'indices/u_primconvert.h',
   'os/os_process.h',
-  'os/os_thread.h',
   'pipebuffer/pb_buffer_fenced.c',
   'pipebuffer/pb_buffer_fenced.h',
   'pipebuffer/pb_buffer.h',
@@ -213,8 +214,6 @@ files_libgallium = files(
   'util/u_debug_flush.h',
   'util/u_debug_image.c',
   'util/u_debug_image.h',
-  'util/u_dirty_flags.h',
-  'util/u_dirty_surfaces.h',
   'util/u_draw.c',
   'util/u_draw.h',
   'util/u_draw_quad.c',
@@ -236,8 +235,6 @@ files_libgallium = files(
   'util/u_index_modify.c',
   'util/u_index_modify.h',
   'util/u_inlines.h',
-  'util/u_linear.c',
-  'util/u_linear.h',
   'util/u_live_shader_cache.c',
   'util/u_live_shader_cache.h',
   'util/u_log.c',
@@ -474,7 +471,7 @@ files_libgallium += custom_target(
   output: 'u_tracepoints.c',
   command: [
     prog_python, '@INPUT@',
-    '-p', join_paths(meson.source_root(), 'src/util/perf/'),
+    '-p', join_paths(dir_source_root, 'src/util/perf/'),
     '-C', '@OUTPUT@',
   ],
   depend_files: u_trace_py,
@@ -486,7 +483,7 @@ files_u_tracepoints = custom_target(
   output: 'u_tracepoints.h',
   command: [
     prog_python, '@INPUT@',
-    '-p', join_paths(meson.source_root(), 'src/util/perf/'),
+    '-p', join_paths(dir_source_root, 'src/util/perf/'),
     '-H', '@OUTPUT@',
   ],
   depend_files: u_trace_py,
@@ -498,10 +495,24 @@ idep_u_tracepoints = declare_dependency(
   sources: files_u_tracepoints,
 )
 
+u_indices_gen_c = custom_target(
+  'u_indices_gen.c',
+  input : 'indices/u_indices_gen.py',
+  output : 'u_indices_gen.c',
+  command : [prog_python, '@INPUT@', '@OUTPUT@'],
+)
+
+u_unfilled_gen_c = custom_target(
+  'u_unfilled_gen.c',
+  input : 'indices/u_unfilled_gen.py',
+  output : 'u_unfilled_gen.c',
+  command : [prog_python, '@INPUT@', '@OUTPUT@'],
+)
+
 libgallium_extra_c_args = []
 libgallium = static_library(
   'gallium',
-  [files_libgallium],
+  [files_libgallium, u_indices_gen_c, u_unfilled_gen_c],
   include_directories : [
     inc_loader, inc_gallium, inc_src, inc_include, include_directories('util')
   ],
@@ -514,6 +525,20 @@ libgallium = static_library(
   ],
   build_by_default : false
 )
+
+if with_tests
+  test('gallium-aux',
+    executable(
+      'gallium-aux',
+      'util/u_surface_test.cpp',
+      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+      link_with: libgallium,
+      dependencies : [idep_gtest],
+    ),
+    suite: 'gallium',
+    protocol : gtest_test_protocol,
+  )
+endif
 
 libgalliumvl_stub = static_library(
   'galliumvl_stub',

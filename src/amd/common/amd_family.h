@@ -114,8 +114,8 @@ enum radeon_family
    CHIP_RAVEN,          /* Ryzen 2000, 3000 */
    CHIP_RAVEN2,         /* Ryzen 2200U, 3200U */
    CHIP_RENOIR,         /* Ryzen 4000, 5000 */
-   CHIP_ARCTURUS,       /* MI100 */
-   CHIP_ALDEBARAN,      /* MI200 */
+   CHIP_MI100,
+   CHIP_MI200,
    /* GFX10.1 (RDNA 1) */
    CHIP_NAVI10,         /* Radeon 5600, 5700 */
    CHIP_NAVI12,         /* Radeon Pro 5600M */
@@ -131,7 +131,8 @@ enum radeon_family
    CHIP_GFX1100,
    CHIP_GFX1101,
    CHIP_GFX1102,
-   CHIP_GFX1103,
+   CHIP_GFX1103_R1,
+   CHIP_GFX1103_R2,
    CHIP_LAST,
 };
 
@@ -183,6 +184,8 @@ enum amd_vram_type {
    AMD_VRAM_TYPE_DDR4,
    AMD_VRAM_TYPE_GDDR6,
    AMD_VRAM_TYPE_DDR5,
+   AMD_VRAM_TYPE_LPDDR4,
+   AMD_VRAM_TYPE_LPDDR5,
 };
 
 const char *ac_get_family_name(enum radeon_family family);

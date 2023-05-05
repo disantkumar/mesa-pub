@@ -271,6 +271,12 @@ zink_batch_state_destroy(struct zink_screen *screen, struct zink_batch_state *bs
    util_dynarray_fini(&bs->acquires);
    util_dynarray_fini(&bs->unref_semaphores);
    util_dynarray_fini(&bs->acquire_flags);
+   unsigned num_mfences = util_dynarray_num_elements(&bs->fence.mfences, void *);
+   struct zink_tc_fence **mfence = bs->fence.mfences.data;
+   for (unsigned i = 0; i < num_mfences; i++) {
+      mfence[i]->fence = NULL;
+   }
+   util_dynarray_fini(&bs->fence.mfences);
    zink_batch_descriptor_deinit(screen, bs);
    ralloc_free(bs);
 }
@@ -331,6 +337,7 @@ create_batch_state(struct zink_context *ctx)
    util_dynarray_init(&bs->bindless_releases[0], NULL);
    util_dynarray_init(&bs->bindless_releases[1], NULL);
    util_dynarray_init(&bs->swapchain_obj, NULL);
+   util_dynarray_init(&bs->fence.mfences, NULL);
 
    cnd_init(&bs->usage.flush);
    mtx_init(&bs->usage.mtx, mtx_plain);
@@ -414,6 +421,7 @@ zink_reset_batch(struct zink_context *ctx, struct zink_batch *batch)
 void
 zink_start_batch(struct zink_context *ctx, struct zink_batch *batch)
 {
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
    zink_reset_batch(ctx, batch);
 
    batch->state->usage.unflushed = true;
@@ -438,6 +446,18 @@ zink_start_batch(struct zink_context *ctx, struct zink_batch *batch)
 
    if (!ctx->queries_disabled)
       zink_resume_queries(ctx, batch);
+
+   /* descriptor buffers must always be bound at the start of a batch */
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB && !(ctx->flags & ZINK_CONTEXT_COPY_ONLY)) {
+      unsigned count = screen->compact_descriptors ? 3 : 5;
+      VkDescriptorBufferBindingInfoEXT infos[ZINK_DESCRIPTOR_NON_BINDLESS_TYPES] = {0};
+      for (unsigned i = 0; i < count; i++) {
+         infos[i].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+         infos[i].address = batch->state->dd.db[i]->obj->bda;
+         infos[i].usage = batch->state->dd.db[i]->obj->vkusage;
+      }
+      VKSCR(CmdBindDescriptorBuffersEXT)(batch->state->cmdbuf, count, infos);
+   }
 }
 
 /* common operations to run post submit; split out for clarity */

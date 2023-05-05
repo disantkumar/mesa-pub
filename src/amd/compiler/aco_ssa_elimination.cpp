@@ -356,20 +356,52 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
    if (exec_val->definitions.size() > 1)
       return;
 
+   const bool vcmpx_exec_only = ctx.program->gfx_level >= GFX10;
+
    /* Check if a suitable v_cmpx opcode exists. */
    const aco_opcode v_cmpx_op =
       exec_val->isVOPC() ? get_vcmpx(exec_val->opcode) : aco_opcode::num_opcodes;
    const bool vopc = v_cmpx_op != aco_opcode::num_opcodes;
 
+   /* V_CMPX+DPP returns 0 with reads from disabled lanes, unlike V_CMP+DPP (RDNA3 ISA doc, 7.7) */
+   if (vopc && exec_val->isDPP())
+      return;
+
    /* If s_and_saveexec is used, we'll need to insert a new instruction to save the old exec. */
-   const bool save_original_exec = exec_copy->opcode == and_saveexec;
+   bool save_original_exec = exec_copy->opcode == and_saveexec;
+
+   const Definition exec_wr_def = exec_val->definitions[0];
+   const Definition exec_copy_def = exec_copy->definitions[0];
+
+   if (save_original_exec) {
+      for (int i = exec_copy_idx - 1; i >= 0; i--) {
+         const aco_ptr<Instruction>& instr = block.instructions[i];
+         if (instr->opcode == aco_opcode::p_parallelcopy &&
+             instr->definitions[0].physReg() == exec &&
+             instr->definitions[0].regClass() == ctx.program->lane_mask &&
+             instr->operands[0].physReg() == exec_copy_def.physReg()) {
+            /* The register that we should save exec to already contains the same value as exec. */
+            save_original_exec = false;
+            break;
+         }
+         /* exec_copy_def is clobbered or exec written before we found a copy. */
+         if ((i != exec_val_idx || !vcmpx_exec_only) &&
+             std::any_of(instr->definitions.begin(), instr->definitions.end(),
+                         [&exec_copy_def, &ctx](const Definition& def) -> bool
+                         {
+                            return regs_intersect(exec_copy_def, def) ||
+                                   regs_intersect(Definition(exec, ctx.program->lane_mask), def);
+                         }))
+            break;
+      }
+   }
+
    /* Position where the original exec mask copy should be inserted. */
    const int save_original_exec_idx = exec_val_idx;
    /* The copy can be removed when it kills its operand.
     * v_cmpx also writes the original destination pre GFX10.
     */
-   const bool can_remove_copy =
-      exec_copy->operands[0].isKill() || (vopc && ctx.program->gfx_level < GFX10);
+   const bool can_remove_copy = exec_copy->operands[0].isKill() || (vopc && !vcmpx_exec_only);
 
    /* Always allow reassigning when the value is written by (usable) VOPC.
     * Note, VOPC implicitly contains "& exec" because it yields zero on inactive lanes.
@@ -384,9 +416,6 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
     */
    if (!can_reassign || (save_original_exec && !can_remove_copy))
       return;
-
-   const Definition exec_wr_def = exec_val->definitions[0];
-   const Definition exec_copy_def = exec_copy->definitions[0];
 
    /* When exec_val and exec_copy are non-adjacent, check whether there are any
     * instructions inbetween (besides p_logical_end) which may inhibit the optimization.
@@ -419,19 +448,18 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
          if (regs_intersect(exec_copy_def, op))
             return;
       /* We would write over the saved exec value in this case. */
-      if (((vopc && ctx.program->gfx_level < GFX10) || !can_remove_copy) &&
+      if (((vopc && !vcmpx_exec_only) || !can_remove_copy) &&
           regs_intersect(exec_copy_def, exec_wr_def))
          return;
    }
 
    if (vopc) {
       /* Add one extra definition for exec and copy the VOP3-specific fields if present. */
-      if (ctx.program->gfx_level < GFX10) {
-         if (exec_val->isSDWA() || exec_val->isDPP()) {
+      if (!vcmpx_exec_only) {
+         if (exec_val->isSDWA()) {
             /* This might work but it needs testing and more code to copy the instruction. */
             return;
-         }
-         else if (!exec_val->isVOP3()) {
+         } else if (!exec_val->isVOP3()) {
             aco_ptr<Instruction> tmp = std::move(exec_val);
             exec_val.reset(create_instruction<VOPC_instruction>(
                tmp->opcode, tmp->format, tmp->operands.size(), tmp->definitions.size() + 1));
@@ -462,7 +490,7 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
       *exec_val->definitions.rbegin() = Definition(exec, ctx.program->lane_mask);
 
       /* Change instruction from VOP3 to plain VOPC when possible. */
-      if (ctx.program->gfx_level >= GFX10 && !exec_val->usesModifiers() &&
+      if (vcmpx_exec_only && !exec_val->usesModifiers() &&
           (exec_val->operands.size() < 2 || exec_val->operands[1].isOfType(RegType::vgpr)))
          exec_val->format = Format::VOPC;
    } else {
@@ -575,7 +603,15 @@ eliminate_useless_exec_writes_in_block(ssa_elimination_ctx& ctx, Block& block)
 
       /* See if we found an unused exec write. */
       if (writes_exec && !exec_write_used) {
-         instr.reset();
+         /* Don't eliminate an instruction that writes registers other than exec and scc.
+          * It is possible that this is eg. an s_and_saveexec and the saved value is
+          * used by a later branch.
+          */
+         bool writes_other = std::any_of(instr->definitions.begin(), instr->definitions.end(),
+                                         [](const Definition& def) -> bool
+                                         { return def.physReg() != exec && def.physReg() != scc; });
+         if (!writes_other)
+            instr.reset();
          continue;
       }
 

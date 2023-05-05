@@ -605,6 +605,9 @@ build_timestamp_query_shader(struct radv_device *device)
    return b.shader;
 }
 
+#define RADV_PGQ_STRIDE 32
+#define RADV_PGQ_STRIDE_GDS (RADV_PGQ_STRIDE + 4 * 2)
+
 static nir_shader *
 build_pg_query_shader(struct radv_device *device)
 {
@@ -665,8 +668,12 @@ build_pg_query_shader(struct radv_device *device)
    /* Compute global ID. */
    nir_ssa_def *global_id = get_global_ids(&b, 1);
 
+   /* Determine if the query pool uses GDS for NGG. */
+   nir_ssa_def *uses_gds =
+      nir_i2b(&b, nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 16), .range = 20));
+
    /* Compute src/dst strides. */
-   nir_ssa_def *input_stride = nir_imm_int(&b, 32);
+   nir_ssa_def *input_stride = nir_bcsel(&b, uses_gds, nir_imm_int(&b, RADV_PGQ_STRIDE_GDS), nir_imm_int(&b, RADV_PGQ_STRIDE));
    nir_ssa_def *input_base = nir_imul(&b, input_stride, global_id);
    nir_ssa_def *output_stride = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 4), .range = 16);
    nir_ssa_def *output_base = nir_imul(&b, output_stride, global_id);
@@ -698,8 +705,7 @@ build_pg_query_shader(struct radv_device *device)
 
    nir_store_var(&b, result, primitive_storage_needed, 0x1);
 
-   nir_ssa_def *uses_gds = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 16), .range = 20);
-   nir_push_if(&b, nir_i2b(&b, uses_gds));
+   nir_push_if(&b, uses_gds);
    {
       nir_ssa_def *gds_start =
          nir_load_ssbo(&b, 1, 32, src_buf, nir_iadd(&b, input_base, nir_imm_int(&b, 32)), .align_mul = 4);
@@ -816,9 +822,9 @@ radv_device_init_meta_query_state_internal(struct radv_device *device)
       .layout = device->meta_state.query.p_layout,
    };
 
-   result = radv_CreateComputePipelines(
-      radv_device_to_handle(device), device->meta_state.cache, 1,
-      &occlusion_vk_pipeline_info, NULL, &device->meta_state.query.occlusion_query_pipeline);
+   result = radv_compute_pipeline_create(radv_device_to_handle(device), device->meta_state.cache,
+                                         &occlusion_vk_pipeline_info, NULL,
+                                         &device->meta_state.query.occlusion_query_pipeline, true);
    if (result != VK_SUCCESS)
       goto fail;
 
@@ -837,10 +843,10 @@ radv_device_init_meta_query_state_internal(struct radv_device *device)
       .layout = device->meta_state.query.p_layout,
    };
 
-   result = radv_CreateComputePipelines(
-      radv_device_to_handle(device), device->meta_state.cache, 1,
+   result = radv_compute_pipeline_create(
+      radv_device_to_handle(device), device->meta_state.cache,
       &pipeline_statistics_vk_pipeline_info, NULL,
-      &device->meta_state.query.pipeline_statistics_query_pipeline);
+      &device->meta_state.query.pipeline_statistics_query_pipeline, true);
    if (result != VK_SUCCESS)
       goto fail;
 
@@ -859,9 +865,9 @@ radv_device_init_meta_query_state_internal(struct radv_device *device)
       .layout = device->meta_state.query.p_layout,
    };
 
-   result = radv_CreateComputePipelines(
-      radv_device_to_handle(device), device->meta_state.cache, 1,
-      &tfb_pipeline_info, NULL, &device->meta_state.query.tfb_query_pipeline);
+   result = radv_compute_pipeline_create(radv_device_to_handle(device), device->meta_state.cache,
+                                         &tfb_pipeline_info, NULL,
+                                         &device->meta_state.query.tfb_query_pipeline, true);
    if (result != VK_SUCCESS)
       goto fail;
 
@@ -880,9 +886,9 @@ radv_device_init_meta_query_state_internal(struct radv_device *device)
       .layout = device->meta_state.query.p_layout,
    };
 
-   result = radv_CreateComputePipelines(
-      radv_device_to_handle(device), device->meta_state.cache, 1,
-      &timestamp_pipeline_info, NULL, &device->meta_state.query.timestamp_query_pipeline);
+   result = radv_compute_pipeline_create(radv_device_to_handle(device), device->meta_state.cache,
+                                         &timestamp_pipeline_info, NULL,
+                                         &device->meta_state.query.timestamp_query_pipeline, true);
    if (result != VK_SUCCESS)
       goto fail;
 
@@ -901,9 +907,9 @@ radv_device_init_meta_query_state_internal(struct radv_device *device)
       .layout = device->meta_state.query.p_layout,
    };
 
-   result = radv_CreateComputePipelines(
-      radv_device_to_handle(device), device->meta_state.cache, 1,
-      &pg_pipeline_info, NULL, &device->meta_state.query.pg_query_pipeline);
+   result = radv_compute_pipeline_create(radv_device_to_handle(device), device->meta_state.cache,
+                                         &pg_pipeline_info, NULL,
+                                         &device->meta_state.query.pg_query_pipeline, true);
 
 fail:
    ralloc_free(occlusion_cs);
@@ -1060,17 +1066,21 @@ radv_destroy_query_pool(struct radv_device *device, const VkAllocationCallbacks 
    if (pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR)
       radv_pc_deinit_query_pool((struct radv_pc_query_pool *)pool);
 
-   if (pool->bo)
+   if (pool->bo) {
+      radv_rmv_log_bo_destroy(device, pool->bo);
       device->ws->buffer_destroy(device->ws, pool->bo);
+   }
+
+   radv_rmv_log_resource_destroy(device, (uint64_t)radv_query_pool_to_handle(pool));
    vk_object_base_finish(&pool->base);
    vk_free2(&device->vk.alloc, pAllocator, pool);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-radv_CreateQueryPool(VkDevice _device, const VkQueryPoolCreateInfo *pCreateInfo,
-                     const VkAllocationCallbacks *pAllocator, VkQueryPool *pQueryPool)
+VkResult
+radv_create_query_pool(struct radv_device *device, const VkQueryPoolCreateInfo *pCreateInfo,
+                       const VkAllocationCallbacks *pAllocator, VkQueryPool *pQueryPool,
+                       bool is_internal)
 {
-   RADV_FROM_HANDLE(radv_device, device, _device);
    VkResult result;
    size_t pool_struct_size = pCreateInfo->queryType == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR
                                 ? sizeof(struct radv_pc_query_pool)
@@ -1091,8 +1101,9 @@ radv_CreateQueryPool(VkDevice _device, const VkQueryPoolCreateInfo *pCreateInfo,
     * hardware if GS uses the legacy path. When NGG GS is used, the hardware can't know the number
     * of generated primitives and we have to increment it from the shader using a plain GDS atomic.
     */
-   pool->uses_gds = device->physical_device->use_ngg &&
-                    ((pool->pipeline_stats_mask & VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_PRIMITIVES_BIT) ||
+   pool->uses_gds = (device->physical_device->emulate_ngg_gs_query_pipeline_stat &&
+                     (pool->pipeline_stats_mask & VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_PRIMITIVES_BIT)) ||
+                    (device->physical_device->use_ngg &&
                      pCreateInfo->queryType == VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT);
 
    switch (pCreateInfo->queryType) {
@@ -1119,12 +1130,13 @@ radv_CreateQueryPool(VkDevice _device, const VkQueryPoolCreateInfo *pCreateInfo,
       pool->stride = 32;
       break;
    case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
-      pool->stride = 32;
       if (pool->uses_gds && device->physical_device->rad_info.gfx_level < GFX11) {
          /* When the hardware can use both the legacy and the NGG paths in the same begin/end pair,
           * allocate 2x32-bit values for the GDS counters.
           */
-         pool->stride += 4 * 2;
+         pool->stride = RADV_PGQ_STRIDE_GDS;
+      } else {
+         pool->stride = RADV_PGQ_STRIDE;
       }
       break;
    case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
@@ -1161,7 +1173,16 @@ radv_CreateQueryPool(VkDevice _device, const VkQueryPoolCreateInfo *pCreateInfo,
    }
 
    *pQueryPool = radv_query_pool_to_handle(pool);
+   radv_rmv_log_query_pool_create(device, *pQueryPool, is_internal);
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+radv_CreateQueryPool(VkDevice _device, const VkQueryPoolCreateInfo *pCreateInfo,
+                     const VkAllocationCallbacks *pAllocator, VkQueryPool *pQueryPool)
+{
+   RADV_FROM_HANDLE(radv_device, device, _device);
+   return radv_create_query_pool(device, pCreateInfo, pAllocator, pQueryPool, false);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1747,7 +1768,7 @@ emit_begin_query(struct radv_cmd_buffer *cmd_buffer, struct radv_query_pool *poo
    struct radeon_cmdbuf *cs = cmd_buffer->cs;
    switch (query_type) {
    case VK_QUERY_TYPE_OCCLUSION:
-      radeon_check_space(cmd_buffer->device->ws, cs, 7);
+      radeon_check_space(cmd_buffer->device->ws, cs, 11);
 
       ++cmd_buffer->state.active_occlusion_queries;
       if (cmd_buffer->state.active_occlusion_queries == 1) {
@@ -2144,7 +2165,7 @@ radv_CmdWriteAccelerationStructuresPropertiesKHR(
 
    for (uint32_t i = 0; i < accelerationStructureCount; ++i) {
       RADV_FROM_HANDLE(radv_acceleration_structure, accel_struct, pAccelerationStructures[i]);
-      uint64_t va = accel_struct->va;
+      uint64_t va = radv_acceleration_structure_get_va(accel_struct);
 
       switch (queryType) {
       case VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR:

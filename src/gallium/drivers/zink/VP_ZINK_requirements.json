@@ -32,13 +32,7 @@
                     "customBorderColorWithoutFormat": true
                 },
                 "VkPhysicalDeviceLineRasterizationFeaturesEXT": {
-                    "rectangularLines": true,
-                    "bresenhamLines": true
-                }
-            },
-            "properties": {
-                "VkPhysicalDeviceProperties": {
-
+                    "rectangularLines": true
                 }
             }
         },
@@ -56,6 +50,22 @@
             "features": {
                 "VkPhysicalDeviceVulkan12Features": {
                     "scalarBlockLayout": true
+                }
+            }
+        },
+        "gl21_baseline_line_bresenham": {
+        	"features": {
+                "VkPhysicalDeviceLineRasterizationFeaturesEXT": {
+                    "bresenhamLines": true
+                }
+            }
+        },
+        "gl21_baseline_line_non_strict": {
+        	"properties": {
+                "VkPhysicalDeviceProperties": {
+                    "limits": {
+                        "strictLines": false
+                    }
                 }
             }
         },
@@ -105,7 +115,6 @@
             },
             "features": {
                 "VkPhysicalDeviceFeatures": {
-                    "occlusionQueryPrecise": true,
                     "dualSrcBlend": true
                 }
             }
@@ -154,7 +163,11 @@
             "properties": {
                 "VkPhysicalDeviceProperties": {
                     "limits": {
+                        "maxImageDimension1D": 16384,
                         "maxImageDimension2D": 16384,
+                        "maxImageDimension3D": 2048,
+                        "maxImageDimensionCube": 16384,
+                        "maxImageArrayLayers": 2048,
                         "maxViewports": 16
                     }
                 }
@@ -298,7 +311,6 @@
             "features": {
                 "VkPhysicalDeviceFeatures": {
                     "samplerAnisotropy": true,
-                    "pipelineStatisticsQuery": true,
                     "depthBiasClamp": true
                 }
             }
@@ -551,7 +563,8 @@
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
-                [ "gl21_baseline_vk10", "gl21_baseline_vk12" ]
+                [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ]
             ]
         },
         "VP_ZINK_gl30_baseline": {
@@ -563,6 +576,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline"
             ]
         },
@@ -575,6 +589,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline"
             ]
@@ -588,6 +603,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline"
@@ -602,6 +618,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -617,6 +634,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -633,6 +651,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -650,6 +669,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -669,6 +689,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -689,6 +710,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -710,6 +732,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -732,6 +755,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -755,6 +779,7 @@
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",

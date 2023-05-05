@@ -92,10 +92,10 @@
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
-#include "indices/u_primconvert.h"
 #include "util/u_prim_restart.h"
 #include "util/u_screen.h"
 #include "util/u_upload_mgr.h"
+#include "indices/u_primconvert.h"
 #include "translate/translate.h"
 #include "translate/translate_cache.h"
 #include "cso_cache/cso_cache.h"
@@ -1450,25 +1450,23 @@ u_vbuf_split_indexed_multidraw(struct u_vbuf *mgr, struct pipe_draw_info *info,
       draw.index_bias = indirect_data[offset + 3];
       info->start_instance = indirect_data[offset + 4];
 
-      u_vbuf_draw_vbo(mgr, info, drawid_offset, NULL, &draw, 1);
+      u_vbuf_draw_vbo(mgr->pipe, info, drawid_offset, NULL, &draw, 1);
    }
 }
 
-void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
+void u_vbuf_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
                      unsigned drawid_offset,
                      const struct pipe_draw_indirect_info *indirect,
                      const struct pipe_draw_start_count_bias *draws,
                      unsigned num_draws)
 {
-   struct pipe_context *pipe = mgr->pipe;
+   struct u_vbuf *mgr = pipe->vbuf;
    int start_vertex;
    unsigned min_index;
    unsigned num_vertices;
    boolean unroll_indices = FALSE;
    const uint32_t used_vb_mask = mgr->ve->used_vb_mask;
    uint32_t user_vb_mask = mgr->user_vb_mask & used_vb_mask;
-   struct pipe_draw_info new_info;
-   struct pipe_draw_start_count_bias new_draw;
    unsigned fixed_restart_index = info->index_size ? util_prim_restart_index_from_size(info->index_size) : 0;
 
    uint32_t misaligned = 0;
@@ -1505,12 +1503,10 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
     */
    if (num_draws > 1 && info->take_index_buffer_ownership)
       p_atomic_add(&info->index.resource->reference.count, num_draws - 1);
-   new_info = *info;
 
    for (unsigned d = 0; d < num_draws; d++) {
-      new_draw = draws[d];
-      if (info->increment_draw_id)
-         drawid_offset++;
+      struct pipe_draw_info new_info = *info;
+      struct pipe_draw_start_count_bias new_draw = draws[d];
 
       /* Handle indirect (multi)draws. */
       if (indirect && indirect->buffer) {
@@ -1728,6 +1724,8 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
          }
 
          if (unroll_indices) {
+            if (!new_info.has_user_indices && info->take_index_buffer_ownership)
+               pipe_drop_resource_references(new_info.index.resource, 1);
             new_info.index_size = 0;
             new_draw.index_bias = 0;
             new_info.index_bounds_valid = true;
@@ -1786,6 +1784,8 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
          util_primconvert_draw_vbo(mgr->pc, &new_info, drawid_offset, indirect, &new_draw, 1);
       } else
          pipe->draw_vbo(pipe, &new_info, drawid_offset, indirect, &new_draw, 1);
+      if (info->increment_draw_id)
+         drawid_offset++;
    }
 
    if (mgr->using_translate) {

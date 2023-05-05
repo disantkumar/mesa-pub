@@ -159,7 +159,7 @@ svga_screen_cache_lookup(struct svga_screen *svgascreen,
    mtx_unlock(&cache->mutex);
 
    if (SVGA_DEBUG & DEBUG_DMA)
-      debug_printf("%s: cache %s after %u tries (bucket %d)\n", __FUNCTION__,
+      debug_printf("%s: cache %s after %u tries (bucket %d)\n", __func__,
                    handle ? "hit" : "miss", tries, bucket);
 
    return handle;
@@ -499,7 +499,7 @@ svga_screen_surface_create(struct svga_screen *svgascreen,
 
    SVGA_DBG(DEBUG_CACHE|DEBUG_DMA,
             "%s sz %dx%dx%d mips %d faces %d arraySize %d cachable %d\n",
-            __FUNCTION__,
+            __func__,
             key->size.width,
             key->size.height,
             key->size.depth,
@@ -573,7 +573,11 @@ svga_screen_surface_create(struct svga_screen *svgascreen,
       /* Unable to recycle surface, allocate a new one */
       unsigned usage = 0;
 
-      if (!key->cachable)
+      /* mark the surface as shareable if the surface is not
+       * cachable or the RENDER_TARGET bind flag is set.
+       */
+      if (!key->cachable ||
+          ((bind_flags & PIPE_BIND_RENDER_TARGET) != 0))
          usage |= SVGA_SURFACE_USAGE_SHARED;
       if (key->scanout)
          usage |= SVGA_SURFACE_USAGE_SCANOUT;

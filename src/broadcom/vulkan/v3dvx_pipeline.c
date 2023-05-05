@@ -84,6 +84,7 @@ pack_blend(struct v3dv_pipeline *pipeline,
       return;
 
    assert(pipeline->subpass->color_count == cb_info->attachmentCount);
+
    pipeline->blend.needs_color_constants = false;
    uint32_t color_write_masks = 0;
    for (uint32_t i = 0; i < pipeline->subpass->color_count; i++) {
@@ -103,12 +104,7 @@ pack_blend(struct v3dv_pipeline *pipeline,
       VkAttachmentDescription2 *desc =
          &pipeline->pass->attachments[attachment_idx].desc;
       const struct v3dv_format *format = v3dX(get_format)(desc->format);
-
-      /* We only do blending with render pass attachments, so we should not have
-       * multiplanar images here
-       */
-      assert(format->plane_count == 1);
-      bool dst_alpha_one = (format->planes[0].swizzle[3] == PIPE_SWIZZLE_1);
+      bool dst_alpha_one = (format->swizzle[3] == PIPE_SWIZZLE_1);
 
       uint8_t rt_mask = 1 << i;
       pipeline->blend.enables |= rt_mask;
@@ -182,7 +178,7 @@ pack_cfg_bits(struct v3dv_pipeline *pipeline,
             rs_info->polygonMode == VK_POLYGON_MODE_POINT;
       }
 
-      /* diamond-exit rasterization does not suport oversample */
+      /* diamond-exit rasterization does not support oversample */
       config.rasterizer_oversample_mode =
          (config.line_rasterization == V3D_LINE_RASTERIZATION_PERP_END_CAPS &&
           pipeline->msaa) ? 1 : 0;
@@ -439,7 +435,7 @@ pack_shader_state_record(struct v3dv_pipeline *pipeline)
       shader.vertex_shader_propagate_nans = true;
       shader.fragment_shader_propagate_nans = true;
 
-      /* Note: see previous note about adresses */
+      /* Note: see previous note about addresses */
       /* shader.coordinate_shader_code_address */
       /* shader.vertex_shader_code_address */
       /* shader.fragment_shader_code_address */
@@ -464,7 +460,7 @@ pack_shader_state_record(struct v3dv_pipeline *pipeline)
       shader.vertex_shader_output_vpm_segment_size =
          prog_data_vs->vpm_output_size;
 
-      /* Note: see previous note about adresses */
+      /* Note: see previous note about addresses */
       /* shader.coordinate_shader_uniforms_address */
       /* shader.vertex_shader_uniforms_address */
       /* shader.fragment_shader_uniforms_address */
@@ -506,7 +502,7 @@ pack_shader_state_record(struct v3dv_pipeline *pipeline)
       shader.instance_id_read_by_vertex_shader =
          prog_data_vs->uses_iid;
 
-      /* Note: see previous note about adresses */
+      /* Note: see previous note about addresses */
       /* shader.address_of_default_attribute_values */
    }
 }

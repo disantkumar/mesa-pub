@@ -22,11 +22,12 @@ project(
   'mesa',
   ['c', 'cpp'],
   version : run_command(
-    [find_program('python3', 'python'), 'bin/meson_get_version.py'],
+    [find_program('python3', 'python'), 'bin/meson_get_version.py',
+     meson.version().version_compare('>= 0.56') ? meson.project_source_root() : meson.source_root()],
     check : true
   ).stdout(),
   license : 'MIT',
-  meson_version : '>= 0.53',
+  meson_version : '>= 0.54',
   default_options : ['buildtype=debugoptimized', 'b_ndebug=if-release', 'c_std=c11', 'cpp_std=c++17', 'rust_std=2021']
 )
 
@@ -175,6 +176,11 @@ with_shared_glapi = with_shared_glapi and with_any_opengl
 
 system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android'].contains(host_machine.system())
 
+with_freedreno_kgsl = get_option('freedreno-kgsl')
+if with_freedreno_kgsl
+  system_has_kms_drm = false
+endif
+
 dri_drivers = get_option('dri-drivers')
 if dri_drivers.length() != 0
   error('Mesa\'s main branch no longer has any "classic" drivers, use the "amber" branch instead.')
@@ -234,11 +240,15 @@ foreach gallium_driver : gallium_drivers
 endforeach
 
 with_gallium = gallium_drivers.length() != 0
-with_gallium_kmsro = with_gallium_v3d or with_gallium_vc4 or with_gallium_etnaviv or with_gallium_panfrost or with_gallium_lima or with_gallium_freedreno or with_gallium_asahi
-
-if not system_has_kms_drm
-   with_gallium_kmsro = false
-endif
+with_gallium_kmsro = system_has_kms_drm and [
+  with_gallium_asahi,
+  with_gallium_etnaviv,
+  with_gallium_freedreno,
+  with_gallium_lima,
+  with_gallium_panfrost,
+  with_gallium_v3d,
+  with_gallium_vc4,
+].contains(true)
 
 with_dri = false
 if with_gallium and system_has_kms_drm
@@ -278,7 +288,6 @@ with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_panfrost_vk = _vulkan_drivers.contains('panfrost')
 with_swrast_vk = _vulkan_drivers.contains('swrast')
 with_virtio_vk = _vulkan_drivers.contains('virtio-experimental')
-with_freedreno_kgsl = get_option('freedreno-kgsl')
 with_freedreno_virtio = get_option('freedreno-virtio')
 with_broadcom_vk = _vulkan_drivers.contains('broadcom')
 with_imagination_vk = _vulkan_drivers.contains('imagination-experimental')
@@ -326,6 +335,10 @@ else
 endif
 
 with_vulkan_beta = get_option('vulkan-beta')
+if host_machine.system() == 'darwin'
+  #macOS seems to need beta extensions to build for now:
+  with_vulkan_beta = true
+endif
 if with_vulkan_beta
   pre_args += '-DVK_ENABLE_BETA_EXTENSIONS'
 endif
@@ -435,8 +448,7 @@ if with_platform_x11
 endif
 if with_platform_windows
   c_args += '-DVK_USE_PLATFORM_WIN32_KHR'
-  #add this once aco and other places can build with it
-  #cpp_args += '-DVK_USE_PLATFORM_WIN32_KHR'
+  cpp_args += '-DVK_USE_PLATFORM_WIN32_KHR'
 endif
 if with_platform_android
   c_args += '-DVK_USE_PLATFORM_ANDROID_KHR'
@@ -456,9 +468,6 @@ if host_machine.system() == 'darwin'
   cpp_args += '-DVK_USE_PLATFORM_MACOS_MVK'
   c_args += '-DVK_USE_PLATFORM_METAL_EXT'
   cpp_args += '-DVK_USE_PLATFORM_METAL_EXT'
-  #macOS seems to need beta extensions to build for now:
-  c_args += '-DVK_ENABLE_BETA_EXTENSIONS'
-  cpp_args += '-DVK_ENABLE_BETA_EXTENSIONS'
 endif
 
 _egl = get_option('egl')
@@ -663,10 +672,16 @@ elif not with_platform_x11
   else
     _vdpau = 'disabled'
   endif
-elif not (with_gallium_r300 or with_gallium_r600 or with_gallium_radeonsi or
-          with_gallium_nouveau or with_gallium_d3d12_video)
+elif not [
+           with_gallium_d3d12_video,
+           with_gallium_nouveau,
+           with_gallium_r300,
+           with_gallium_r600,
+           with_gallium_radeonsi,
+           with_gallium_virgl,
+         ].contains(true)
   if _vdpau == 'enabled'
-    error('VDPAU state tracker requires at least one of the following gallium drivers: r300, r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video).')
+    error('VDPAU state tracker requires at least one of the following gallium drivers: r300, r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video, virgl).')
   else
     _vdpau = 'disabled'
   endif
@@ -689,8 +704,8 @@ if vdpau_drivers_path == ''
   vdpau_drivers_path = join_paths(get_option('libdir'), 'vdpau')
 endif
 
-if with_vulkan_overlay_layer or with_aco_tests or with_amd_vk
-  prog_glslang = find_program('glslangValidator')
+if with_vulkan_overlay_layer or with_aco_tests or with_amd_vk or with_intel_vk
+  prog_glslang = find_program('glslangValidator', native : true)
   if run_command(prog_glslang, [ '--quiet', '--version' ], check : false).returncode() == 0
     glslang_quiet = ['--quiet']
   else
@@ -787,7 +802,13 @@ elif _va == 'false'
   _va = 'disabled'
   warning('gallium-va option "false" deprecated, please use "disabled" instead.')
 endif
-if not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau or with_gallium_d3d12_video or with_gallium_virgl)
+if not [
+         with_gallium_d3d12_video,
+         with_gallium_nouveau,
+         with_gallium_r600,
+         with_gallium_radeonsi,
+         with_gallium_virgl,
+       ].contains(true)
   if _va == 'enabled'
     error('VA state tracker requires at least one of the following gallium drivers: r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video), virgl.')
   else
@@ -850,9 +871,19 @@ with_gallium_st_nine =  get_option('gallium-nine')
 if with_gallium_st_nine
   if not with_gallium_softpipe
     error('The nine state tracker requires gallium softpipe/llvmpipe.')
-  elif not (with_gallium_radeonsi or with_gallium_nouveau or with_gallium_r600
-            or with_gallium_r300 or with_gallium_svga or with_gallium_i915
-            or with_gallium_iris or with_gallium_crocus or with_gallium_zink)
+  elif not [
+             with_gallium_crocus,
+             with_gallium_freedreno,
+             with_gallium_i915,
+             with_gallium_iris,
+             with_gallium_nouveau,
+             with_gallium_panfrost,
+             with_gallium_r300,
+             with_gallium_r600,
+             with_gallium_radeonsi,
+             with_gallium_svga,
+             with_gallium_zink,
+           ].contains(true)
     error('The nine state tracker requires at least one non-swrast gallium driver.')
   endif
   if not with_dri3
@@ -926,8 +957,8 @@ if with_gallium_rusticl
     error('rusticl requires at least one gallium driver.')
   endif
 
-  if meson.version().version_compare('< 0.61.4')
-    error('rusticl requires meson 0.61.4 or newer')
+  if meson.version().version_compare('< 1.0.0')
+    error('rusticl requires meson 1.0.0 or newer')
   endif
 
   add_languages('rust', required: true)
@@ -993,7 +1024,7 @@ has_mako = run_command(
   '''
 from distutils.version import StrictVersion
 import mako
-assert StrictVersion(mako.__version__) > StrictVersion("0.8.0")
+assert StrictVersion(mako.__version__) >= StrictVersion("0.8.0")
   ''', check: false)
 if has_mako.returncode() != 0
   error('Python (3.x) mako module >= 0.8.0 required to build mesa.')
@@ -1115,6 +1146,7 @@ endif
 c_msvc_compat_args = []
 no_override_init_args = []
 cpp_msvc_compat_args = []
+ld_args_gc_sections = []
 if cc.get_argument_syntax() == 'msvc'
   _trial = [
     '/wd4018',  # signed/unsigned mismatch
@@ -1135,6 +1167,7 @@ if cc.get_argument_syntax() == 'msvc'
     '/wd5105',  # macro expansion producing 'defined' has undefined behavior (winbase.h, need Windows SDK upgrade)
     '/we4020',  # Error when passing the wrong number of parameters
     '/we4024',  # Error when passing different type of parameter
+    '/we4189',  # 'identifier' : local variable is initialized but not referenced
     '/Zc:__cplusplus', #Set __cplusplus macro to match the /std:c++<version> on the command line
   ]
   c_args += cc.get_supported_arguments(_trial)
@@ -1148,6 +1181,7 @@ else
     '-Werror=incompatible-pointer-types',
     '-Werror=int-conversion',
     '-Wimplicit-fallthrough',
+    '-Wmisleading-indentation',
     '-Wno-missing-field-initializers',
     '-Wno-format-truncation',
     '-fno-math-errno',
@@ -1161,6 +1195,7 @@ else
   _trial_cpp = [
     '-Werror=return-type',
     '-Werror=empty-body',
+    '-Wmisleading-indentation',
     '-Wno-non-virtual-dtor',
     '-Wno-missing-field-initializers',
     '-Wno-format-truncation',
@@ -1191,17 +1226,19 @@ else
   # own sections and GC the sections after linking.  This lets drivers
   # drop shared code unused by that specific driver (particularly
   # relevant for Vulkan drivers).
-  if cc.has_link_argument('-Wl,--gc-sections')
+  if cc.links('static char unused() { return 5; } int main() { return 0; }',
+              args : '-Wl,--gc-sections', name : 'gc-sections')
+    ld_args_gc_sections += '-Wl,--gc-sections'
     _trial_c += ['-ffunction-sections', '-fdata-sections']
     _trial_cpp += ['-ffunction-sections', '-fdata-sections']
   endif
 
-  # Variables that are only used for assertions are considered unused in release
-  # builds. Don't treat this as an error, since we build with -Werror even for
-  # release in CI.
-  if get_option('buildtype') == 'release'
-    _trial_c += ['-Wno-unused-variable', '-Wno-unused-but-set-variable']
-    _trial_cpp += ['-Wno-unused-variable', '-Wno-unused-but-set-variable']
+  # Variables that are only used for assertions are considered unused when assertions
+  # are disabled. Don't treat this as an error, since we build with -Werror even if
+  # assertions are disabled.
+  if get_option('b_ndebug') == 'true' or (get_option('buildtype') == 'release' and get_option('b_ndebug') == 'if-release')
+    _trial_c += ['-Wno-unused-variable', '-Wno-unused-but-set-variable', '/wd4189']
+    _trial_cpp += ['-Wno-unused-variable', '-Wno-unused-but-set-variable', '/wd4189']
   endif
 
   c_args += cc.get_supported_arguments(_trial_c)
@@ -1256,34 +1293,36 @@ if host_machine.system() == 'windows'
   endif
 endif
 
-if host_machine.cpu_family().startswith('x86') and cc.get_argument_syntax() != 'msvc'
+sse41_args = []
+with_sse41 = false
+if host_machine.cpu_family().startswith('x86')
   pre_args += '-DUSE_SSE41'
   with_sse41 = true
-  sse41_args = ['-msse4.1']
 
-  if host_machine.cpu_family() == 'x86'
-    if get_option('sse2')
-      # These settings make generated GCC code match MSVC and follow
-      # GCC advice on https://gcc.gnu.org/wiki/FloatingPointMath#x86note
-      #
-      # NOTE: We need to ensure stack is realigned given that we
-      # produce shared objects, and have no control over the stack
-      # alignment policy of the application. Therefore we need
-      # -mstackrealign or -mincoming-stack-boundary=2.
-      #
-      # XXX: We could have SSE without -mstackrealign if we always used
-      # __attribute__((force_align_arg_pointer)), but that's not
-      # always the case.
-      c_args += ['-msse2', '-mfpmath=sse', '-mstackrealign']
-    else
-      # GCC on x86 (not x86_64) with -msse* assumes a 16 byte aligned stack, but
-      # that's not guaranteed
-      sse41_args += '-mstackrealign'
+  if cc.get_id() != 'msvc'
+    sse41_args = ['-msse4.1']
+
+    if host_machine.cpu_family() == 'x86'
+      if get_option('sse2')
+        # These settings make generated GCC code match MSVC and follow
+        # GCC advice on https://gcc.gnu.org/wiki/FloatingPointMath#x86note
+        #
+        # NOTE: We need to ensure stack is realigned given that we
+        # produce shared objects, and have no control over the stack
+        # alignment policy of the application. Therefore we need
+        # -mstackrealign or -mincoming-stack-boundary=2.
+        #
+        # XXX: We could have SSE without -mstackrealign if we always used
+        # __attribute__((force_align_arg_pointer)), but that's not
+        # always the case.
+        c_args += ['-msse2', '-mfpmath=sse', '-mstackrealign']
+      else
+        # GCC on x86 (not x86_64) with -msse* assumes a 16 byte aligned stack, but
+        # that's not guaranteed
+        sse41_args += '-mstackrealign'
+      endif
     endif
   endif
-else
-  with_sse41 = false
-  sse41_args = []
 endif
 
 # Check for GCC style atomics
@@ -1418,7 +1457,6 @@ functions_to_detect = {
   'strtok_r': '',
   'getrandom': '',
   'qsort_s': '',
-  'posix_fallocate': '',
 }
 
 foreach f, prefix: functions_to_detect
@@ -1525,11 +1563,6 @@ ld_args_bsymbolic = []
 if cc.links('int main() { return 0; }', args : '-Wl,-Bsymbolic', name : 'Bsymbolic')
   ld_args_bsymbolic += '-Wl,-Bsymbolic'
 endif
-ld_args_gc_sections = []
-if cc.links('static char unused() { return 5; } int main() { return 0; }',
-            args : '-Wl,--gc-sections', name : 'gc-sections')
-  ld_args_gc_sections += '-Wl,--gc-sections'
-endif
 with_ld_version_script = false
 if cc.links('int main() { return 0; }',
             args : '-Wl,--version-script=@0@'.format(
@@ -1563,6 +1596,11 @@ if cc.has_function('dl_iterate_phdr')
   pre_args += '-DHAVE_DL_ITERATE_PHDR'
 elif with_intel_vk or with_intel_hasvk
   error('Intel "Anvil" Vulkan driver requires the dl_iterate_phdr function')
+endif
+
+# only used in Iris and ANV
+if with_any_intel and ['x86', 'x86_64'].contains(host_machine.cpu_family())
+  pre_args += '-DSUPPORT_INTEL_INTEGRATED_GPUS'
 endif
 
 # Determine whether or not the rt library is needed for time functions
@@ -1621,14 +1659,27 @@ if dep_thread.found()
     pre_args += '-DHAVE_PTHREAD_SETAFFINITY'
   endif
 endif
-if host_machine.system() == 'darwin'
-  dep_expat = meson.get_compiler('c').find_library('expat')
-elif host_machine.system() != 'windows'
-  dep_expat = dependency('expat', fallback : ['expat', 'expat_dep'],
-                         required: not with_platform_android)
+
+# We don't have expat on Android or Windows, which is a needed dep for xmlconfig
+supports_xmlconfig = not (with_platform_android or with_platform_windows)
+
+opt_xmlconfig = get_option('xmlconfig')
+if opt_xmlconfig.enabled() and not supports_xmlconfig
+   error('xmlconfig not available on Android or Windows')
+endif
+use_xmlconfig = supports_xmlconfig and not opt_xmlconfig.disabled()
+
+if use_xmlconfig
+  if host_machine.system() == 'darwin'
+    dep_expat = meson.get_compiler('c').find_library('expat', required : opt_xmlconfig)
+  else
+    dep_expat = dependency('expat', fallback : ['expat', 'expat_dep'],
+                           required : opt_xmlconfig)
+  endif
 else
   dep_expat = null_dep
 endif
+
 # Predefined macros for windows
 if host_machine.system() == 'windows'
   pre_args += '-DWIN32_LEAN_AND_MEAN' # http://msdn2.microsoft.com/en-us/library/6dwk3a1z.aspx
@@ -1736,15 +1787,21 @@ if with_gallium_opencl
     'linker', 'coverage', 'instrumentation', 'ipo', 'irreader',
     'lto', 'option', 'objcarcopts', 'profiledata'
   ]
-  llvm_optional_modules += ['all-targets', 'frontendopenmp']
+  # all-targets is needed to support static linking LLVM build with multiple targets
+  # windowsdriver is needded with LLVM>=15, but we don't know what LLVM verrsion we are using yet
+  llvm_optional_modules += ['all-targets', 'frontendopenmp', 'windowsdriver']
 endif
 if with_clc
   llvm_modules += ['coverage', 'target', 'linker', 'irreader', 'option', 'libdriver', 'lto']
-  llvm_optional_modules += ['all-targets']
+  # all-targets is needed to support static linking LLVM build with multiple targets
+  # windowsdriver is needded with LLVM>=15, but we don't know what LLVM verrsion we are using yet
+  llvm_optional_modules += ['all-targets', 'windowsdriver']
 endif
 draw_with_llvm = get_option('draw-use-llvm')
 if draw_with_llvm
   llvm_modules += 'native'
+  # lto is needded with LLVM>=15, but we don't know what LLVM verrsion we are using yet
+  llvm_optional_modules += ['lto']
 endif
 
 if with_intel_clc
@@ -1902,6 +1959,9 @@ if with_clc
       'clangHandleCXX', 'clangHandleLLVM', 'clangSerialization',
       'clangSema', 'clangParse', 'clangEdit', 'clangAnalysis'
     ]
+    if dep_llvm.version().version_compare('>= 15.0')
+      clang_modules += 'clangSupport'
+    endif
 
     dep_clang = []
     foreach m : clang_modules
@@ -2283,6 +2343,14 @@ gcc_lto_quirk = (cc.get_id() == 'gcc') ? ['-fno-lto'] : []
 devenv = environment()
 
 dir_compiler_nir = join_paths(meson.current_source_dir(), 'src/compiler/nir/')
+if meson.version().version_compare('>= 0.56')
+  dir_source_root = meson.project_source_root()
+else
+  # source_root() returns a source root of the parent project if called from
+  # a subproject, which makes impossible to use Mesa as a meson subproject.
+  dir_source_root = meson.source_root()
+endif
+
 
 subdir('include')
 subdir('bin')

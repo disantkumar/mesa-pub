@@ -56,6 +56,7 @@ enum intel_ds_stall_flag {
    INTEL_DS_DEPTH_STALL_BIT                  = BITFIELD_BIT(11),
    INTEL_DS_CS_STALL_BIT                     = BITFIELD_BIT(12),
    INTEL_DS_UNTYPED_DATAPORT_CACHE_FLUSH_BIT = BITFIELD_BIT(13),
+   INTEL_DS_PSS_STALL_SYNC_BIT               = BITFIELD_BIT(14),
 };
 
 /* Convert internal driver PIPE_CONTROL stall bits to intel_ds_stall_flag. */
@@ -63,6 +64,7 @@ typedef enum intel_ds_stall_flag (*intel_ds_stall_cb_t)(uint32_t flags);
 
 enum intel_ds_queue_stage {
    INTEL_DS_QUEUE_STAGE_CMD_BUFFER,
+   INTEL_DS_QUEUE_STAGE_GENERATE_DRAWS,
    INTEL_DS_QUEUE_STAGE_STALL,
    INTEL_DS_QUEUE_STAGE_COMPUTE,
    INTEL_DS_QUEUE_STAGE_RENDER_PASS,
@@ -107,7 +109,7 @@ struct intel_ds_device {
    struct u_trace_context trace_context;
 
    /* List of intel_ds_queue */
-   struct u_vector queues;
+   struct list_head queues;
 };
 
 struct intel_ds_stage {
@@ -122,6 +124,8 @@ struct intel_ds_stage {
 };
 
 struct intel_ds_queue {
+   struct list_head link;
+
    /* Device this queue belongs to */
    struct intel_ds_device *device;
 
@@ -158,9 +162,11 @@ void intel_ds_device_init(struct intel_ds_device *device,
                           enum intel_ds_api api);
 void intel_ds_device_fini(struct intel_ds_device *device);
 
-struct intel_ds_queue *intel_ds_device_add_queue(struct intel_ds_device *device,
-                                                 const char *fmt_name,
-                                                 ...);
+struct intel_ds_queue *
+intel_ds_device_init_queue(struct intel_ds_device *device,
+                           struct intel_ds_queue *queue,
+                           const char *fmt_name,
+                           ...);
 
 void intel_ds_flush_data_init(struct intel_ds_flush_data *data,
                               struct intel_ds_queue *queue,

@@ -226,7 +226,7 @@ lower_kernel_intrinsics(nir_shader *nir)
 
             /* We may need to do a bit-size cast here */
             nir_ssa_def *num_work_groups =
-               nir_u2u(&b, &load->dest.ssa, intrin->dest.ssa.bit_size);
+               nir_u2uN(&b, &load->dest.ssa, intrin->dest.ssa.bit_size);
 
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa, num_work_groups);
             progress = true;
@@ -367,7 +367,8 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
               nir_var_mem_shared | nir_var_mem_global,
               glsl_get_cl_type_size_align);
 
-   brw_preprocess_nir(compiler, nir, NULL);
+   struct brw_nir_compiler_opts opts = {};
+   brw_preprocess_nir(compiler, nir, &opts);
 
    int max_arg_idx = -1;
    nir_foreach_uniform_variable(var, nir) {

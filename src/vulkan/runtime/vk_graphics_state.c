@@ -653,8 +653,13 @@ vk_multisample_state_init(struct vk_multisample_state *ms,
                           const BITSET_WORD *dynamic,
                           const VkPipelineMultisampleStateCreateInfo *ms_info)
 {
-   assert(ms_info->rasterizationSamples <= MESA_VK_MAX_SAMPLES);
-   ms->rasterization_samples = ms_info->rasterizationSamples;
+   if (IS_DYNAMIC(MS_RASTERIZATION_SAMPLES)) {
+      ms->rasterization_samples = 0;
+   } else {
+      assert(ms_info->rasterizationSamples <= MESA_VK_MAX_SAMPLES);
+      ms->rasterization_samples = ms_info->rasterizationSamples;
+   }
+
    ms->sample_shading_enable = ms_info->sampleShadingEnable;
    ms->min_sample_shading = ms_info->minSampleShading;
 
@@ -2012,7 +2017,7 @@ vk_common_CmdSetPolygonModeEXT(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(vk_command_buffer, cmd, commandBuffer);
    struct vk_dynamic_graphics_state *dyn = &cmd->dynamic_graphics_state;
 
-   SET_DYN_BOOL(dyn, RS_POLYGON_MODE, rs.polygon_mode, polygonMode);
+   SET_DYN_VALUE(dyn, RS_POLYGON_MODE, rs.polygon_mode, polygonMode);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -2527,7 +2532,7 @@ vk_common_CmdSetColorWriteMaskEXT(VkCommandBuffer commandBuffer,
       uint32_t a = firstAttachment + i;
       assert(a < ARRAY_SIZE(dyn->cb.attachments));
 
-      SET_DYN_VALUE(dyn, CB_BLEND_EQUATIONS,
+      SET_DYN_VALUE(dyn, CB_WRITE_MASKS,
                     cb.attachments[a].write_mask, pColorWriteMasks[i]);
    }
 }

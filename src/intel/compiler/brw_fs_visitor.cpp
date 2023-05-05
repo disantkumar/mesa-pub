@@ -29,6 +29,7 @@
  */
 #include "brw_eu.h"
 #include "brw_fs.h"
+#include "brw_nir.h"
 #include "compiler/glsl_types.h"
 
 using namespace brw;
@@ -269,7 +270,8 @@ fs_visitor::emit_shader_float_controls_execution_mode()
    if (execution_mode == FLOAT_CONTROLS_DEFAULT_FLOAT_CONTROL_MODE)
       return;
 
-   fs_builder abld = bld.annotate("shader floats control execution mode");
+   fs_builder ubld = bld.exec_all().group(1, 0);
+   fs_builder abld = ubld.annotate("shader floats control execution mode");
    unsigned mask, mode = brw_rnd_mode_from_nir(execution_mode, &mask);
 
    if (mask == 0)
@@ -1200,9 +1202,14 @@ fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
      live_analysis(this), regpressure_analysis(this),
      performance_analysis(this),
      dispatch_width(dispatch_width),
+     api_subgroup_size(brw_nir_api_subgroup_size(shader, dispatch_width)),
      bld(fs_builder(this, dispatch_width).at_end())
 {
    init();
+   assert(api_subgroup_size == 0 ||
+          api_subgroup_size == 8 ||
+          api_subgroup_size == 16 ||
+          api_subgroup_size == 32);
 }
 
 fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
@@ -1218,9 +1225,14 @@ fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
      live_analysis(this), regpressure_analysis(this),
      performance_analysis(this),
      dispatch_width(8),
+     api_subgroup_size(brw_nir_api_subgroup_size(shader, dispatch_width)),
      bld(fs_builder(this, dispatch_width).at_end())
 {
    init();
+   assert(api_subgroup_size == 0 ||
+          api_subgroup_size == 8 ||
+          api_subgroup_size == 16 ||
+          api_subgroup_size == 32);
 }
 
 void
