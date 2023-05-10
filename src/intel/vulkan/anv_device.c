@@ -4087,8 +4087,11 @@ VkResult anv_AllocateMemory(
    if ((export_info && export_info->handleTypes) ||
        (fd_info && fd_info->handleType) ||
        (host_ptr_info && host_ptr_info->handleType)) {
-      /* Anything imported or exported is EXTERNAL */
-      alloc_flags |= ANV_BO_ALLOC_EXTERNAL;
+      /* Anything imported or exported is EXTERNAL. Apply implicit sync to be
+       * compatible with clients relying on implicit fencing. This matches the
+       * behavior in iris i915_batch_submit. An example client is VA-API.
+       */
+      alloc_flags |= (ANV_BO_ALLOC_EXTERNAL | ANV_BO_ALLOC_IMPLICIT_SYNC);
    }
 
    /* Check if we need to support Android HW buffer export. If so,
