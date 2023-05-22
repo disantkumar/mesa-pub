@@ -174,6 +174,7 @@ static const struct spirv_to_nir_options default_spirv_options =  {
       .vk_memory_model_device_scope = true,
       .physical_storage_buffer_address = true,
       .workgroup_memory_explicit_layout = true,
+      .image_read_without_format = true,
     },
    .ubo_addr_format = nir_address_format_32bit_index_offset,
    .ssbo_addr_format = nir_address_format_32bit_index_offset,
@@ -311,7 +312,7 @@ preprocess_nir(nir_shader *nir)
    NIR_PASS(_, nir, nir_split_var_copies);
    NIR_PASS(_, nir, nir_split_struct_vars, nir_var_function_temp);
 
-   v3d_optimize_nir(NULL, nir, true);
+   v3d_optimize_nir(NULL, nir);
 
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_push_const,
@@ -342,7 +343,7 @@ preprocess_nir(nir_shader *nir)
    NIR_PASS(_, nir, nir_lower_frexp);
 
    /* Get rid of split copies */
-   v3d_optimize_nir(NULL, nir, false);
+   v3d_optimize_nir(NULL, nir);
 }
 
 static nir_shader *
@@ -351,6 +352,7 @@ shader_module_compile_to_nir(struct v3dv_device *device,
 {
    nir_shader *nir;
    const nir_shader_compiler_options *nir_options = &v3dv_nir_options;
+   gl_shader_stage gl_stage = broadcom_shader_stage_to_gl(stage->stage);
 
 
    if (V3D_DBG(DUMP_SPIRV) && stage->module->nir == NULL)
@@ -361,7 +363,7 @@ shader_module_compile_to_nir(struct v3dv_device *device,
     * call it again here.
     */
    VkResult result = vk_shader_module_to_nir(&device->vk, stage->module,
-                                             broadcom_shader_stage_to_gl(stage->stage),
+                                             gl_stage,
                                              stage->entrypoint,
                                              stage->spec_info,
                                              &default_spirv_options,
@@ -369,7 +371,7 @@ shader_module_compile_to_nir(struct v3dv_device *device,
                                              NULL, &nir);
    if (result != VK_SUCCESS)
       return NULL;
-   assert(nir->info.stage == broadcom_shader_stage_to_gl(stage->stage));
+   assert(nir->info.stage == gl_stage);
 
    if (V3D_DBG(SHADERDB) && stage->module->nir == NULL) {
       char sha1buf[41];
@@ -377,8 +379,7 @@ shader_module_compile_to_nir(struct v3dv_device *device,
       nir->info.name = ralloc_strdup(nir, sha1buf);
    }
 
-   if (V3D_DBG(NIR) ||
-       v3d_debug_flag_for_shader_stage(broadcom_shader_stage_to_gl(stage->stage))) {
+   if (V3D_DBG(NIR) || v3d_debug_flag_for_shader_stage(gl_stage)) {
       fprintf(stderr, "NIR after vk_shader_module_to_nir: %s prog %d NIR:\n",
               broadcom_shader_stage_name(stage->stage),
               stage->program_id);
@@ -595,10 +596,10 @@ tex_instr_get_and_remove_plane_src(nir_tex_instr *tex)
  * sampler object
  */
 static uint8_t
-lower_tex_src_to_offset(nir_builder *b,
-                        nir_tex_instr *instr,
-                        unsigned src_idx,
-                        struct lower_pipeline_layout_state *state)
+lower_tex_src(nir_builder *b,
+              nir_tex_instr *instr,
+              unsigned src_idx,
+              struct lower_pipeline_layout_state *state)
 {
    nir_ssa_def *index = NULL;
    unsigned base_index = 0;
@@ -680,7 +681,7 @@ lower_tex_src_to_offset(nir_builder *b,
    else  if (V3D_DBG(TMU_32BIT))
       return_size = 32;
    else
-      return_size = relaxed_precision || instr->is_shadow ? 16 : 32;
+      return_size = relaxed_precision ? 16 : 32;
 
    struct v3dv_descriptor_map *map =
       pipeline_get_descriptor_map(state->pipeline, binding_layout->type,
@@ -714,13 +715,13 @@ lower_sampler(nir_builder *b,
       nir_tex_instr_src_index(instr, nir_tex_src_texture_deref);
 
    if (texture_idx >= 0)
-      return_size = lower_tex_src_to_offset(b, instr, texture_idx, state);
+      return_size = lower_tex_src(b, instr, texture_idx, state);
 
    int sampler_idx =
       nir_tex_instr_src_index(instr, nir_tex_src_sampler_deref);
 
    if (sampler_idx >= 0)
-      lower_tex_src_to_offset(b, instr, sampler_idx, state);
+      lower_tex_src(b, instr, sampler_idx, state);
 
    if (texture_idx < 0 && sampler_idx < 0)
       return false;
@@ -737,7 +738,7 @@ lower_sampler(nir_builder *b,
    return true;
 }
 
-/* FIXME: really similar to lower_tex_src_to_offset, perhaps refactor? */
+/* FIXME: really similar to lower_tex_src, perhaps refactor? */
 static void
 lower_image_deref(nir_builder *b,
                   nir_intrinsic_instr *instr,
@@ -1620,9 +1621,9 @@ pipeline_compile_shader_variant(struct v3dv_pipeline_stage *p_stage,
    struct v3dv_pipeline *pipeline = p_stage->pipeline;
    struct v3dv_physical_device *physical_device = pipeline->device->pdevice;
    const struct v3d_compiler *compiler = physical_device->compiler;
+   gl_shader_stage gl_stage = broadcom_shader_stage_to_gl(p_stage->stage);
 
-   if (V3D_DBG(NIR) ||
-       v3d_debug_flag_for_shader_stage(broadcom_shader_stage_to_gl(p_stage->stage))) {
+   if (V3D_DBG(NIR) || v3d_debug_flag_for_shader_stage(gl_stage)) {
       fprintf(stderr, "Just before v3d_compile: %s prog %d NIR:\n",
               broadcom_shader_stage_name(p_stage->stage),
               p_stage->program_id);
@@ -1633,8 +1634,7 @@ pipeline_compile_shader_variant(struct v3dv_pipeline_stage *p_stage,
    uint64_t *qpu_insts;
    uint32_t qpu_insts_size;
    struct v3d_prog_data *prog_data;
-   uint32_t prog_data_size =
-      v3d_prog_data_size(broadcom_shader_stage_to_gl(p_stage->stage));
+   uint32_t prog_data_size = v3d_prog_data_size(gl_stage);
 
    qpu_insts = v3d_compile(compiler,
                            key, &prog_data,
@@ -1681,11 +1681,11 @@ link_shaders(nir_shader *producer, nir_shader *consumer)
 
    nir_lower_io_arrays_to_elements(producer, consumer);
 
-   v3d_optimize_nir(NULL, producer, false);
-   v3d_optimize_nir(NULL, consumer, false);
+   v3d_optimize_nir(NULL, producer);
+   v3d_optimize_nir(NULL, consumer);
 
    if (nir_link_opt_varyings(producer, consumer))
-      v3d_optimize_nir(NULL, consumer, false);
+      v3d_optimize_nir(NULL, consumer);
 
    NIR_PASS(_, producer, nir_remove_dead_variables, nir_var_shader_out, NULL);
    NIR_PASS(_, consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
@@ -1694,8 +1694,8 @@ link_shaders(nir_shader *producer, nir_shader *consumer)
       NIR_PASS(_, producer, nir_lower_global_vars_to_local);
       NIR_PASS(_, consumer, nir_lower_global_vars_to_local);
 
-      v3d_optimize_nir(NULL, producer, false);
-      v3d_optimize_nir(NULL, consumer, false);
+      v3d_optimize_nir(NULL, producer);
+      v3d_optimize_nir(NULL, consumer);
 
       /* Optimizations can cause varyings to become unused.
        * nir_compact_varyings() depends on all dead varyings being removed so
@@ -2966,11 +2966,12 @@ pipeline_init(struct v3dv_pipeline *pipeline,
     */
    assert(!ds_info || !ds_info->depthBoundsTestEnable);
 
+   enable_depth_bias(pipeline, rs_info);
+
    v3dv_X(device, pipeline_pack_state)(pipeline, cb_info, ds_info,
                                        rs_info, pv_info, ls_info,
                                        ms_info);
 
-   enable_depth_bias(pipeline, rs_info);
    pipeline_set_sample_mask(pipeline, ms_info);
    pipeline_set_sample_rate_shading(pipeline, ms_info);
 
@@ -3198,7 +3199,7 @@ pipeline_compile_compute(struct v3dv_pipeline *pipeline,
    p_stage->nir = pipeline_stage_get_nir(p_stage, pipeline, cache);
    assert(p_stage->nir);
 
-   v3d_optimize_nir(NULL, p_stage->nir, false);
+   v3d_optimize_nir(NULL, p_stage->nir);
    pipeline_lower_nir(pipeline, p_stage, pipeline->layout);
    lower_cs_shared(p_stage->nir);
 

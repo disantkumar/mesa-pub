@@ -36,6 +36,7 @@
 #include <vulkan/vk_icd.h>
 #include <vk_enum_to_str.h>
 
+#include "vk_descriptor_update_template.h"
 #include "vk_device.h"
 #include "vk_format.h"
 #include "vk_instance.h"
@@ -196,8 +197,7 @@ struct v3dv_physical_device {
    } caps;
 };
 
-VkResult v3dv_physical_device_acquire_display(struct v3dv_instance *instance,
-                                              struct v3dv_physical_device *pdevice,
+VkResult v3dv_physical_device_acquire_display(struct v3dv_physical_device *pdevice,
                                               VkIcdSurfaceBase *surface);
 
 static inline struct v3dv_bo *
@@ -1565,6 +1565,14 @@ struct v3dv_cmd_buffer_state {
           */
          struct v3dv_bo *bo;
          uint32_t offset;
+         /* When the driver emits draw calls to implement other operations in
+          * the middle of a render pass (such as an attachment clear), we need
+          * to pause occlusion query recording and resume it later so that
+          * these draw calls don't register in occlussion counters. We use
+          * this to store the BO reference in which we should resume occlusion
+          * query counters after the driver is done emitting its draw calls.
+           */
+         struct v3dv_bo *paused_bo;
 
          /* This pointer is not NULL if we have an active performance query */
          struct v3dv_perf_query *perf;
@@ -1711,12 +1719,6 @@ struct v3dv_cmd_buffer {
 
    struct v3dv_device *device;
 
-   /* Used at submit time to link command buffers in the submission that have
-    * spawned wait threads, so we can then wait on all of them to complete
-    * before we process any signal semaphores or fences.
-    */
-   struct list_head list_link;
-
    VkCommandBufferUsageFlags usage_flags;
 
    enum v3dv_cmd_buffer_status status;
@@ -1777,6 +1779,9 @@ void v3dv_cmd_buffer_begin_query(struct v3dv_cmd_buffer *cmd_buffer,
                                  struct v3dv_query_pool *pool,
                                  uint32_t query,
                                  VkQueryControlFlags flags);
+
+void v3dv_cmd_buffer_pause_occlusion_query(struct v3dv_cmd_buffer *cmd_buffer);
+void v3dv_cmd_buffer_resume_occlusion_query(struct v3dv_cmd_buffer *cmd_buffer);
 
 void v3dv_cmd_buffer_end_query(struct v3dv_cmd_buffer *cmd_buffer,
                                struct v3dv_query_pool *pool,
@@ -2136,45 +2141,6 @@ struct v3dv_sampler {
    uint8_t plane_count;
    uint8_t sampler_state[V3DV_SAMPLER_STATE_LENGTH];
 };
-
-struct v3dv_descriptor_template_entry {
-   /* The type of descriptor in this entry */
-   VkDescriptorType type;
-
-   /* Binding in the descriptor set */
-   uint32_t binding;
-
-   /* Offset at which to write into the descriptor set binding */
-   uint32_t array_element;
-
-   /* Number of elements to write into the descriptor set binding */
-   uint32_t array_count;
-
-   /* Offset into the user provided data */
-   size_t offset;
-
-   /* Stride between elements into the user provided data */
-   size_t stride;
-};
-
-struct v3dv_descriptor_update_template {
-   struct vk_object_base base;
-
-   VkPipelineBindPoint bind_point;
-
-   /* The descriptor set this template corresponds to. This value is only
-    * valid if the template was created with the templateType
-    * VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET.
-    */
-   uint8_t set;
-
-   /* Number of entries in this template */
-   uint32_t entry_count;
-
-   /* Entries of the template */
-   struct v3dv_descriptor_template_entry entries[0];
-};
-
 
 /* We keep two special values for the sampler idx that represents exactly when a
  * sampler is not needed/provided. The main use is that even if we don't have
@@ -2565,9 +2531,6 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_descriptor_set, base, VkDescriptorSet,
 VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_descriptor_set_layout, base,
                                VkDescriptorSetLayout,
                                VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
-VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_descriptor_update_template, base,
-                               VkDescriptorUpdateTemplate,
-                               VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(v3dv_framebuffer, base, VkFramebuffer,
                                VK_OBJECT_TYPE_FRAMEBUFFER)

@@ -70,8 +70,6 @@ lp_setup_wait_empty_scene(struct lp_setup_context *setup)
 {
    /* just use the first scene if we run out */
    if (setup->scenes[0]->fence) {
-      debug_printf("%s: wait for scene %d\n",
-                   __func__, setup->scenes[0]->fence->id);
       lp_fence_wait(setup->scenes[0]->fence);
       lp_scene_end_rasterization(setup->scenes[0]);
    }
@@ -601,7 +599,7 @@ lp_setup_bind_rasterizer(struct lp_setup_context *setup,
    setup->point_size = rast->point_size;
    setup->sprite_coord_enable = rast->sprite_coord_enable;
    setup->sprite_coord_origin = rast->sprite_coord_mode;
-   setup->point_tri_clip = rast->point_size_per_vertex;
+   setup->point_tri_clip = rast->point_tri_clip;
    setup->point_size_per_vertex = rast->point_size_per_vertex;
    setup->legacy_points = !rast->point_quad_rasterization && !setup->multisample;
 }

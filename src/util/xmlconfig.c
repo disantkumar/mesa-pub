@@ -383,7 +383,7 @@ driParseOptionInfo(driOptionCache *info,
       /* Built-in default values should always be valid. */
       assert(checkValue(optval, optinfo));
 
-      char *envVal = getenv(name);
+      const char *envVal = os_get_option(name);
       if (envVal != NULL) {
          driOptionValue v;
 

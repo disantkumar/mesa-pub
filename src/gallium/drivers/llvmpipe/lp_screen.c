@@ -41,6 +41,7 @@
 #include "util/disk_cache.h"
 #include "util/os_misc.h"
 #include "util/os_time.h"
+#include "util/u_helpers.h"
 #include "lp_texture.h"
 #include "lp_fence.h"
 #include "lp_jit.h"
@@ -58,7 +59,6 @@
 #include "nir.h"
 
 
-#ifdef DEBUG
 int LP_DEBUG = 0;
 
 static const struct debug_named_value lp_debug_flags[] = {
@@ -82,7 +82,6 @@ static const struct debug_named_value lp_debug_flags[] = {
    { "accurate_a0", DEBUG_ACCURATE_A0 },
    DEBUG_NAMED_VALUE_END
 };
-#endif
 
 int LP_PERF = 0;
 static const struct debug_named_value lp_perf_flags[] = {
@@ -227,6 +226,10 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 64;
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
       return 1;
+   case PIPE_CAP_LINEAR_IMAGE_PITCH_ALIGNMENT:
+      return 1;
+   case PIPE_CAP_LINEAR_IMAGE_BASE_ADDRESS_ALIGNMENT:
+      return 1;
    /* Adressing that many 64bpp texels fits in an i32 so this is a reasonable value */
    case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
       return 134217728;
@@ -285,6 +288,8 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return (int)(system_memory >> 20);
    }
    case PIPE_CAP_UMA:
+      return 1;
+   case PIPE_CAP_QUERY_MEMORY_INFO:
       return 1;
    case PIPE_CAP_CLIP_HALFZ:
       return 1;
@@ -854,7 +859,6 @@ static void
 llvmpipe_destroy_screen(struct pipe_screen *_screen)
 {
    struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
-   struct sw_winsys *winsys = screen->winsys;
 
    if (screen->cs_tpool)
       lp_cs_tpool_destroy(screen->cs_tpool);
@@ -865,8 +869,6 @@ llvmpipe_destroy_screen(struct pipe_screen *_screen)
    lp_jit_screen_cleanup(screen);
 
    disk_cache_destroy(screen->disk_shader_cache);
-   if (winsys->destroy)
-      winsys->destroy(winsys);
 
    glsl_type_singleton_decref();
 
@@ -959,6 +961,18 @@ lp_get_disk_shader_cache(struct pipe_screen *_screen)
    return screen->disk_shader_cache;
 }
 
+static int
+llvmpipe_screen_get_fd(struct pipe_screen *_screen)
+{
+   struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
+   struct sw_winsys *winsys = screen->winsys;
+
+   if (winsys->get_fd)
+      return winsys->get_fd(winsys);
+   else
+      return -1;
+}
+
 
 void
 lp_disk_cache_find_shader(struct llvmpipe_screen *screen,
@@ -1022,6 +1036,13 @@ llvmpipe_screen_late_init(struct llvmpipe_screen *screen)
       goto out;
    }
 
+   if (!lp_jit_screen_init(screen)) {
+      ret = false;
+      goto out;
+   }
+
+   lp_build_init(); /* get lp_native_vector_width initialised */
+
    lp_disk_cache_create(screen);
    screen->late_init_done = true;
 out:
@@ -1041,20 +1062,13 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
 
    glsl_type_singleton_init_or_ref();
 
-#ifdef DEBUG
    LP_DEBUG = debug_get_flags_option("LP_DEBUG", lp_debug_flags, 0 );
-#endif
 
    LP_PERF = debug_get_flags_option("LP_PERF", lp_perf_flags, 0 );
 
    screen = CALLOC_STRUCT(llvmpipe_screen);
    if (!screen)
       return NULL;
-
-   if (!lp_jit_screen_init(screen)) {
-      FREE(screen);
-      return NULL;
-   }
 
    screen->winsys = winsys;
 
@@ -1063,6 +1077,7 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->base.get_name = llvmpipe_get_name;
    screen->base.get_vendor = llvmpipe_get_vendor;
    screen->base.get_device_vendor = llvmpipe_get_vendor; // TODO should be the CPU vendor
+   screen->base.get_screen_fd = llvmpipe_screen_get_fd;
    screen->base.get_param = llvmpipe_get_param;
    screen->base.get_shader_param = llvmpipe_get_shader_param;
    screen->base.get_compute_param = llvmpipe_get_compute_param;
@@ -1076,6 +1091,8 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->base.fence_finish = llvmpipe_fence_finish;
 
    screen->base.get_timestamp = u_default_get_timestamp;
+
+   screen->base.query_memory_info = util_sw_query_memory_info;
 
    screen->base.get_driver_uuid = llvmpipe_get_driver_uuid;
    screen->base.get_device_uuid = llvmpipe_get_device_uuid;
@@ -1093,11 +1110,10 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
                                               screen->num_threads);
    screen->num_threads = MIN2(screen->num_threads, LP_MAX_THREADS);
 
-   lp_build_init(); /* get lp_native_vector_width initialised */
 
    snprintf(screen->renderer_string, sizeof(screen->renderer_string),
             "llvmpipe (LLVM " MESA_LLVM_VERSION_STRING ", %u bits)",
-            lp_native_vector_width );
+            lp_build_init_native_width() );
 
    list_inithead(&screen->ctx_list);
    (void) mtx_init(&screen->ctx_mutex, mtx_plain);

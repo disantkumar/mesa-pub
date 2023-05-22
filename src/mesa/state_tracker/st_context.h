@@ -202,12 +202,12 @@ struct st_context
    boolean use_format_with_border_color;
    boolean alpha_border_color_is_not_w;
    boolean emulate_gl_clamp;
-   boolean texture_buffer_sampler;
 
    boolean draw_needs_minmax_index;
    boolean has_hw_atomics;
 
    boolean validate_all_dirty_states;
+   boolean can_null_texture;
 
    /* driver supports scissored clears */
    boolean can_scissor_clear;
@@ -341,6 +341,13 @@ struct st_context
       bool layers;
       bool use_gs;
    } pbo;
+
+   struct {
+      struct gl_program **progs;
+      struct pipe_resource *bc1_endpoint_buf;
+      struct pipe_sampler_view *astc_luts[5];
+      struct hash_table *astc_partition_tables;
+   } texcompress_compute;
 
    /** for drawing with st_util_vertex */
    struct cso_velems_state util_velems;

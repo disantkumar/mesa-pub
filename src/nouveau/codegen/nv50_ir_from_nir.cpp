@@ -1556,6 +1556,7 @@ Converter::visit(nir_if *nif)
 bool
 Converter::visit(nir_loop *loop)
 {
+   assert(!nir_loop_has_continue_construct(loop));
    curLoopDepth += 1;
    func->loopNestingBound = std::max(func->loopNestingBound, curLoopDepth);
 
@@ -2532,7 +2533,7 @@ Converter::visit(nir_load_const_instr *insn)
 }
 
 #define DEFAULT_CHECKS \
-      if (insn->dest.dest.ssa.num_components > 1) { \
+      if (nir_dest_num_components(insn->dest.dest) > 1) { \
          ERROR("nir_alu_instr only supported with 1 component!\n"); \
          return false; \
       } \
@@ -2919,12 +2920,6 @@ Converter::visit(nir_alu_instr *insn)
       Value *tmp = getSSA(4);
       mkOp2(OP_AND, TYPE_U32, tmp, getSrc(&insn->src[0]), loadImm(NULL, 0x3ff00000));
       mkOp2(OP_MERGE, TYPE_U64, newDefs[0], loadImm(NULL, 0), tmp);
-      break;
-   }
-   case nir_op_f2b32: {
-      DEFAULT_CHECKS;
-      LValues &newDefs = convert(&insn->dest);
-      mkCmp(OP_SET, CC_NEU, TYPE_U32, newDefs[0], sTypes[0], getSrc(&insn->src[0]), zero);
       break;
    }
    case nir_op_b2i8:
@@ -3352,6 +3347,8 @@ Converter::run()
    NIR_PASS_V(nir, nir_lower_alu_to_scalar, NULL, NULL);
    NIR_PASS_V(nir, nir_lower_phis_to_scalar, false);
 
+   NIR_PASS_V(nir, nir_lower_frexp);
+
    /*TODO: improve this lowering/optimisation loop so that we can use
     *      nir_opt_idiv_const effectively before this.
     */
@@ -3384,6 +3381,8 @@ Converter::run()
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT)
       NIR_PASS_V(nir, nv_nir_move_stores_to_end);
+
+   NIR_PASS(progress, nir, nir_opt_algebraic_late);
 
    NIR_PASS_V(nir, nir_lower_bool_to_int32);
    NIR_PASS_V(nir, nir_lower_bit_size, Converter::lowerBitSizeCB, this);

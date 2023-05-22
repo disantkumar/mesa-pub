@@ -23,7 +23,9 @@
  */
 
 #include "nir_builder.h"
+#include "nir_xfb_info.h"
 #include "si_pipe.h"
+#include "ac_nir.h"
 
 
 static bool si_alu_to_scalar_filter(const nir_instr *instr, const void *data)
@@ -59,6 +61,26 @@ static uint8_t si_vectorize_callback(const nir_instr *instr, const void *data)
    }
 
    return 1;
+}
+
+static unsigned si_lower_bit_size_callback(const nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_alu)
+      return 0;
+
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+
+   switch (alu->op) {
+   case nir_op_imul_high:
+   case nir_op_umul_high:
+      if (nir_dest_bit_size(alu->dest.dest) < 32)
+         return 32;
+      break;
+   default:
+      break;
+   }
+
+   return 0;
 }
 
 void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
@@ -103,6 +125,7 @@ void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
       NIR_PASS(progress, nir, nir_opt_peephole_select, 8, true, true);
 
       /* Needed for algebraic lowering */
+      NIR_PASS(progress, nir, nir_lower_bit_size, si_lower_bit_size_callback, NULL);
       NIR_PASS(progress, nir, nir_opt_algebraic);
       NIR_PASS(progress, nir, nir_opt_constant_folding);
 
@@ -195,9 +218,10 @@ static void si_late_optimize_16bit_samplers(struct si_screen *sscreen, nir_shade
       },
    };
    struct nir_fold_16bit_tex_image_options fold_16bit_options = {
-      .rounding_mode = nir_rounding_mode_rtne,
-      .fold_tex_dest_types = nir_type_float | nir_type_uint | nir_type_int,
-      .fold_image_load_store_data = true,
+      .rounding_mode = nir_rounding_mode_rtz,
+      .fold_tex_dest_types = nir_type_float,
+      .fold_image_dest_types = nir_type_float,
+      .fold_image_store_data = true,
       .fold_srcs_options_count = has_g16 ? 2 : 1,
       .fold_srcs_options = fold_srcs_options,
    };
@@ -356,6 +380,11 @@ char *si_finalize_nir(struct pipe_screen *screen, void *nirptr)
 
    nir_lower_io_passes(nir);
 
+   NIR_PASS_V(nir, ac_nir_lower_subdword_loads,
+              (ac_nir_lower_subdword_options) {
+                 .modes_1_comp = nir_var_mem_ubo,
+                 .modes_N_comps = nir_var_mem_ubo | nir_var_mem_ssbo
+              });
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_shared, nir_address_format_32bit_offset);
 
    /* Remove dead derefs, so that we can remove uniforms. */
@@ -371,6 +400,10 @@ char *si_finalize_nir(struct pipe_screen *screen, void *nirptr)
 
    si_lower_nir(sscreen, nir);
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+
+   /* Update xfb info after we did medium io lowering. */
+   if (nir->xfb_info && nir->info.outputs_written_16bit)
+      nir_gather_xfb_info_from_intrinsics(nir);
 
    if (sscreen->options.inline_uniforms)
       nir_find_inlinable_uniforms(nir);

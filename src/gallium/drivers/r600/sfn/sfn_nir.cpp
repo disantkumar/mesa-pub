@@ -402,7 +402,7 @@ r600_lower_deref_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
 
    b->cursor = nir_before_instr(&instr->instr);
 
-   nir_ssa_def *offset = nir_imm_int(b, var->data.index);
+   nir_ssa_def *offset = nir_imm_int(b, 0);
    for (nir_deref_instr *d = deref; d->deref_type != nir_deref_type_var;
         d = nir_deref_instr_parent(d)) {
       assert(d->deref_type == nir_deref_type_array);
@@ -423,6 +423,7 @@ r600_lower_deref_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
    instr->intrinsic = op;
    nir_instr_rewrite_src(&instr->instr, &instr->src[0], nir_src_for_ssa(offset));
    nir_intrinsic_set_base(instr, idx);
+   nir_intrinsic_set_range_base(instr, var->data.index);
 
    nir_deref_instr_remove_if_unused(deref);
 
@@ -923,6 +924,9 @@ r600_shader_from_nir(struct r600_context *rctx,
    while (optimize_once(sh))
       ;
 
+   if ((sh->info.bit_sizes_float | sh->info.bit_sizes_int) & 64)
+      NIR_PASS_V(sh, r600::r600_split_64bit_alu_and_phi);
+
    bool late_algebraic_progress;
    do {
       late_algebraic_progress = false;
@@ -1052,6 +1056,11 @@ r600_shader_from_nir(struct r600_context *rctx,
       /* For now crash if the shader could not be generated */
       assert(0);
       return -1;
+   }
+
+   if (sh->info.stage == MESA_SHADER_VERTEX) {
+      pipeshader->shader.vs_position_window_space =
+            sh->info.vs.window_space_position;
    }
 
    if (sh->info.stage == MESA_SHADER_GEOMETRY) {

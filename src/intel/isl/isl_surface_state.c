@@ -206,10 +206,17 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
       ASSERTED const struct isl_format_layout *surf_fmtl =
          isl_format_get_layout(info->surf->format);
       ASSERTED const struct isl_format_layout *view_fmtl =
-         isl_format_get_layout(info->surf->format);
+         isl_format_get_layout(info->view->format);
+
       assert(surf_fmtl->bpb == view_fmtl->bpb);
-      assert(surf_fmtl->bw == view_fmtl->bw);
-      assert(surf_fmtl->bh == view_fmtl->bh);
+
+      /* We could be attempting to upload blocks of compressed data via an
+       * uncompressed view, blocksize will not match there.
+       */
+      if (isl_format_is_compressed(info->view->format)) {
+         assert(surf_fmtl->bw == view_fmtl->bw);
+         assert(surf_fmtl->bh == view_fmtl->bh);
+      }
    }
 
    s.SurfaceFormat = info->view->format;
@@ -329,12 +336,32 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
          s.RenderTargetViewExtent = s.Depth;
       break;
    case SURFTYPE_3D:
+      assert(info->view->base_array_layer + info->view->array_len <=
+             isl_minify(info->surf->logical_level0_px.depth,
+                        info->view->base_level));
+
       /* From the Broadwell PRM >> RENDER_SURFACE_STATE::Depth:
        *
        *    If the volume texture is MIP-mapped, this field specifies the
        *    depth of the base MIP level.
        */
-      s.Depth = info->surf->logical_level0_px.depth - 1;
+      if (GFX_VER >= 9 && info->view->usage & ISL_SURF_USAGE_STORAGE_BIT) {
+         /* From the Kaby Lake docs for the RESINFO message:
+          *
+          *    "Surface Type | ... | Blue
+          *    --------------+-----+----------------
+          *     SURFTYPE_3D  | ... | (Depth+1)»LOD"
+          *
+          * which isn't actually what the Vulkan or D3D specs want for storage
+          * images.  We want the requested array size.  The good news is that,
+          * thanks to Skylake and later using the same image layout for 3D
+          * images as 2D array images, we should be able to adjust the depth
+          * without affecting the layout.
+          */
+         s.Depth = (info->view->array_len << info->view->base_level) - 1;
+      } else {
+         s.Depth = info->surf->logical_level0_px.depth - 1;
+      }
 
       /* From the Broadwell PRM >> RENDER_SURFACE_STATE::RenderTargetViewExtent:
        *

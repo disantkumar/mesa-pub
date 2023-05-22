@@ -67,10 +67,11 @@ _util_debug_message(struct util_debug_callback *cb,
                     enum util_debug_type type,
                     const char *fmt, ...)
 {
+   if (!cb || !cb->debug_message)
+      return;
    va_list args;
    va_start(args, fmt);
-   if (cb && cb->debug_message)
-      cb->debug_message(cb->data, id, type, fmt, args);
+   cb->debug_message(cb->data, id, type, fmt, args);
    va_end(args);
 }
 
@@ -85,6 +86,7 @@ debug_disable_win32_error_dialogs(void)
     */
    UINT uMode = SetErrorMode(0);
    SetErrorMode(uMode);
+#ifndef _GAMING_XBOX
    if (uMode & SEM_FAILCRITICALERRORS) {
       /* Disable assertion failure message box.
        * http://msdn.microsoft.com/en-us/library/sas1dkb2.aspx
@@ -97,6 +99,7 @@ debug_disable_win32_error_dialogs(void)
       _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
    }
+#endif /* _GAMING_XBOX */
 }
 #endif /* _WIN32 */
 
