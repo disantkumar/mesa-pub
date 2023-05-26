@@ -2238,13 +2238,15 @@ iris_bufmgr_create(struct intel_device_info *devinfo, int fd, bool bo_reuse)
    iris_bufmgr_get_meminfo(bufmgr, devinfo);
    bufmgr->kmd_backend = iris_kmd_backend_get(devinfo->kmd_type);
 
-   struct intel_query_engine_info *engine_info;
-   engine_info = intel_engine_get_info(bufmgr->fd, bufmgr->devinfo.kmd_type);
-   if (!engine_info)
-      goto error_engine_info;
-   bufmgr->devinfo.has_compute_engine = intel_engines_count(engine_info,
-                                                            INTEL_ENGINE_CLASS_COMPUTE);
-   free(engine_info);
+   if (bufmgr->devinfo.verx10 >= 120) {
+      struct intel_query_engine_info *engine_info;
+      engine_info = intel_engine_get_info(bufmgr->fd, bufmgr->devinfo.kmd_type);
+      if (!engine_info)
+         goto error_engine_info;
+      bufmgr->devinfo.has_compute_engine = intel_engines_count(engine_info,
+                                                               INTEL_ENGINE_CLASS_COMPUTE);
+      free(engine_info);
+   }
 
    if (!iris_bufmgr_init_global_vm(bufmgr))
       goto error_init_vm;
