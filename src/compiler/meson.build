@@ -24,6 +24,8 @@ inc_spirv = include_directories('spirv')
 
 float64_glsl_file = files('glsl/float64.glsl')
 
+astc_decoder_glsl_file = files('glsl/astc_decoder.glsl')
+
 files_libcompiler = files(
   'builtin_type_macros.h',
   'glsl_types.cpp',
