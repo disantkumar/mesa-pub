@@ -4362,8 +4362,6 @@ struct anv_image_view {
 
    unsigned n_planes;
    struct {
-      uint32_t image_plane;
-
       struct isl_view isl;
 
       /**
