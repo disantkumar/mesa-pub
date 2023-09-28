@@ -88,6 +88,7 @@
 #include "vk_shader_module.h"
 #include "vk_sync.h"
 #include "vk_sync_timeline.h"
+#include "vk_texcompress_astc.h"
 #include "vk_util.h"
 #include "vk_queue.h"
 #include "vk_log.h"
@@ -906,6 +907,9 @@ struct anv_physical_device {
 
     /** True if we can create protected contexts. */
     bool                                        has_protected_contexts;
+
+    /** True if ASTC LDR is supported via emulation */
+    bool                                        emu_astc_ldr;
 
     /**/
     bool                                        uses_ex_bso;
@@ -3864,6 +3868,15 @@ bool anv_formats_ccs_e_compatible(const struct intel_device_info *devinfo,
 
 extern VkFormat
 vk_format_from_android(unsigned android_format, unsigned android_usage);
+
+static inline bool
+anv_is_format_emulated(const struct anv_physical_device *pdevice, VkFormat format)
+{
+   if (pdevice->emu_astc_ldr &&
+       vk_texcompress_astc_emulation_format(format) != VK_FORMAT_UNDEFINED)
+      return true;
+   return false;
+}
 
 static inline struct isl_swizzle
 anv_swizzle_for_render(struct isl_swizzle swizzle)
