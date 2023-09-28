@@ -908,6 +908,8 @@ struct anv_physical_device {
     /** True if we can create protected contexts. */
     bool                                        has_protected_contexts;
 
+    /** True if HW supports ASTC LDR */
+    bool                                        has_astc_ldr;
     /** True if ASTC LDR is supported via emulation */
     bool                                        emu_astc_ldr;
 
