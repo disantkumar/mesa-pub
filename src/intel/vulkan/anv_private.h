@@ -1292,6 +1292,8 @@ struct anv_device {
     struct intel_ds_device                       ds;
 
     nir_shader                                  *fp64_nir;
+
+    struct vk_texcompress_astc_state           *texcompress_astc;
 };
 
 static inline struct anv_state
@@ -4736,6 +4738,15 @@ struct anv_memcpy_state {
 
 VkResult anv_device_init_internal_kernels(struct anv_device *device);
 void anv_device_finish_internal_kernels(struct anv_device *device);
+
+VkResult anv_device_init_astc_emu(struct anv_device *device);
+void anv_device_finish_astc_emu(struct anv_device *device);
+void anv_astc_emu_decompress(struct anv_cmd_buffer *cmd_buffer,
+                             struct anv_image *image,
+                             VkImageLayout layout,
+                             const VkImageSubresourceLayers *subresource,
+                             VkOffset3D block_offset,
+                             VkExtent3D block_extent);
 
 /* This structure is used in 2 scenarios :
  *

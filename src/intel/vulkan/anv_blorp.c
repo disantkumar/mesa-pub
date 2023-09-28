@@ -391,6 +391,25 @@ void anv_CmdCopyImage2(
    }
 
    anv_blorp_batch_finish(&batch);
+
+   if (dst_image->emu_plane_format != VK_FORMAT_UNDEFINED) {
+      const enum anv_pipe_bits pipe_bits =
+         ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
+      anv_add_pending_pipe_bits(cmd_buffer, pipe_bits,
+                                "Copy flush before decompression");
+
+      for (unsigned r = 0; r < pCopyImageInfo->regionCount; r++) {
+         const VkImageCopy2 *region = &pCopyImageInfo->pRegions[r];
+         const VkOffset3D block_offset = vk_image_offset_to_elements(
+               &dst_image->vk, region->dstOffset);
+         const VkExtent3D block_extent = vk_image_extent_to_elements(
+               &src_image->vk, region->extent);
+         anv_astc_emu_decompress(cmd_buffer, dst_image,
+                                 pCopyImageInfo->dstImageLayout,
+                                 &region->dstSubresource,
+                                 block_offset, block_extent);
+      }
+   }
 }
 
 static enum isl_format
@@ -533,6 +552,26 @@ void anv_CmdCopyBufferToImage2(
    }
 
    anv_blorp_batch_finish(&batch);
+
+   if (dst_image->emu_plane_format != VK_FORMAT_UNDEFINED) {
+      const enum anv_pipe_bits pipe_bits =
+         ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
+      anv_add_pending_pipe_bits(cmd_buffer, pipe_bits,
+                                "Copy flush before decompression");
+
+      for (unsigned r = 0; r < pCopyBufferToImageInfo->regionCount; r++) {
+         const VkBufferImageCopy2 *region =
+            &pCopyBufferToImageInfo->pRegions[r];
+         const VkOffset3D block_offset = vk_image_offset_to_elements(
+               &dst_image->vk, region->imageOffset);
+         const VkExtent3D block_extent = vk_image_extent_to_elements(
+               &dst_image->vk, region->imageExtent);
+         anv_astc_emu_decompress(cmd_buffer, dst_image,
+                                 pCopyBufferToImageInfo->dstImageLayout,
+                                 &region->imageSubresource,
+                                 block_offset, block_extent);
+      }
+   }
 }
 
 static void
