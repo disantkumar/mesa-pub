@@ -1,25 +1,7 @@
 /*
  * Copyright © 2021 Valve Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
 #include "ac_nir.h"
@@ -33,6 +15,18 @@
    (BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_COUNT) | \
     BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_INDICES) | \
     BITFIELD64_BIT(VARYING_SLOT_CULL_PRIMITIVE))
+
+#define MS_PRIM_ARG_EXP_MASK \
+   (VARYING_BIT_LAYER | \
+    VARYING_BIT_VIEWPORT | \
+    VARYING_BIT_PRIMITIVE_SHADING_RATE)
+
+#define MS_VERT_ARG_EXP_MASK \
+   (VARYING_BIT_CULL_DIST0 | \
+    VARYING_BIT_CULL_DIST1 | \
+    VARYING_BIT_CLIP_DIST0 | \
+    VARYING_BIT_CLIP_DIST1 | \
+    VARYING_BIT_PSIZ)
 
 enum {
    nggc_passflag_used_by_pos = 1,
@@ -114,7 +108,6 @@ typedef struct
    const ac_nir_lower_ngg_options *options;
 
    nir_function_impl *impl;
-   nir_variable *current_clear_primflag_idx_var;
    int const_out_vtxcnt[4];
    int const_out_prmcnt[4];
    unsigned max_num_waves;
@@ -377,7 +370,7 @@ repack_invocations_in_workgroup(nir_builder *b, nir_ssa_def *input_bool,
 
    nir_store_shared(b, nir_u2u8(b, surviving_invocations_in_current_wave), lds_offset);
 
-   nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                          .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
 
    nir_ssa_def *packed_counts =
@@ -425,26 +418,40 @@ pervertex_lds_addr(nir_builder *b, nir_ssa_def *vertex_idx, unsigned per_vtx_byt
 
 static nir_ssa_def *
 emit_pack_ngg_prim_exp_arg(nir_builder *b, unsigned num_vertices_per_primitives,
-                           nir_ssa_def *vertex_indices[3], nir_ssa_def *is_null_prim,
-                           bool use_edgeflags)
+                           nir_ssa_def *vertex_indices[3], nir_ssa_def *is_null_prim)
 {
-   nir_ssa_def *arg = use_edgeflags
-                      ? nir_load_initial_edgeflags_amd(b)
-                      : nir_imm_int(b, 0);
+   nir_ssa_def *arg = nir_load_initial_edgeflags_amd(b);
 
    for (unsigned i = 0; i < num_vertices_per_primitives; ++i) {
       assert(vertex_indices[i]);
-      arg = nir_ior(b, arg, nir_ishl(b, vertex_indices[i], nir_imm_int(b, 10u * i)));
+      arg = nir_ior(b, arg, nir_ishl_imm(b, vertex_indices[i], 10u * i));
    }
 
    if (is_null_prim) {
       if (is_null_prim->bit_size == 1)
          is_null_prim = nir_b2i32(b, is_null_prim);
       assert(is_null_prim->bit_size == 32);
-      arg = nir_ior(b, arg, nir_ishl(b, is_null_prim, nir_imm_int(b, 31u)));
+      arg = nir_ior(b, arg, nir_ishl_imm(b, is_null_prim, 31u));
    }
 
    return arg;
+}
+
+static void
+alloc_vertices_and_primitives(nir_builder *b,
+                              nir_ssa_def *num_vtx,
+                              nir_ssa_def *num_prim)
+{
+   /* The caller should only call this conditionally on wave 0.
+    *
+    * Send GS Alloc Request message from the first wave of the group to SPI.
+    * Message payload (in the m0 register) is:
+    * - bits 0..10: number of vertices in group
+    * - bits 12..22: number of primitives in group
+    */
+
+   nir_ssa_def *m0 = nir_ior(b, nir_ishl_imm(b, num_prim, 12), num_vtx);
+   nir_sendmsg_amd(b, m0, .base = AC_SENDMSG_GS_ALLOC_REQ);
 }
 
 static void
@@ -462,7 +469,7 @@ alloc_vertices_and_primitives_gfx10_workaround(nir_builder *b,
    nir_if *if_prim_cnt_0 = nir_push_if(b, is_prim_cnt_0);
    {
       nir_ssa_def *one = nir_imm_int(b, 1);
-      nir_alloc_vertices_and_primitives_amd(b, one, one);
+      alloc_vertices_and_primitives(b, one, one);
 
       nir_ssa_def *tid = nir_load_subgroup_invocation(b);
       nir_ssa_def *is_thread_0 = nir_ieq_imm(b, tid, 0);
@@ -486,7 +493,7 @@ alloc_vertices_and_primitives_gfx10_workaround(nir_builder *b,
    }
    nir_push_else(b, if_prim_cnt_0);
    {
-      nir_alloc_vertices_and_primitives_amd(b, num_vtx, num_prim);
+      alloc_vertices_and_primitives(b, num_vtx, num_prim);
    }
    nir_pop_if(b, if_prim_cnt_0);
 }
@@ -498,10 +505,10 @@ ngg_nogs_init_vertex_indices_vars(nir_builder *b, nir_function_impl *impl, lower
       s->gs_vtx_indices_vars[v] = nir_local_variable_create(impl, glsl_uint_type(), "gs_vtx_addr");
 
       nir_ssa_def *vtx = s->options->passthrough ?
-         nir_ubfe(b, nir_load_packed_passthrough_primitive_amd(b),
-                  nir_imm_int(b, 10 * v), nir_imm_int(b, 9)) :
-         nir_ubfe(b, nir_load_gs_vertex_offset_amd(b, .base = v / 2u),
-                  nir_imm_int(b, (v & 1u) * 16u), nir_imm_int(b, 16u));
+         nir_ubfe_imm(b, nir_load_packed_passthrough_primitive_amd(b),
+                      10 * v, 9) :
+         nir_ubfe_imm(b, nir_load_gs_vertex_offset_amd(b, .base = v / 2u),
+                      (v & 1u) * 16u, 16u);
 
       nir_store_var(b, s->gs_vtx_indices_vars[v], vtx, 0x1);
    }
@@ -518,8 +525,7 @@ emit_ngg_nogs_prim_exp_arg(nir_builder *b, lower_ngg_nogs_state *s)
       for (unsigned v = 0; v < s->options->num_vertices_per_primitive; ++v)
          vtx_idx[v] = nir_load_var(b, s->gs_vtx_indices_vars[v]);
 
-      return emit_pack_ngg_prim_exp_arg(b, s->options->num_vertices_per_primitive, vtx_idx, NULL,
-                                        s->options->use_edgeflags);
+      return emit_pack_ngg_prim_exp_arg(b, s->options->num_vertices_per_primitive, vtx_idx, NULL);
    }
 }
 
@@ -548,8 +554,8 @@ nogs_prim_gen_query(nir_builder *b, lower_ngg_nogs_state *s)
       nir_if *if_elected = nir_push_if(b, nir_elect(b, 1));
       {
          /* Number of input primitives in the current wave. */
-         nir_ssa_def *num_input_prims = nir_ubfe(b, nir_load_merged_wave_info_amd(b),
-                                                 nir_imm_int(b, 8), nir_imm_int(b, 8));
+         nir_ssa_def *num_input_prims = nir_ubfe_imm(b, nir_load_merged_wave_info_amd(b),
+                                                     8, 8);
 
          /* Add to stream 0 primitive generated counter. */
          nir_atomic_add_gen_prim_count_amd(b, num_input_prims, .stream_id = 0);
@@ -570,12 +576,12 @@ emit_ngg_nogs_prim_export(nir_builder *b, lower_ngg_nogs_state *s, nir_ssa_def *
       /* pack user edge flag info into arg */
       if (s->has_user_edgeflags) {
          /* Workgroup barrier: wait for ES threads store user edge flags to LDS */
-         nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                            .memory_scope = NIR_SCOPE_WORKGROUP,
+         nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                            .memory_scope = SCOPE_WORKGROUP,
                             .memory_semantics = NIR_MEMORY_ACQ_REL,
                             .memory_modes = nir_var_mem_shared);
 
-         unsigned edge_flag_bits = (1u << 9) | (1u << 19) | (1u << 29);
+         unsigned edge_flag_bits = ac_get_all_edge_flag_bits();
          nir_ssa_def *mask = nir_imm_intN_t(b, ~edge_flag_bits, 32);
 
          unsigned edge_flag_offset = 0;
@@ -656,7 +662,7 @@ emit_store_ngg_nogs_es_primitive_id(nir_builder *b, lower_ngg_nogs_state *s)
 static void
 add_clipdist_bit(nir_builder *b, nir_ssa_def *dist, unsigned index, nir_variable *mask)
 {
-   nir_ssa_def *is_neg = nir_flt(b, dist, nir_imm_float(b, 0));
+   nir_ssa_def *is_neg = nir_flt_imm(b, dist, 0);
    nir_ssa_def *neg_mask = nir_ishl_imm(b, nir_b2i32(b, is_neg), index);
    neg_mask = nir_ior(b, neg_mask, nir_load_var(b, mask));
    nir_store_var(b, mask, neg_mask, 1);
@@ -875,8 +881,7 @@ cleanup_culling_shader_after_dce(nir_shader *shader,
    bool uses_tes_patch_id = false;
 
    bool progress = false;
-   nir_builder b;
-   nir_builder_init(&b, function_impl);
+   nir_builder b = nir_builder_create(function_impl);
 
    nir_foreach_block_reverse_safe(block, function_impl) {
       nir_foreach_instr_reverse_safe(instr, block) {
@@ -886,7 +891,7 @@ cleanup_culling_shader_after_dce(nir_shader *shader,
          nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
 
          switch (intrin->intrinsic) {
-         case nir_intrinsic_alloc_vertices_and_primitives_amd:
+         case nir_intrinsic_sendmsg_amd:
             goto cleanup_culling_shader_after_dce_done;
          case nir_intrinsic_load_vertex_id:
          case nir_intrinsic_load_vertex_id_zero_base:
@@ -999,7 +1004,7 @@ compact_vertices_after_culling(nir_builder *b,
     * Waves that have no vertices and primitives left can s_endpgm right here.
     */
 
-   nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                          .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
 
    nir_ssa_def *es_survived = nir_ilt(b, invocation_index, num_live_vertices_in_workgroup);
@@ -1043,7 +1048,7 @@ compact_vertices_after_culling(nir_builder *b,
 
       nir_ssa_def *prim_exp_arg =
          emit_pack_ngg_prim_exp_arg(b, s->options->num_vertices_per_primitive,
-                                    exporter_vtx_indices, NULL, s->options->use_edgeflags);
+                                    exporter_vtx_indices, NULL);
       nir_store_var(b, prim_exp_arg_var, prim_exp_arg, 0x1u);
    }
    nir_pop_if(b, if_gs_accepted);
@@ -1094,6 +1099,16 @@ analyze_shader_before_culling_walk(nir_ssa_def *ssa,
 
       break;
    }
+   case nir_instr_type_tex: {
+      nir_tex_instr *tex = nir_instr_as_tex(instr);
+      unsigned num_srcs = tex->num_srcs;
+
+      for (unsigned i = 0; i < num_srcs; ++i) {
+         analyze_shader_before_culling_walk(tex->src[i].src.ssa, flag, s);
+      }
+
+      break;
+   }
    case nir_instr_type_phi: {
       nir_phi_instr *phi = nir_instr_as_phi(instr);
       nir_foreach_phi_src_safe(phi_src, phi) {
@@ -1110,6 +1125,8 @@ analyze_shader_before_culling_walk(nir_ssa_def *ssa,
 static void
 analyze_shader_before_culling(nir_shader *shader, lower_ngg_nogs_state *s)
 {
+   /* LCSSA is needed to get correct results from divergence analysis. */
+   nir_convert_to_lcssa(shader, true, true);
    /* We need divergence info for culling shaders. */
    nir_divergence_analysis(shader);
 
@@ -1209,6 +1226,9 @@ save_reusable_variables(nir_builder *b, lower_ngg_nogs_state *s)
    ASSERTED int vec_ok = u_vector_init(&s->reusable_nondeferred_variables, 4, sizeof(reusable_nondeferred_variable));
    assert(vec_ok);
 
+   /* Upper limit on reusable uniforms in order to reduce SGPR spilling. */
+   unsigned remaining_reusable_uniforms = 48;
+
    nir_block *block = nir_start_block(b->impl);
    while (block) {
       /* Process the instructions in the current block. */
@@ -1226,6 +1246,13 @@ save_reusable_variables(nir_builder *b, lower_ngg_nogs_state *s)
          const struct glsl_type *t = glsl_uint_type_for_ssa(ssa);
          if (!t)
             continue;
+
+         if (!ssa->divergent) {
+            if (remaining_reusable_uniforms < ssa->num_components)
+               continue;
+
+            remaining_reusable_uniforms -= ssa->num_components;
+         }
 
          reusable_nondeferred_variable *saved = (reusable_nondeferred_variable *) u_vector_add(&s->reusable_nondeferred_variables);
          assert(saved);
@@ -1297,7 +1324,7 @@ apply_reusable_variables(nir_builder *b, lower_ngg_nogs_state *s)
          /* When we found any of these intrinsics, it means
           * we reached the top part and we must stop.
           */
-         if (intrin->intrinsic == nir_intrinsic_alloc_vertices_and_primitives_amd)
+         if (intrin->intrinsic == nir_intrinsic_sendmsg_amd)
             goto done;
 
          if (intrin->intrinsic != nir_intrinsic_store_deref)
@@ -1494,7 +1521,7 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
    /* Run culling algorithms if culling is enabled.
     *
     * NGG culling can be enabled or disabled in runtime.
-    * This is determined by a SGPR shader argument which is acccessed
+    * This is determined by a SGPR shader argument which is accessed
     * by the following NIR intrinsic.
     */
 
@@ -1523,10 +1550,10 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
       }
       nir_pop_if(b, if_es_thread);
 
-      nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+      nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                             .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
 
-      nir_store_var(b, s->gs_accepted_var, nir_imm_bool(b, false), 0x1u);
+      nir_store_var(b, s->gs_accepted_var, nir_imm_false(b), 0x1u);
       nir_store_var(b, s->prim_exp_arg_var, nir_imm_int(b, 1u << 31), 0x1u);
 
       /* GS invocations load the vertex data and perform the culling. */
@@ -1566,7 +1593,7 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
             /* primitive is culled if any plane's clipdist of all vertices are negative */
             accepted_by_clipdist = nir_ieq_imm(b, clipdist_neg_mask, 0);
          } else {
-            accepted_by_clipdist = nir_imm_bool(b, true);
+            accepted_by_clipdist = nir_imm_true(b);
          }
 
          /* See if the current primitive is accepted */
@@ -1576,17 +1603,17 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
       }
       nir_pop_if(b, if_gs_thread);
 
-      nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+      nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                             .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
 
-      nir_store_var(b, s->es_accepted_var, nir_imm_bool(b, false), 0x1u);
+      nir_store_var(b, s->es_accepted_var, nir_imm_false(b), 0x1u);
 
       /* ES invocations load their accepted flag from LDS. */
       if_es_thread = nir_push_if(b, es_thread);
       if_es_thread->control = nir_selection_control_divergent_always_taken;
       {
          nir_ssa_def *accepted = nir_load_shared(b, 1, 8u, es_vertex_lds_addr, .base = lds_es_vertex_accepted, .align_mul = 4u);
-         nir_ssa_def *accepted_bool = nir_ine(b, accepted, nir_imm_intN_t(b, 0, 8));
+         nir_ssa_def *accepted_bool = nir_ine_imm(b, nir_u2u32(b, accepted), 0);
          nir_store_var(b, s->es_accepted_var, accepted_bool, 0x1u);
       }
       nir_pop_if(b, if_es_thread);
@@ -1606,14 +1633,14 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
       num_exported_prims = nir_bcsel(b, fully_culled, nir_imm_int(b, 0u), num_exported_prims);
       nir_store_var(b, s->gs_exported_var, nir_iand(b, nir_inot(b, fully_culled), has_input_primitive(b)), 0x1u);
 
-      nir_if *if_wave_0 = nir_push_if(b, nir_ieq(b, nir_load_subgroup_id(b), nir_imm_int(b, 0)));
+      nir_if *if_wave_0 = nir_push_if(b, nir_ieq_imm(b, nir_load_subgroup_id(b), 0));
       {
          /* Tell the final vertex and primitive count to the HW. */
          if (s->options->gfx_level == GFX10) {
             alloc_vertices_and_primitives_gfx10_workaround(
                b, num_live_vertices_in_workgroup, num_exported_prims);
          } else {
-            nir_alloc_vertices_and_primitives_amd(
+            alloc_vertices_and_primitives(
                b, num_live_vertices_in_workgroup, num_exported_prims);
          }
       }
@@ -1629,11 +1656,11 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
    nir_push_else(b, if_cull_en);
    {
       /* When culling is disabled, we do the same as we would without culling. */
-      nir_if *if_wave_0 = nir_push_if(b, nir_ieq(b, nir_load_subgroup_id(b), nir_imm_int(b, 0)));
+      nir_if *if_wave_0 = nir_push_if(b, nir_ieq_imm(b, nir_load_subgroup_id(b), 0));
       {
          nir_ssa_def *vtx_cnt = nir_load_workgroup_num_input_vertices_amd(b);
          nir_ssa_def *prim_cnt = nir_load_workgroup_num_input_primitives_amd(b);
-         nir_alloc_vertices_and_primitives_amd(b, vtx_cnt, prim_cnt);
+         alloc_vertices_and_primitives(b, vtx_cnt, prim_cnt);
       }
       nir_pop_if(b, if_wave_0);
       nir_store_var(b, s->prim_exp_arg_var, emit_ngg_nogs_prim_exp_arg(b, s), 0x1u);
@@ -1855,7 +1882,7 @@ ngg_build_streamout_buffer_info(nir_builder *b,
       nir_ssa_def *emit_prim[4];
       memcpy(emit_prim, gen_prim, 4 * sizeof(nir_ssa_def *));
 
-      nir_ssa_def *any_overflow = nir_imm_bool(b, false);
+      nir_ssa_def *any_overflow = nir_imm_false(b);
       nir_ssa_def *overflow_amount[4] = {undef, undef, undef, undef};
 
       for (unsigned buffer = 0; buffer < 4; buffer++) {
@@ -1888,9 +1915,9 @@ ngg_build_streamout_buffer_info(nir_builder *b,
        */
       nir_if *if_any_overflow = nir_push_if(b, any_overflow);
       {
-         nir_build_xfb_counter_sub_amd(b, nir_vec(b, overflow_amount, 4),
-                                       /* mask of buffers to update */
-                                       .write_mask = info->buffers_written);
+         nir_xfb_counter_sub_amd(b, nir_vec(b, overflow_amount, 4),
+                                 /* mask of buffers to update */
+                                 .write_mask = info->buffers_written);
       }
       nir_pop_if(b, if_any_overflow);
 
@@ -1916,8 +1943,8 @@ ngg_build_streamout_buffer_info(nir_builder *b,
    }
    nir_pop_if(b, if_invocation_0);
 
-   nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                      .memory_scope = NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                      .memory_scope = SCOPE_WORKGROUP,
                       .memory_semantics = NIR_MEMORY_ACQ_REL,
                       .memory_modes = nir_var_mem_shared);
 
@@ -2017,7 +2044,8 @@ ngg_build_streamout_vertex(nir_builder *b, nir_xfb_info *info,
                            vtx_buffer_offsets[out->buffer],
                            zero, zero,
                            .base = out->offset,
-                           .access = ACCESS_STREAM_CACHE_POLICY);
+                           .memory_modes = nir_var_mem_ssbo,
+                           .access = ACCESS_NON_TEMPORAL);
    }
 }
 
@@ -2051,7 +2079,7 @@ ngg_nogs_build_streamout(nir_builder *b, lower_ngg_nogs_state *s)
 
       for (unsigned i = 0; i < s->options->num_vertices_per_primitive; i++) {
          nir_if *if_valid_vertex =
-            nir_push_if(b, nir_ilt(b, nir_imm_int(b, i), num_vert_per_prim));
+            nir_push_if(b, nir_igt_imm(b, num_vert_per_prim, i));
          {
             nir_ssa_def *vtx_lds_idx = nir_load_var(b, s->gs_vtx_indices_vars[i]);
             nir_ssa_def *vtx_lds_addr = pervertex_lds_addr(b, vtx_lds_idx, vtx_lds_stride);
@@ -2076,7 +2104,7 @@ ngg_nogs_build_streamout(nir_builder *b, lower_ngg_nogs_state *s)
     * TODO: not sure if we need this barrier when late prim export, as I
     *       can't observe test fail without this barrier.
     */
-   nir_memory_barrier_buffer(b);
+   nir_scoped_memory_barrier(b, SCOPE_DEVICE, NIR_MEMORY_RELEASE, nir_var_mem_ssbo);
 }
 
 static unsigned
@@ -2288,6 +2316,43 @@ export_vertex_params_gfx11(nir_builder *b, nir_ssa_def *export_tid, nir_ssa_def 
    nir_pop_if(b, NULL);
 }
 
+static void
+export_pos0_wait_attr_ring(nir_builder *b, nir_if *if_es_thread, nir_ssa_def *outputs[VARYING_SLOT_MAX][4], const ac_nir_lower_ngg_options *options)
+{
+   b->cursor = nir_after_cf_node(&if_es_thread->cf_node);
+
+   /* Create phi for the position output values. */
+   vs_output pos_output = {
+      .slot = VARYING_SLOT_POS,
+      .chan = {
+         outputs[VARYING_SLOT_POS][0],
+         outputs[VARYING_SLOT_POS][1],
+         outputs[VARYING_SLOT_POS][2],
+         outputs[VARYING_SLOT_POS][3],
+      },
+   };
+   create_vertex_param_phis(b, 1, &pos_output);
+
+   b->cursor = nir_after_cf_list(&b->impl->body);
+
+   /* Wait for attribute stores to finish. */
+   nir_scoped_barrier(b, .execution_scope = SCOPE_SUBGROUP,
+                         .memory_scope = SCOPE_DEVICE,
+                         .memory_semantics = NIR_MEMORY_RELEASE,
+                         .memory_modes = nir_var_mem_ssbo | nir_var_shader_out | nir_var_mem_global | nir_var_image);
+
+   /* Export just the pos0 output. */
+   nir_if *if_export_empty_pos = nir_push_if(b, if_es_thread->condition.ssa);
+   {
+      ac_nir_export_position(b, options->gfx_level,
+                             options->clipdist_enable_mask,
+                             !options->has_param_exports,
+                             options->force_vrs, true,
+                             VARYING_BIT_POS, &pos_output.chan);
+   }
+   nir_pop_if(b, if_export_empty_pos);
+}
+
 void
 ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *options)
 {
@@ -2342,9 +2407,8 @@ ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *option
       shader->info.outputs_written |= VARYING_BIT_PRIMITIVE_ID;
    }
 
-   nir_builder builder;
+   nir_builder builder = nir_builder_create(impl);
    nir_builder *b = &builder; /* This is to avoid the & */
-   nir_builder_init(b, impl);
 
    if (options->can_cull) {
       analyze_shader_before_culling(shader, &state);
@@ -2371,11 +2435,11 @@ ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *option
       /* Newer chips can use PRIMGEN_PASSTHRU_NO_MSG to skip gs_alloc_req for NGG passthrough. */
       if (!(options->passthrough && options->family >= CHIP_NAVI23)) {
          /* Allocate export space on wave 0 - confirm to the HW that we want to use all possible space */
-         nir_if *if_wave_0 = nir_push_if(b, nir_ieq(b, nir_load_subgroup_id(b), nir_imm_int(b, 0)));
+         nir_if *if_wave_0 = nir_push_if(b, nir_ieq_imm(b, nir_load_subgroup_id(b), 0));
          {
             nir_ssa_def *vtx_cnt = nir_load_workgroup_num_input_vertices_amd(b);
             nir_ssa_def *prim_cnt = nir_load_workgroup_num_input_primitives_amd(b);
-            nir_alloc_vertices_and_primitives_amd(b, vtx_cnt, prim_cnt);
+            alloc_vertices_and_primitives(b, vtx_cnt, prim_cnt);
          }
          nir_pop_if(b, if_wave_0);
       }
@@ -2394,8 +2458,8 @@ ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *option
 
       /* Wait for culling to finish using LDS. */
       if (need_prim_id_store_shared || has_user_edgeflags) {
-         nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                               .memory_scope = NIR_SCOPE_WORKGROUP,
+         nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                               .memory_scope = SCOPE_WORKGROUP,
                                .memory_semantics = NIR_MEMORY_ACQ_REL,
                                .memory_modes = nir_var_mem_shared);
       }
@@ -2413,7 +2477,7 @@ ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *option
       emit_ngg_nogs_prim_id_store_shared(b, &state);
 
       /* Wait for GS threads to store primitive ID in LDS. */
-      nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP, .memory_scope = NIR_SCOPE_WORKGROUP,
+      nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP, .memory_scope = SCOPE_WORKGROUP,
                             .memory_semantics = NIR_MEMORY_ACQ_REL, .memory_modes = nir_var_mem_shared);
    }
 
@@ -2482,15 +2546,19 @@ ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *option
       emit_ngg_nogs_prim_export(b, &state, nir_load_var(b, prim_exp_arg_var));
    }
 
-   uint64_t export_outputs = shader->info.outputs_written;
+   uint64_t export_outputs = shader->info.outputs_written | VARYING_BIT_POS;
    if (options->kill_pointsize)
       export_outputs &= ~VARYING_BIT_PSIZ;
+
+   const bool wait_attr_ring = options->gfx_level == GFX11 && options->has_param_exports;
+   if (wait_attr_ring)
+      export_outputs &= ~VARYING_BIT_POS;
 
    b->cursor = nir_after_cf_list(&if_es_thread->then_list);
    ac_nir_export_position(b, options->gfx_level,
                           options->clipdist_enable_mask,
                           !options->has_param_exports,
-                          options->force_vrs,
+                          options->force_vrs, !wait_attr_ring,
                           export_outputs, state.outputs);
 
    if (options->has_param_exports) {
@@ -2522,6 +2590,9 @@ ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *option
                                   state.outputs_16bit_hi);
       }
    }
+
+   if (wait_attr_ring)
+      export_pos0_wait_attr_ring(b, if_es_thread, state.outputs, options);
 
    nir_metadata_preserve(impl, nir_metadata_none);
    nir_validate_shader(shader, "after emitting NGG VS/TES");
@@ -2611,21 +2682,25 @@ ngg_gs_emit_vertex_addr(nir_builder *b, nir_ssa_def *gs_vtx_idx, lower_ngg_gs_st
 static void
 ngg_gs_clear_primflags(nir_builder *b, nir_ssa_def *num_vertices, unsigned stream, lower_ngg_gs_state *s)
 {
+   char name[32];
+   snprintf(name, sizeof(name), "clear_primflag_idx_%u", stream);
+   nir_variable *clear_primflag_idx_var = nir_local_variable_create(b->impl, glsl_uint_type(), name);
+
    nir_ssa_def *zero_u8 = nir_imm_zero(b, 1, 8);
-   nir_store_var(b, s->current_clear_primflag_idx_var, num_vertices, 0x1u);
+   nir_store_var(b, clear_primflag_idx_var, num_vertices, 0x1u);
 
    nir_loop *loop = nir_push_loop(b);
    {
-      nir_ssa_def *current_clear_primflag_idx = nir_load_var(b, s->current_clear_primflag_idx_var);
-      nir_if *if_break = nir_push_if(b, nir_uge(b, current_clear_primflag_idx, nir_imm_int(b, b->shader->info.gs.vertices_out)));
+      nir_ssa_def *clear_primflag_idx = nir_load_var(b, clear_primflag_idx_var);
+      nir_if *if_break = nir_push_if(b, nir_uge_imm(b, clear_primflag_idx, b->shader->info.gs.vertices_out));
       {
          nir_jump(b, nir_jump_break);
       }
       nir_push_else(b, if_break);
       {
-         nir_ssa_def *emit_vtx_addr = ngg_gs_emit_vertex_addr(b, current_clear_primflag_idx, s);
+         nir_ssa_def *emit_vtx_addr = ngg_gs_emit_vertex_addr(b, clear_primflag_idx, s);
          nir_store_shared(b, zero_u8, emit_vtx_addr, .base = s->lds_offs_primflags + stream);
-         nir_store_var(b, s->current_clear_primflag_idx_var, nir_iadd_imm_nuw(b, current_clear_primflag_idx, 1), 0x1u);
+         nir_store_var(b, clear_primflag_idx_var, nir_iadd_imm_nuw(b, clear_primflag_idx, 1), 0x1u);
       }
       nir_pop_if(b, if_break);
    }
@@ -2820,13 +2895,13 @@ lower_ngg_gs_emit_vertex_with_counter(nir_builder *b, nir_intrinsic_instr *intri
          ? nir_ishl_imm(b, nir_b2i32(b, nir_inot(b, nir_load_cull_any_enabled_amd(b))), 2)
          : nir_imm_int(b, 0b100);
 
-   nir_ssa_def *completes_prim = nir_ige(b, current_vtx_per_prim, nir_imm_int(b, s->num_vertices_per_primitive - 1));
+   nir_ssa_def *completes_prim = nir_ige_imm(b, current_vtx_per_prim, s->num_vertices_per_primitive - 1);
    nir_ssa_def *complete_flag = nir_b2i32(b, completes_prim);
 
    nir_ssa_def *prim_flag = nir_ior(b, vertex_live_flag, complete_flag);
    if (s->num_vertices_per_primitive == 3) {
       nir_ssa_def *odd = nir_iand(b, current_vtx_per_prim, complete_flag);
-      nir_ssa_def *odd_flag = nir_ishl(b, odd, nir_imm_int(b, 1));
+      nir_ssa_def *odd_flag = nir_ishl_imm(b, odd, 1);
       prim_flag = nir_ior(b, prim_flag, odd_flag);
    }
 
@@ -2911,9 +2986,9 @@ ngg_gs_export_primitives(nir_builder *b, nir_ssa_def *max_num_out_prims, nir_ssa
    nir_ssa_def *vtx_indices[3] = {0};
    vtx_indices[s->num_vertices_per_primitive - 1] = exporter_tid_in_tg;
    if (s->num_vertices_per_primitive >= 2)
-      vtx_indices[s->num_vertices_per_primitive - 2] = nir_isub(b, exporter_tid_in_tg, nir_imm_int(b, 1));
+      vtx_indices[s->num_vertices_per_primitive - 2] = nir_iadd_imm(b, exporter_tid_in_tg, -1);
    if (s->num_vertices_per_primitive == 3)
-      vtx_indices[s->num_vertices_per_primitive - 3] = nir_isub(b, exporter_tid_in_tg, nir_imm_int(b, 2));
+      vtx_indices[s->num_vertices_per_primitive - 3] = nir_iadd_imm(b, exporter_tid_in_tg, -2);
 
    if (s->num_vertices_per_primitive == 3) {
       /* API GS outputs triangle strips, but NGG HW understands triangles.
@@ -2921,7 +2996,7 @@ ngg_gs_export_primitives(nir_builder *b, nir_ssa_def *max_num_out_prims, nir_ssa
        * make sure the vertex order is so that the front/back is correct, and the provoking vertex is kept.
        */
 
-      nir_ssa_def *is_odd = nir_ubfe(b, primflag_0, nir_imm_int(b, 1), nir_imm_int(b, 1));
+      nir_ssa_def *is_odd = nir_ubfe_imm(b, primflag_0, 1, 1);
       nir_ssa_def *provoking_vertex_index = nir_load_provoking_vtx_in_prim_amd(b);
       nir_ssa_def *provoking_vertex_first = nir_ieq_imm(b, provoking_vertex_index, 0);
 
@@ -2934,7 +3009,8 @@ ngg_gs_export_primitives(nir_builder *b, nir_ssa_def *max_num_out_prims, nir_ssa
                                  nir_isub(b, vtx_indices[2], is_odd), vtx_indices[2]);
    }
 
-   nir_ssa_def *arg = emit_pack_ngg_prim_exp_arg(b, s->num_vertices_per_primitive, vtx_indices, is_null_prim, false);
+   nir_ssa_def *arg = emit_pack_ngg_prim_exp_arg(b, s->num_vertices_per_primitive, vtx_indices,
+                                                 is_null_prim);
    ac_nir_export_primitive(b, arg);
    nir_pop_if(b, if_prim_export_thread);
 }
@@ -3008,14 +3084,18 @@ ngg_gs_export_vertices(nir_builder *b, nir_ssa_def *max_num_out_vtx, nir_ssa_def
       }
    }
 
-   uint64_t export_outputs = b->shader->info.outputs_written;
+   uint64_t export_outputs = b->shader->info.outputs_written | VARYING_BIT_POS;
    if (s->options->kill_pointsize)
       export_outputs &= ~VARYING_BIT_PSIZ;
+
+   const bool wait_attr_ring = s->options->gfx_level == GFX11 && s->options->has_param_exports;
+   if (wait_attr_ring)
+      export_outputs &= ~VARYING_BIT_POS;
 
    ac_nir_export_position(b, s->options->gfx_level,
                           s->options->clipdist_enable_mask,
                           !s->options->has_param_exports,
-                          s->options->force_vrs,
+                          s->options->force_vrs, !wait_attr_ring,
                           export_outputs, s->outputs);
 
    nir_pop_if(b, if_vtx_export_thread);
@@ -3045,6 +3125,9 @@ ngg_gs_export_vertices(nir_builder *b, nir_ssa_def *max_num_out_vtx, nir_ssa_def
                                   s->outputs_16bit_hi);
       }
    }
+
+   if (wait_attr_ring)
+      export_pos0_wait_attr_ring(b, if_vtx_export_thread, s->outputs, s->options);
 }
 
 static void
@@ -3092,7 +3175,7 @@ ngg_gs_out_prim_all_vtxptr(nir_builder *b, nir_ssa_def *last_vtxidx, nir_ssa_def
 
    bool primitive_is_triangle = s->num_vertices_per_primitive == 3;
    nir_ssa_def *is_odd = primitive_is_triangle ?
-      nir_ubfe(b, last_vtx_primflag, nir_imm_int(b, 1), nir_imm_int(b, 1)) : NULL;
+      nir_ubfe_imm(b, last_vtx_primflag, 1, 1) : NULL;
 
    for (unsigned i = 0; i < s->num_vertices_per_primitive - 1; i++) {
       nir_ssa_def *vtxidx = nir_iadd_imm(b, last_vtxidx, -(last_vtx - i));
@@ -3144,7 +3227,7 @@ ngg_gs_cull_primitive(nir_builder *b, nir_ssa_def *tid_in_tg, nir_ssa_def *max_v
       }
 
       /* TODO: support clipdist culling in GS */
-      nir_ssa_def *accepted_by_clipdist = nir_imm_bool(b, true);
+      nir_ssa_def *accepted_by_clipdist = nir_imm_true(b);
 
       nir_ssa_def *accepted = ac_nir_cull_primitive(
          b, accepted_by_clipdist, pos, s->num_vertices_per_primitive, NULL, NULL);
@@ -3162,8 +3245,8 @@ ngg_gs_cull_primitive(nir_builder *b, nir_ssa_def *tid_in_tg, nir_ssa_def *max_v
    nir_pop_if(b, if_prim_enable);
 
    /* Wait for LDS primflag access done. */
-   nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                         .memory_scope = NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                         .memory_scope = SCOPE_WORKGROUP,
                          .memory_semantics = NIR_MEMORY_ACQ_REL,
                          .memory_modes = nir_var_mem_shared);
 
@@ -3233,7 +3316,7 @@ ngg_gs_build_streamout(nir_builder *b, lower_ngg_gs_state *s)
 
       /* We want to export primitives to streamout buffer in sequence,
        * but not all vertices are alive or mark end of a primitive, so
-       * there're "holes". We don't need continous invocations to write
+       * there're "holes". We don't need continuous invocations to write
        * primitives to streamout buffer like final vertex export, so
        * just repack to get the sequence (export_seq) is enough, no need
        * to do compaction.
@@ -3256,8 +3339,8 @@ ngg_gs_build_streamout(nir_builder *b, lower_ngg_gs_state *s)
    }
 
    /* Workgroup barrier: wait for LDS scratch reads finish. */
-   nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                      .memory_scope = NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                      .memory_scope = SCOPE_WORKGROUP,
                       .memory_semantics = NIR_MEMORY_ACQ_REL,
                       .memory_modes = nir_var_mem_shared);
 
@@ -3312,8 +3395,8 @@ ngg_gs_finale(nir_builder *b, lower_ngg_gs_state *s)
       /* When the output is compile-time known, the GS writes all possible vertices and primitives it can.
        * The gs_alloc_req needs to happen on one wave only, otherwise the HW hangs.
        */
-      nir_if *if_wave_0 = nir_push_if(b, nir_ieq(b, nir_load_subgroup_id(b), nir_imm_zero(b, 1, 32)));
-      nir_alloc_vertices_and_primitives_amd(b, max_vtxcnt, max_prmcnt);
+      nir_if *if_wave_0 = nir_push_if(b, nir_ieq_imm(b, nir_load_subgroup_id(b), 0));
+      alloc_vertices_and_primitives(b, max_vtxcnt, max_prmcnt);
       nir_pop_if(b, if_wave_0);
    }
 
@@ -3346,7 +3429,7 @@ ngg_gs_finale(nir_builder *b, lower_ngg_gs_state *s)
     * requires that the invocations that export vertices are packed (ie. compact).
     * To ensure this, we need to repack invocations that have a live vertex.
     */
-   nir_ssa_def *vertex_live = nir_ine(b, out_vtx_primflag_0, nir_imm_zero(b, 1, out_vtx_primflag_0->bit_size));
+   nir_ssa_def *vertex_live = nir_ine_imm(b, out_vtx_primflag_0, 0);
    wg_repack_result rep = repack_invocations_in_workgroup(b, vertex_live, s->lds_addr_gs_scratch,
                                                           s->max_num_waves, s->options->wave_size);
 
@@ -3354,16 +3437,16 @@ ngg_gs_finale(nir_builder *b, lower_ngg_gs_state *s)
    nir_ssa_def *exporter_tid_in_tg = rep.repacked_invocation_index;
 
    /* When the workgroup emits 0 total vertices, we also must export 0 primitives (otherwise the HW can hang). */
-   nir_ssa_def *any_output = nir_ine(b, workgroup_num_vertices, nir_imm_int(b, 0));
+   nir_ssa_def *any_output = nir_ine_imm(b, workgroup_num_vertices, 0);
    max_prmcnt = nir_bcsel(b, any_output, max_prmcnt, nir_imm_int(b, 0));
 
    /* Allocate export space. We currently don't compact primitives, just use the maximum number. */
-   nir_if *if_wave_0 = nir_push_if(b, nir_ieq(b, nir_load_subgroup_id(b), nir_imm_zero(b, 1, 32)));
+   nir_if *if_wave_0 = nir_push_if(b, nir_ieq_imm(b, nir_load_subgroup_id(b), 0));
    {
       if (s->options->gfx_level == GFX10)
          alloc_vertices_and_primitives_gfx10_workaround(b, workgroup_num_vertices, max_prmcnt);
       else
-         nir_alloc_vertices_and_primitives_amd(b, workgroup_num_vertices, max_prmcnt);
+         alloc_vertices_and_primitives(b, workgroup_num_vertices, max_prmcnt);
    }
    nir_pop_if(b, if_wave_0);
 
@@ -3371,7 +3454,7 @@ ngg_gs_finale(nir_builder *b, lower_ngg_gs_state *s)
    ngg_gs_setup_vertex_compaction(b, vertex_live, tid_in_tg, exporter_tid_in_tg, s);
 
    /* Workgroup barrier: wait for all LDS stores to finish. */
-   nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                         .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
 
    ngg_gs_export_primitives(b, max_prmcnt, tid_in_tg, exporter_tid_in_tg, out_vtx_primflag_0, s);
@@ -3401,14 +3484,11 @@ ac_nir_lower_ngg_gs(nir_shader *shader, const ac_nir_lower_ngg_options *options)
          state.const_out_prmcnt[0] != -1;
    }
 
-   if (!state.output_compile_time_known)
-      state.current_clear_primflag_idx_var = nir_local_variable_create(impl, glsl_uint_type(), "current_clear_primflag_idx");
-
-   if (shader->info.gs.output_primitive == SHADER_PRIM_POINTS)
+   if (shader->info.gs.output_primitive == MESA_PRIM_POINTS)
       state.num_vertices_per_primitive = 1;
-   else if (shader->info.gs.output_primitive == SHADER_PRIM_LINE_STRIP)
+   else if (shader->info.gs.output_primitive == MESA_PRIM_LINE_STRIP)
       state.num_vertices_per_primitive = 2;
-   else if (shader->info.gs.output_primitive == SHADER_PRIM_TRIANGLE_STRIP)
+   else if (shader->info.gs.output_primitive == MESA_PRIM_TRIANGLE_STRIP)
       state.num_vertices_per_primitive = 3;
    else
       unreachable("Invalid GS output primitive.");
@@ -3417,13 +3497,11 @@ ac_nir_lower_ngg_gs(nir_shader *shader, const ac_nir_lower_ngg_options *options)
    nir_cf_list extracted;
    nir_cf_extract(&extracted, nir_before_cf_list(&impl->body), nir_after_cf_list(&impl->body));
 
-   nir_builder builder;
+   nir_builder builder = nir_builder_at(nir_before_cf_list(&impl->body));
    nir_builder *b = &builder; /* This is to avoid the & */
-   nir_builder_init(b, impl);
-   b->cursor = nir_before_cf_list(&impl->body);
 
    /* Workgroup barrier: wait for ES threads */
-   nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                          .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
 
    state.lds_addr_gs_out_vtx = nir_load_lds_ngg_gs_out_vertex_base_amd(b);
@@ -3437,7 +3515,7 @@ ac_nir_lower_ngg_gs(nir_shader *shader, const ac_nir_lower_ngg_options *options)
    nir_pop_if(b, if_gs_thread);
 
    /* Workgroup barrier: wait for all GS threads to finish */
-   nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                          .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
 
    if (state.streamout_enabled)
@@ -4018,7 +4096,7 @@ ms_emit_arrayed_outputs(nir_builder *b,
    nir_ssa_def *zero = nir_imm_int(b, 0);
 
    u_foreach_bit64(slot, mask) {
-      /* Should not occour here, handled separately. */
+      /* Should not occur here, handled separately. */
       assert(slot != VARYING_SLOT_PRIMITIVE_COUNT && slot != VARYING_SLOT_PRIMITIVE_INDICES);
 
       unsigned component_mask = s->output_info[slot].components_mask;
@@ -4093,15 +4171,15 @@ ms_emit_legacy_workgroup_index(nir_builder *b, lower_ngg_ms_state *s)
       nir_if *if_wave_0 = nir_push_if(b, nir_ieq_imm(b, wave_id, 0));
       {
          nir_store_shared(b, workgroup_index, zero, .base = workgroup_index_lds_addr);
-         nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                               .memory_scope = NIR_SCOPE_WORKGROUP,
+         nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                               .memory_scope = SCOPE_WORKGROUP,
                                .memory_semantics = NIR_MEMORY_ACQ_REL,
                                .memory_modes = nir_var_mem_shared);
       }
       nir_push_else(b, if_wave_0);
       {
-         nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                               .memory_scope = NIR_SCOPE_WORKGROUP,
+         nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                               .memory_scope = SCOPE_WORKGROUP,
                                .memory_semantics = NIR_MEMORY_ACQ_REL,
                                .memory_modes = nir_var_mem_shared);
          loaded_workgroup_index = nir_load_shared(b, 1, 32, zero, .base = workgroup_index_lds_addr);
@@ -4133,7 +4211,7 @@ set_ms_final_output_counts(nir_builder *b,
 
    if (s->hw_workgroup_size <= s->wave_size) {
       /* Single-wave mesh shader workgroup. */
-      nir_alloc_vertices_and_primitives_amd(b, num_vtx, num_prm);
+      alloc_vertices_and_primitives(b, num_vtx, num_prm);
       *out_num_prm = num_prm;
       *out_num_vtx = num_vtx;
       return;
@@ -4159,17 +4237,17 @@ set_ms_final_output_counts(nir_builder *b,
       }
       nir_pop_if(b, if_elected);
 
-      nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                            .memory_scope = NIR_SCOPE_WORKGROUP,
+      nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                            .memory_scope = SCOPE_WORKGROUP,
                             .memory_semantics = NIR_MEMORY_ACQ_REL,
                             .memory_modes = nir_var_mem_shared);
 
-      nir_alloc_vertices_and_primitives_amd(b, num_vtx, num_prm);
+      alloc_vertices_and_primitives(b, num_vtx, num_prm);
    }
    nir_push_else(b, if_wave_0);
    {
-      nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                            .memory_scope = NIR_SCOPE_WORKGROUP,
+      nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                            .memory_scope = SCOPE_WORKGROUP,
                             .memory_semantics = NIR_MEMORY_ACQ_REL,
                             .memory_modes = nir_var_mem_shared);
 
@@ -4199,6 +4277,9 @@ static void
 ms_emit_attribute_ring_output_stores(nir_builder *b, const uint64_t outputs_mask,
                                      lower_ngg_ms_state *s)
 {
+   if (!outputs_mask)
+      return;
+
    nir_ssa_def *idx = nir_load_local_invocation_index(b);
    nir_ssa_def *ring = nir_load_ring_attr_amd(b);
    nir_ssa_def *off = nir_load_ring_attr_offset_amd(b);
@@ -4225,19 +4306,51 @@ ms_emit_attribute_ring_output_stores(nir_builder *b, const uint64_t outputs_mask
    }
 }
 
-static void
-ms_emit_primitive_export(nir_builder *b,
-                         nir_ssa_def *prim_exp_arg_ch1,
-                         uint64_t per_primitive_outputs,
-                         lower_ngg_ms_state *s)
+static nir_ssa_def *
+ms_prim_exp_arg_ch1(nir_builder *b, nir_ssa_def *invocation_index, nir_ssa_def *num_vtx, lower_ngg_ms_state *s)
+{
+   /* Primitive connectivity data: describes which vertices the primitive uses. */
+   nir_ssa_def *prim_idx_addr = nir_imul_imm(b, invocation_index, s->vertices_per_prim);
+   nir_ssa_def *indices_loaded = NULL;
+   nir_ssa_def *cull_flag = NULL;
+
+   if (s->layout.var.prm_attr.mask & BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_INDICES)) {
+      nir_ssa_def *indices[3] = {0};
+      for (unsigned c = 0; c < s->vertices_per_prim; ++c)
+         indices[c] = nir_load_var(b, s->out_variables[VARYING_SLOT_PRIMITIVE_INDICES * 4 + c]);
+      indices_loaded = nir_vec(b, indices, s->vertices_per_prim);
+   } else {
+      indices_loaded = nir_load_shared(b, s->vertices_per_prim, 8, prim_idx_addr, .base = s->layout.lds.indices_addr);
+      indices_loaded = nir_u2u32(b, indices_loaded);
+   }
+
+   if (s->uses_cull_flags) {
+      nir_ssa_def *loaded_cull_flag = NULL;
+      if (s->layout.var.prm_attr.mask & BITFIELD64_BIT(VARYING_SLOT_CULL_PRIMITIVE))
+         loaded_cull_flag = nir_load_var(b, s->out_variables[VARYING_SLOT_CULL_PRIMITIVE * 4]);
+      else
+         loaded_cull_flag = nir_u2u32(b, nir_load_shared(b, 1, 8, prim_idx_addr, .base = s->layout.lds.cull_flags_addr));
+
+      cull_flag = nir_i2b(b, loaded_cull_flag);
+   }
+
+   nir_ssa_def *indices[3];
+   nir_ssa_def *max_vtx_idx = nir_iadd_imm(b, num_vtx, -1u);
+
+   for (unsigned i = 0; i < s->vertices_per_prim; ++i) {
+      indices[i] = nir_channel(b, indices_loaded, i);
+      indices[i] = nir_umin(b, indices[i], max_vtx_idx);
+   }
+
+   return emit_pack_ngg_prim_exp_arg(b, s->vertices_per_prim, indices, cull_flag);
+}
+
+static nir_ssa_def *
+ms_prim_exp_arg_ch2(nir_builder *b, uint64_t outputs_mask, lower_ngg_ms_state *s)
 {
    nir_ssa_def *prim_exp_arg_ch2 = NULL;
 
-   uint64_t export_as_prim_arg_slots =
-      VARYING_BIT_LAYER |
-      VARYING_BIT_VIEWPORT |
-      VARYING_BIT_PRIMITIVE_SHADING_RATE;
-   if (per_primitive_outputs & export_as_prim_arg_slots) {
+   if (outputs_mask) {
       /* When layer, viewport etc. are per-primitive, they need to be encoded in
        * the primitive export instruction's second channel. The encoding is:
        *
@@ -4254,28 +4367,36 @@ ms_emit_primitive_export(nir_builder *b,
        */
       prim_exp_arg_ch2 = nir_imm_int(b, 0);
 
-      if (per_primitive_outputs & VARYING_BIT_LAYER) {
+      if (outputs_mask & VARYING_BIT_LAYER) {
          nir_ssa_def *layer =
             nir_ishl_imm(b, s->outputs[VARYING_SLOT_LAYER][0], s->gfx_level >= GFX11 ? 0 : 17);
          prim_exp_arg_ch2 = nir_ior(b, prim_exp_arg_ch2, layer);
       }
 
-      if (per_primitive_outputs & VARYING_BIT_VIEWPORT) {
+      if (outputs_mask & VARYING_BIT_VIEWPORT) {
          nir_ssa_def *view = nir_ishl_imm(b, s->outputs[VARYING_SLOT_VIEWPORT][0], 20);
          prim_exp_arg_ch2 = nir_ior(b, prim_exp_arg_ch2, view);
       }
 
-      if (per_primitive_outputs & VARYING_BIT_PRIMITIVE_SHADING_RATE) {
+      if (outputs_mask & VARYING_BIT_PRIMITIVE_SHADING_RATE) {
          nir_ssa_def *rate = s->outputs[VARYING_SLOT_PRIMITIVE_SHADING_RATE][0];
          prim_exp_arg_ch2 = nir_ior(b, prim_exp_arg_ch2, rate);
       }
-
-      /* GFX11: also store these to the attribute ring so PS can load them. */
-      if (s->gfx_level >= GFX11) {
-         ms_emit_attribute_ring_output_stores(b, per_primitive_outputs & export_as_prim_arg_slots,
-                                              s);
-      }
    }
+
+   return prim_exp_arg_ch2;
+}
+
+static void
+ms_emit_primitive_export(nir_builder *b,
+                         nir_ssa_def *invocation_index,
+                         nir_ssa_def *num_vtx,
+                         uint64_t per_primitive_outputs,
+                         lower_ngg_ms_state *s)
+{
+   const uint64_t outputs_mask = per_primitive_outputs & MS_PRIM_ARG_EXP_MASK;
+   nir_ssa_def *prim_exp_arg_ch1 = ms_prim_exp_arg_ch1(b, invocation_index, num_vtx, s);
+   nir_ssa_def *prim_exp_arg_ch2 = ms_prim_exp_arg_ch2(b, outputs_mask, s);
 
    nir_ssa_def *prim_exp_arg = prim_exp_arg_ch2 ?
       nir_vec2(b, prim_exp_arg_ch1, prim_exp_arg_ch2) : prim_exp_arg_ch1;
@@ -4290,7 +4411,7 @@ emit_ms_finale(nir_builder *b, lower_ngg_ms_state *s)
    nir_block *last_block = nir_impl_last_block(b->impl);
    b->cursor = nir_after_block(last_block);
 
-   nir_scoped_barrier(b, .execution_scope=NIR_SCOPE_WORKGROUP, .memory_scope=NIR_SCOPE_WORKGROUP,
+   nir_scoped_barrier(b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
                          .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_shader_out|nir_var_mem_shared);
 
    nir_ssa_def *num_prm;
@@ -4308,100 +4429,117 @@ emit_ms_finale(nir_builder *b, lower_ngg_ms_state *s)
     * current thread's vertex attributes in a way the HW can export.
     */
 
-   /* Export vertices. */
-   nir_ssa_def *has_output_vertex = nir_ilt(b, invocation_index, num_vtx);
-   nir_if *if_has_output_vertex = nir_push_if(b, has_output_vertex);
-   {
-      const uint64_t per_vertex_outputs =
-         s->per_vertex_outputs & ~s->layout.attr_ring.vtx_attr.mask;
-      ms_emit_arrayed_outputs(b, invocation_index, per_vertex_outputs, s);
+   uint64_t per_vertex_outputs =
+      s->per_vertex_outputs & ~s->layout.attr_ring.vtx_attr.mask;
+   uint64_t per_primitive_outputs =
+      s->per_primitive_outputs & ~s->layout.attr_ring.prm_attr.mask & ~SPECIAL_MS_OUT_MASK;
 
-      ac_nir_export_position(b, s->gfx_level, s->clipdist_enable_mask,
-                             !s->has_param_exports, false,
-                             s->per_vertex_outputs, s->outputs);
-
-      /* Export generic attributes on GFX10.3
-       * (On GFX11 they are already stored in the attribute ring.)
-       */
-      if (s->has_param_exports && s->gfx_level == GFX10_3) {
-         ac_nir_export_parameters(b, s->vs_output_param_offset, per_vertex_outputs, 0, s->outputs,
-                                  NULL, NULL);
-      }
-
-      const uint64_t per_vertex_special = VARYING_BIT_CULL_DIST0 | VARYING_BIT_CULL_DIST1 |
-                                          VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 |
-                                          VARYING_BIT_PSIZ;
-
-      /* GFX11: also store special outputs to the attribute ring so PS can load them. */
-      if (s->gfx_level >= GFX11 && (per_vertex_outputs & per_vertex_special)) {
-         ms_emit_attribute_ring_output_stores(b, per_vertex_outputs & per_vertex_special, s);
-      }
+   /* Insert layer output store if the pipeline uses multiview but the API shader doesn't write it. */
+   if (s->insert_layer_output) {
+      b->shader->info.outputs_written |= VARYING_BIT_LAYER;
+      b->shader->info.per_primitive_outputs |= VARYING_BIT_LAYER;
+      per_primitive_outputs |= VARYING_BIT_LAYER;
    }
-   nir_pop_if(b, if_has_output_vertex);
+
+   const bool has_special_param_exports =
+      (per_vertex_outputs & MS_VERT_ARG_EXP_MASK) ||
+      (per_primitive_outputs & MS_PRIM_ARG_EXP_MASK);
+
+   const bool wait_attr_ring = s->gfx_level == GFX11 && has_special_param_exports;
+
+   /* Export vertices. */
+   if ((per_vertex_outputs & ~VARYING_BIT_POS) || !wait_attr_ring) {
+      nir_ssa_def *has_output_vertex = nir_ilt(b, invocation_index, num_vtx);
+      nir_if *if_has_output_vertex = nir_push_if(b, has_output_vertex);
+      {
+         ms_emit_arrayed_outputs(b, invocation_index, per_vertex_outputs, s);
+
+         if (!wait_attr_ring)
+            ac_nir_export_position(b, s->gfx_level, s->clipdist_enable_mask,
+                                 !s->has_param_exports, false, true,
+                                 s->per_vertex_outputs | VARYING_BIT_POS, s->outputs);
+
+         /* Export generic attributes on GFX10.3
+         * (On GFX11 they are already stored in the attribute ring.)
+         */
+         if (s->has_param_exports && s->gfx_level == GFX10_3) {
+            ac_nir_export_parameters(b, s->vs_output_param_offset, per_vertex_outputs, 0, s->outputs,
+                                    NULL, NULL);
+         }
+
+         /* GFX11+: also store special outputs to the attribute ring so PS can load them. */
+         if (s->gfx_level >= GFX11 && (per_vertex_outputs & MS_VERT_ARG_EXP_MASK)) {
+            ms_emit_attribute_ring_output_stores(b, per_vertex_outputs & MS_VERT_ARG_EXP_MASK, s);
+         }
+      }
+      nir_pop_if(b, if_has_output_vertex);
+   }
 
    /* Export primitives. */
-   nir_ssa_def *has_output_primitive = nir_ilt(b, invocation_index, num_prm);
-   nir_if *if_has_output_primitive = nir_push_if(b, has_output_primitive);
-   {
-      uint64_t per_primitive_outputs =
-         s->per_primitive_outputs & ~s->layout.attr_ring.prm_attr.mask & ~SPECIAL_MS_OUT_MASK;
-      ms_emit_arrayed_outputs(b, invocation_index, per_primitive_outputs, s);
+   if (per_primitive_outputs || !wait_attr_ring) {
+      nir_ssa_def *has_output_primitive = nir_ilt(b, invocation_index, num_prm);
+      nir_if *if_has_output_primitive = nir_push_if(b, has_output_primitive);
+      {
+         ms_emit_arrayed_outputs(b, invocation_index, per_primitive_outputs, s);
 
-      /* Insert layer output store if the pipeline uses multiview but the API shader doesn't write it. */
-      if (s->insert_layer_output) {
-         s->outputs[VARYING_SLOT_LAYER][0] = nir_load_view_index(b);
-         b->shader->info.outputs_written |= VARYING_BIT_LAYER;
-         b->shader->info.per_primitive_outputs |= VARYING_BIT_LAYER;
-         per_primitive_outputs |= VARYING_BIT_LAYER;
+         /* Insert layer output store if the pipeline uses multiview but the API shader doesn't write it. */
+         if (s->insert_layer_output) {
+            s->outputs[VARYING_SLOT_LAYER][0] = nir_load_view_index(b);
+         }
+
+         if (!wait_attr_ring)
+            ms_emit_primitive_export(b, invocation_index, num_vtx, per_primitive_outputs, s);
+
+         /* Export generic attributes on GFX10.3
+         * (On GFX11 they are already stored in the attribute ring.)
+         */
+         if (s->has_param_exports && s->gfx_level == GFX10_3) {
+            ac_nir_export_parameters(b, s->vs_output_param_offset, per_primitive_outputs, 0,
+                                    s->outputs, NULL, NULL);
+         }
+
+         /* GFX11+: also store special per-primitive outputs to the attribute ring so PS can load them. */
+         if (s->gfx_level >= GFX11) {
+            ms_emit_attribute_ring_output_stores(b, per_primitive_outputs & MS_PRIM_ARG_EXP_MASK, s);
+         }
       }
-
-      /* Primitive connectivity data: describes which vertices the primitive uses. */
-      nir_ssa_def *prim_idx_addr = nir_imul_imm(b, invocation_index, s->vertices_per_prim);
-      nir_ssa_def *indices_loaded = NULL;
-      nir_ssa_def *cull_flag = NULL;
-
-      if (s->layout.var.prm_attr.mask & BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_INDICES)) {
-         nir_ssa_def *indices[3] = {0};
-         for (unsigned c = 0; c < s->vertices_per_prim; ++c)
-            indices[c] = nir_load_var(b, s->out_variables[VARYING_SLOT_PRIMITIVE_INDICES * 4 + c]);
-         indices_loaded = nir_vec(b, indices, s->vertices_per_prim);
-      }
-      else {
-         indices_loaded = nir_load_shared(b, s->vertices_per_prim, 8, prim_idx_addr, .base = s->layout.lds.indices_addr);
-         indices_loaded = nir_u2u32(b, indices_loaded);
-      }
-
-      if (s->uses_cull_flags) {
-         nir_ssa_def *loaded_cull_flag = NULL;
-         if (s->layout.var.prm_attr.mask & BITFIELD64_BIT(VARYING_SLOT_CULL_PRIMITIVE))
-            loaded_cull_flag = nir_load_var(b, s->out_variables[VARYING_SLOT_CULL_PRIMITIVE * 4]);
-         else
-            loaded_cull_flag = nir_u2u32(b, nir_load_shared(b, 1, 8, prim_idx_addr, .base = s->layout.lds.cull_flags_addr));
-
-         cull_flag = nir_i2b(b, loaded_cull_flag);
-      }
-
-      nir_ssa_def *indices[3];
-      nir_ssa_def *max_vtx_idx = nir_iadd_imm(b, num_vtx, -1u);
-
-      for (unsigned i = 0; i < s->vertices_per_prim; ++i) {
-         indices[i] = nir_channel(b, indices_loaded, i);
-         indices[i] = nir_umin(b, indices[i], max_vtx_idx);
-      }
-
-      nir_ssa_def *prim_exp_arg = emit_pack_ngg_prim_exp_arg(b, s->vertices_per_prim, indices, cull_flag, false);
-
-      ms_emit_primitive_export(b, prim_exp_arg, per_primitive_outputs, s);
-
-      /* Export generic attributes on GFX10.3
-       * (On GFX11 they are already stored in the attribute ring.)
-       */
-      if (s->has_param_exports && s->gfx_level == GFX10_3) {
-         ac_nir_export_parameters(b, s->vs_output_param_offset, per_primitive_outputs, 0,
-                                  s->outputs, NULL, NULL);
-      }
+      nir_pop_if(b, if_has_output_primitive);
    }
-   nir_pop_if(b, if_has_output_primitive);
+
+   /* When we need to wait for attribute ring stores, we emit both position and primitive
+    * export instructions after a barrier to make sure both per-vertex and per-primitive
+    * attribute ring stores are finished before the GPU starts rasterization.
+    */
+   if (wait_attr_ring) {
+      /* Wait for attribute stores to finish. */
+      nir_scoped_barrier(b, .execution_scope = SCOPE_SUBGROUP,
+                            .memory_scope = SCOPE_DEVICE,
+                            .memory_semantics = NIR_MEMORY_RELEASE,
+                            .memory_modes = nir_var_shader_out);
+
+      /* Position export only */
+      nir_ssa_def *has_output_vertex = nir_ilt(b, invocation_index, num_vtx);
+      nir_if *if_has_output_vertex = nir_push_if(b, has_output_vertex);
+      {
+         ms_emit_arrayed_outputs(b, invocation_index, per_vertex_outputs, s);
+         ac_nir_export_position(b, s->gfx_level, s->clipdist_enable_mask,
+                                !s->has_param_exports, false, true,
+                                s->per_vertex_outputs | VARYING_BIT_POS, s->outputs);
+      }
+      nir_pop_if(b, if_has_output_vertex);
+
+      nir_ssa_def *has_output_primitive = nir_ilt(b, invocation_index, num_prm);
+      nir_if *if_has_output_primitive = nir_push_if(b, has_output_primitive);
+      {
+         ms_emit_arrayed_outputs(b, invocation_index, per_primitive_outputs, s);
+         if (s->insert_layer_output) {
+            s->outputs[VARYING_SLOT_LAYER][0] = nir_load_view_index(b);
+         }
+
+         ms_emit_primitive_export(b, invocation_index, num_vtx, per_primitive_outputs, s);
+      }
+      nir_pop_if(b, if_has_output_primitive);
+   }
 }
 
 static void
@@ -4446,7 +4584,7 @@ handle_smaller_ms_api_workgroup(nir_builder *b,
             nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
             bool is_workgroup_barrier =
                intrin->intrinsic == nir_intrinsic_scoped_barrier &&
-               nir_intrinsic_execution_scope(intrin) == NIR_SCOPE_WORKGROUP;
+               nir_intrinsic_execution_scope(intrin) == SCOPE_WORKGROUP;
 
             if (!is_workgroup_barrier)
                continue;
@@ -4456,8 +4594,8 @@ handle_smaller_ms_api_workgroup(nir_builder *b,
                 * In this case, we can change the barriers to subgroup scope
                 * and avoid adding additional barriers.
                 */
-               nir_intrinsic_set_memory_scope(intrin, NIR_SCOPE_SUBGROUP);
-               nir_intrinsic_set_execution_scope(intrin, NIR_SCOPE_SUBGROUP);
+               nir_intrinsic_set_memory_scope(intrin, SCOPE_SUBGROUP);
+               nir_intrinsic_set_execution_scope(intrin, SCOPE_SUBGROUP);
             } else {
                has_any_workgroup_barriers = true;
             }
@@ -4484,13 +4622,13 @@ handle_smaller_ms_api_workgroup(nir_builder *b,
       }
       nir_pop_if(b, if_first_in_workgroup);
 
-      nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                            .memory_scope = NIR_SCOPE_WORKGROUP,
+      nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                            .memory_scope = SCOPE_WORKGROUP,
                             .memory_semantics = NIR_MEMORY_ACQ_REL,
                             .memory_modes = nir_var_shader_out | nir_var_mem_shared);
    }
 
-   nir_ssa_def *has_api_ms_invocation = nir_ult(b, invocation_index, nir_imm_int(b, s->api_workgroup_size));
+   nir_ssa_def *has_api_ms_invocation = nir_ult_imm(b, invocation_index, s->api_workgroup_size);
    nir_if *if_has_api_ms_invocation = nir_push_if(b, has_api_ms_invocation);
    {
       nir_cf_reinsert(&extracted, b->cursor);
@@ -4500,12 +4638,14 @@ handle_smaller_ms_api_workgroup(nir_builder *b,
          /* One invocation in each API wave decrements the number of API waves in flight. */
          nir_if *if_elected_again = nir_push_if(b, nir_elect(b, 1));
          {
-            nir_shared_atomic_add(b, 32, zero, nir_imm_int(b, -1u), .base = api_waves_in_flight_addr);
+            nir_shared_atomic(b, 32, zero, nir_imm_int(b, -1u),
+                              .base = api_waves_in_flight_addr,
+                              .atomic_op = nir_atomic_op_iadd);
          }
          nir_pop_if(b, if_elected_again);
 
-         nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                               .memory_scope = NIR_SCOPE_WORKGROUP,
+         nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                               .memory_scope = SCOPE_WORKGROUP,
                                .memory_semantics = NIR_MEMORY_ACQ_REL,
                                .memory_modes = nir_var_shader_out | nir_var_mem_shared);
       }
@@ -4527,8 +4667,8 @@ handle_smaller_ms_api_workgroup(nir_builder *b,
          {
             nir_loop *loop = nir_push_loop(b);
             {
-               nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                                     .memory_scope = NIR_SCOPE_WORKGROUP,
+               nir_scoped_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                                     .memory_scope = SCOPE_WORKGROUP,
                                      .memory_semantics = NIR_MEMORY_ACQ_REL,
                                      .memory_modes = nir_var_shader_out | nir_var_mem_shared);
 
@@ -4741,10 +4881,8 @@ ac_nir_lower_ngg_ms(nir_shader *shader,
    state.primitive_count_var =
       nir_local_variable_create(impl, glsl_uint_type(), "primitive_count_var");
 
-   nir_builder builder;
+   nir_builder builder = nir_builder_at(nir_before_cf_list(&impl->body));
    nir_builder *b = &builder; /* This is to avoid the & */
-   nir_builder_init(b, impl);
-   b->cursor = nir_before_cf_list(&impl->body);
 
    handle_smaller_ms_api_workgroup(b, &state);
    ms_emit_legacy_workgroup_index(b, &state);

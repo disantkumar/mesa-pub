@@ -344,9 +344,17 @@ setup_execbuf_for_cmd_buffers(struct anv_execbuf *execbuf,
    if (result != VK_SUCCESS)
       return result;
 
-   result = pin_state_pool(device, execbuf, &device->bindless_surface_state_pool);
-   if (result != VK_SUCCESS)
-      return result;
+   if (device->physical->va.bindless_surface_state_pool.size > 0) {
+      result = pin_state_pool(device, execbuf, &device->bindless_surface_state_pool);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   if (device->physical->va.push_descriptor_pool.size > 0) {
+      result = pin_state_pool(device, execbuf, &device->push_descriptor_pool);
+      if (result != VK_SUCCESS)
+         return result;
+   }
 
    result = pin_state_pool(device, execbuf, &device->internal_surface_state_pool);
    if (result != VK_SUCCESS)
@@ -374,6 +382,18 @@ setup_execbuf_for_cmd_buffers(struct anv_execbuf *execbuf,
    list_for_each_entry(struct anv_device_memory, mem,
                        &device->memory_objects, link) {
       result = anv_execbuf_add_bo(device, execbuf, mem->bo, NULL, 0);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   /* Add all the private BOs from images because we can't track after binding
+    * updates of VK_EXT_descriptor_indexing.
+    */
+   list_for_each_entry(struct anv_image, image,
+                       &device->image_private_objects, link) {
+      struct anv_bo *private_bo =
+         image->bindings[ANV_IMAGE_MEMORY_BINDING_PRIVATE].address.bo;
+      result = anv_execbuf_add_bo(device, execbuf, private_bo, NULL, 0);
       if (result != VK_SUCCESS)
          return result;
    }
@@ -519,10 +539,16 @@ static int
 anv_gem_execbuffer(struct anv_device *device,
                    struct drm_i915_gem_execbuffer2 *execbuf)
 {
-   if (execbuf->flags & I915_EXEC_FENCE_OUT)
-      return intel_ioctl(device->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2_WR, execbuf);
-   else
-      return intel_ioctl(device->fd, DRM_IOCTL_I915_GEM_EXECBUFFER2, execbuf);
+   int ret;
+   const unsigned long request = (execbuf->flags & I915_EXEC_FENCE_OUT) ?
+      DRM_IOCTL_I915_GEM_EXECBUFFER2_WR :
+      DRM_IOCTL_I915_GEM_EXECBUFFER2;
+
+   do {
+      ret = intel_ioctl(device->fd, request, execbuf);
+   } while (ret && errno == ENOMEM);
+
+   return ret;
 }
 
 static VkResult

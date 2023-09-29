@@ -75,6 +75,7 @@ static const driOptionDescription anv_dri_options[] = {
    DRI_CONF_SECTION_DEBUG
       DRI_CONF_ALWAYS_FLUSH_CACHE(false)
       DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
+      DRI_CONF_VK_WSI_FORCE_SWAPCHAIN_TO_CURRENT_EXTENT(false)
       DRI_CONF_LIMIT_TRIG_INPUT_RANGE(false)
    DRI_CONF_SECTION_END
 
@@ -725,7 +726,7 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
       &dispatch_table, &wsi_physical_device_entrypoints, false);
 
    result = vk_physical_device_init(&device->vk, &instance->vk,
-                                    NULL, /* We set up extensions later */
+                                    NULL, NULL, /* We set up extensions later */
                                     &dispatch_table);
    if (result != VK_SUCCESS) {
       vk_error(instance, result);
@@ -2040,7 +2041,7 @@ anv_get_physical_device_properties_1_3(struct anv_physical_device *pdevice,
     * experience demonstrate that this is true.
     */
    p->uniformTexelBufferOffsetAlignmentBytes = 1;
-   p->uniformTexelBufferOffsetSingleTexelAlignment = false;
+   p->uniformTexelBufferOffsetSingleTexelAlignment = true;
 
    p->maxBufferSize = pdevice->isl_dev.max_buffer_size;
 }
@@ -2625,7 +2626,7 @@ anv_device_setup_context(struct anv_device *device,
          for (uint32_t j = 0; j < queueCreateInfo->queueCount; j++)
             engine_classes[engine_count++] = queue_family->engine_class;
       }
-      if (!intel_gem_create_context_engines(device->fd,
+      if (!intel_gem_create_context_engines(device->fd, 0 /* flags */,
                                             physical_device->engine_info,
                                             engine_count, engine_classes,
                                             (uint32_t *)&device->context_id))
@@ -2976,6 +2977,10 @@ VkResult anv_CreateDevice(
       result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       goto fail_default_pipeline_cache;
    }
+
+   device->robust_buffer_access =
+      device->vk.enabled_features.robustBufferAccess ||
+      device->vk.enabled_features.nullDescriptor;
 
    anv_device_init_blorp(device);
 

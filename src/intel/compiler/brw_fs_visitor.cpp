@@ -126,6 +126,7 @@ fs_visitor::interp_reg(int location, int channel)
 
    assert(prog_data->urb_setup[location] >= 0);
    unsigned nr = prog_data->urb_setup[location];
+   channel += prog_data->urb_setup_channel[location];
 
    /* Adjust so we start counting from the first per_vertex input. */
    assert(nr >= prog_data->num_per_primitive_inputs);
@@ -142,19 +143,22 @@ fs_visitor::interp_reg(int location, int channel)
  * generate_code() time.
  */
 fs_reg
-fs_visitor::per_primitive_reg(int location)
+fs_visitor::per_primitive_reg(int location, unsigned comp)
 {
    assert(stage == MESA_SHADER_FRAGMENT);
    assert(BITFIELD64_BIT(location) & nir->info.per_primitive_inputs);
 
    const struct brw_wm_prog_data *prog_data = brw_wm_prog_data(this->prog_data);
 
+   comp += prog_data->urb_setup_channel[location];
+
    assert(prog_data->urb_setup[location] >= 0);
 
-   const unsigned regnr = prog_data->urb_setup[location];
+   const unsigned regnr = prog_data->urb_setup[location] + comp / 4;
+
    assert(regnr < prog_data->num_per_primitive_inputs);
 
-   return fs_reg(ATTR, regnr, BRW_REGISTER_TYPE_F);
+   return component(fs_reg(ATTR, regnr, BRW_REGISTER_TYPE_F), comp % 4);
 }
 
 /** Emits the interpolation for the varying inputs. */
@@ -577,10 +581,8 @@ fs_visitor::emit_interpolation_setup_gfx6()
       abld.MAD(coarse_z, coarse_z, z_cy, float_pixel_y);
    }
 
-   if (wm_prog_data->uses_src_depth) {
-      assert(!wm_prog_data->uses_depth_w_coefficients);
+   if (wm_prog_data->uses_src_depth)
       this->pixel_z = fetch_payload_reg(bld, fs_payload().source_depth_reg);
-   }
 
    if (wm_prog_data->uses_depth_w_coefficients ||
        wm_prog_data->uses_src_depth) {
@@ -599,7 +601,8 @@ fs_visitor::emit_interpolation_setup_gfx6()
          this->pixel_z = abld.vgrf(BRW_REGISTER_TYPE_F);
 
          /* We re-use the check_dynamic_msaa_flag() call from above */
-         abld.SEL(this->pixel_z, coarse_z, sample_z);
+         set_predicate(BRW_PREDICATE_NORMAL,
+                       abld.SEL(this->pixel_z, coarse_z, sample_z));
          break;
 
       case BRW_ALWAYS:
@@ -1414,6 +1417,9 @@ fs_visitor::init()
 
    this->nir_locals = NULL;
    this->nir_ssa_values = NULL;
+   this->nir_resource_insts = NULL;
+   this->nir_ssa_bind_infos = NULL;
+   this->nir_resource_values = NULL;
    this->nir_system_values = NULL;
 
    this->payload_ = NULL;

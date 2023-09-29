@@ -38,8 +38,6 @@
 
 #include "a6xx.xml.h"
 
-BEGINC;
-
 struct fd6_lrz_state {
    union {
       struct {
@@ -126,7 +124,7 @@ struct fd6_context {
    struct hash_table *bcolor_cache;
    struct fd_bo *bcolor_mem;
 
-   seqno_t tex_seqno;
+   struct util_idalloc tex_ids;
    struct hash_table *tex_cache;
    bool tex_cache_needs_invalidate;
 
@@ -154,6 +152,7 @@ fd6_context(struct fd_context *ctx)
    return (struct fd6_context *)ctx;
 }
 
+template <chip CHIP>
 struct pipe_context *fd6_context_create(struct pipe_screen *pscreen, void *priv,
                                         unsigned flags);
 
@@ -196,7 +195,5 @@ fd6_vertex_stateobj(void *p)
 {
    return (struct fd6_vertex_stateobj *)p;
 }
-
-ENDC;
 
 #endif /* FD6_CONTEXT_H_ */

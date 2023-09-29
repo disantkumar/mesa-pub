@@ -23,14 +23,11 @@
 
 #include "anv_private.h"
 #include "drm-uapi/drm_fourcc.h"
+#include "vk_android.h"
 #include "vk_enum_defines.h"
 #include "vk_enum_to_str.h"
 #include "vk_format.h"
 #include "vk_util.h"
-
-#if defined(ANDROID) && ANDROID_API_LEVEL >= 26
-#include "vk_android.h"
-#endif
 
 /*
  * gcc-4 and earlier don't allow compound literals where a constant
@@ -580,11 +577,16 @@ anv_get_image_format_features2(const struct anv_physical_device *physical_device
    enum isl_format base_isl_format = base_plane_format.isl_format;
 
    if (isl_format_supports_sampling(devinfo, plane_format.isl_format)) {
-      /* ASTC textures must be in Y-tiled memory, and we reject compressed
-       * formats with modifiers. We do however interpret ASTC textures with
-       * uncompressed formats during data transfers.
+
+      /* Unlike other surface formats, our sampler requires that the ASTC
+       * format only be used on surfaces in non-linearly-tiled memory.
+       * Thankfully, we can make an exception for linearly-tiled images that
+       * are only used for transfers. blorp_copy will reinterpret any
+       * compressed format to an uncompressed one.
+       *
+       * We handle modifier tilings further down in this function.
        */
-      if (vk_tiling != VK_IMAGE_TILING_OPTIMAL &&
+      if (vk_tiling == VK_IMAGE_TILING_LINEAR &&
           isl_format_get_layout(plane_format.isl_format)->txc == ISL_TXC_ASTC)
          return VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
                 VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
@@ -778,7 +780,7 @@ anv_get_image_format_features2(const struct anv_physical_device *physical_device
          }
       }
 
-      if (isl_mod_info->aux_usage == ISL_AUX_USAGE_CCS_E &&
+      if (isl_aux_usage_has_ccs_e(isl_mod_info->aux_usage) &&
           !isl_format_supports_ccs_e(devinfo, plane_format.isl_format)) {
          return 0;
       }
@@ -1257,6 +1259,19 @@ anv_get_image_format_properties(
       break;
    }
 
+   /* If any of the format in VkImageFormatListCreateInfo is completely
+    * unsupported, report unsupported.
+    */
+   if ((info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) &&
+       format_list_info != NULL) {
+      for (uint32_t i = 0; i < format_list_info->viewFormatCount; i++) {
+         const struct anv_format *view_format =
+            anv_get_format(format_list_info->pViewFormats[i]);
+         if (view_format == NULL)
+            goto unsupported;
+      }
+   }
+
    /* From the Vulkan 1.3.218 spec:
     *
     *    "For images created without VK_IMAGE_CREATE_EXTENDED_USAGE_BIT a usage
@@ -1525,8 +1540,8 @@ static const VkExternalMemoryProperties android_buffer_props = {
 
 
 static const VkExternalMemoryProperties android_image_props = {
-   .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
-                             VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT |
+   /* VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT will be set dynamically */
+   .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT |
                              VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT,
    .exportFromImportedHandleTypes =
       VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID,
@@ -1598,7 +1613,6 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
    bool ahw_supported =
       physical_device->vk.supported_extensions.ANDROID_external_memory_android_hardware_buffer;
 
-#if defined(ANDROID) && ANDROID_API_LEVEL >= 26
    if (ahw_supported && android_usage) {
       android_usage->androidHardwareBufferUsage =
          vk_image_usage_to_ahb_usage(base_info->flags, base_info->usage);
@@ -1606,7 +1620,6 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
       /* Limit maxArrayLayers to 1 for AHardwareBuffer based images for now. */
       base_props->imageFormatProperties.maxArrayLayers = 1;
    }
-#endif
 
    /* From the Vulkan 1.0.42 spec:
     *
@@ -1721,6 +1734,10 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
           */
          if (ahw_supported && external_props) {
             external_props->externalMemoryProperties = android_image_props;
+            if (anv_ahb_format_for_vk_format(base_info->format)) {
+               external_props->externalMemoryProperties.externalMemoryFeatures |=
+                  VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+            }
             break;
          }
          FALLTHROUGH; /* If ahw not supported */
@@ -1760,7 +1777,7 @@ void anv_GetPhysicalDeviceSparseImageFormatProperties(
     VkPhysicalDevice                            physicalDevice,
     VkFormat                                    format,
     VkImageType                                 type,
-    uint32_t                                    samples,
+    VkSampleCountFlagBits                       samples,
     VkImageUsageFlags                           usage,
     VkImageTiling                               tiling,
     uint32_t*                                   pNumProperties,
