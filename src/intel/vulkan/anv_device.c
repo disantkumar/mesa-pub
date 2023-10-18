@@ -89,6 +89,7 @@ static const driOptionDescription anv_dri_options[] = {
       DRI_CONF_ANV_QUERY_COPY_WITH_SHADER_THRESHOLD(6)
       DRI_CONF_ANV_FORCE_INDIRECT_DESCRIPTORS(false)
       DRI_CONF_SHADER_SPILLING_RATE(0)
+      DRI_CONF_OPT_B(intel_tbimr, false, "Enable TBIMR tiled rendering")
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -1614,6 +1615,7 @@ anv_init_dri_options(struct anv_instance *instance)
        driQueryOptionb(&instance->dri_options, "fake_sparse");
     instance->disable_fcv =
             driQueryOptionb(&instance->dri_options, "anv_disable_fcv");
+    instance->enable_tbimr = driQueryOptionb(&instance->dri_options, "intel_tbimr");
 }
 
 VkResult anv_CreateInstance(
