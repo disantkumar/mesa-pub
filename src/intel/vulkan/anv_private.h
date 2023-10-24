@@ -1441,6 +1441,7 @@ struct anv_gfx_dynamic_state {
       unsigned VerticalTileCount;
       unsigned HorizontalTileCount;
       unsigned TBIMRBatchSize;
+      unsigned TileBoxCheck;
    } tbimr;
    bool use_tbimr;
 
