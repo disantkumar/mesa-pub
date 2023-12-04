@@ -326,9 +326,9 @@ static const struct anv_format _4444_formats[] = {
 
 static const struct anv_format ycbcr_formats[] = {
    ycbcr_fmt(VK_FORMAT_G8B8G8R8_422_UNORM, 1, true, false,
-             ycbcr_plane(0, ISL_FORMAT_YCRCB_SWAPUV, RGBA)),
+             ycbcr_plane(0, ISL_FORMAT_YCRCB_NORMAL, RGBA)),
    ycbcr_fmt(VK_FORMAT_B8G8R8G8_422_UNORM, 1, true, false,
-             ycbcr_plane(0, ISL_FORMAT_YCRCB_SWAPUVY, RGBA)),
+             ycbcr_plane(0, ISL_FORMAT_YCRCB_SWAPY, RGBA)),
    ycbcr_fmt(VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM, 3, true, false,
              ycbcr_plane(0, ISL_FORMAT_R8_UNORM, RGBA),
              ycbcr_plane(1, ISL_FORMAT_R8_UNORM, RGBA),
@@ -396,6 +396,11 @@ static const struct anv_format ycbcr_formats[] = {
              ycbcr_plane(2, ISL_FORMAT_R16_UNORM, RGBA)),
 };
 
+static const struct anv_format maintenance5_formats[] = {
+   fmt1(VK_FORMAT_A8_UNORM_KHR,                   ISL_FORMAT_A8_UNORM),
+   swiz_fmt1(VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR, ISL_FORMAT_B5G5R5A1_UNORM, BGRA)
+};
+
 #undef _fmt
 #undef swiz_fmt1
 #undef fmt1
@@ -411,6 +416,8 @@ static const struct {
                                                  .n_formats = ARRAY_SIZE(_4444_formats), },
    [_VK_KHR_sampler_ycbcr_conversion_number] = { .formats = ycbcr_formats,
                                                  .n_formats = ARRAY_SIZE(ycbcr_formats), },
+   [_VK_KHR_maintenance5_number]             = { .formats = maintenance5_formats,
+                                                 .n_formats = ARRAY_SIZE(maintenance5_formats), },
 };
 
 const struct anv_format *
@@ -798,7 +805,7 @@ anv_get_image_format_features2(const struct anv_physical_device *physical_device
       }
 
       if (isl_drm_modifier_has_aux(isl_mod_info->modifier) &&
-          !isl_format_supports_ccs_e(devinfo, plane_format.isl_format)) {
+          !anv_format_supports_ccs_e(devinfo, plane_format.isl_format)) {
          return 0;
       }
 
@@ -1757,11 +1764,13 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
           * requires support for VK_IMAGE_TILING_OPTIMAL. Android systems
           * communicate the image's memory layout through backdoor channels.
           */
-         if (ahw_supported && external_props) {
-            external_props->externalMemoryProperties = android_image_props;
-            if (anv_ahb_format_for_vk_format(base_info->format)) {
-               external_props->externalMemoryProperties.externalMemoryFeatures |=
-                  VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+         if (ahw_supported) {
+            if (external_props) {
+               external_props->externalMemoryProperties = android_image_props;
+               if (anv_ahb_format_for_vk_format(base_info->format)) {
+                  external_props->externalMemoryProperties.externalMemoryFeatures |=
+                     VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+               }
             }
             break;
          }
@@ -1798,28 +1807,113 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
    return result;
 }
 
-void anv_GetPhysicalDeviceSparseImageFormatProperties(
-    VkPhysicalDevice                            physicalDevice,
-    VkFormat                                    format,
-    VkImageType                                 type,
-    VkSampleCountFlagBits                       samples,
-    VkImageUsageFlags                           usage,
-    VkImageTiling                               tiling,
-    uint32_t*                                   pNumProperties,
-    VkSparseImageFormatProperties*              pProperties)
-{
-   /* Sparse images are not yet supported. */
-   *pNumProperties = 0;
-}
-
 void anv_GetPhysicalDeviceSparseImageFormatProperties2(
     VkPhysicalDevice                            physicalDevice,
     const VkPhysicalDeviceSparseImageFormatInfo2* pFormatInfo,
     uint32_t*                                   pPropertyCount,
     VkSparseImageFormatProperties2*             pProperties)
 {
-   /* Sparse images are not yet supported. */
-   *pPropertyCount = 0;
+   ANV_FROM_HANDLE(anv_physical_device, physical_device, physicalDevice);
+   const struct intel_device_info *devinfo = &physical_device->info;
+   VkImageAspectFlags aspects = vk_format_aspects(pFormatInfo->format);
+   VK_OUTARRAY_MAKE_TYPED(VkSparseImageFormatProperties2, props,
+                          pProperties, pPropertyCount);
+
+   if (!physical_device->has_sparse) {
+      if (INTEL_DEBUG(DEBUG_SPARSE))
+         fprintf(stderr, "=== [%s:%d] [%s]\n", __FILE__, __LINE__, __func__);
+      return;
+   }
+
+   vk_foreach_struct_const(ext, pFormatInfo->pNext)
+      anv_debug_ignored_stype(ext->sType);
+
+   if (anv_sparse_image_check_support(physical_device,
+                                      VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+                                      VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
+                                      pFormatInfo->tiling,
+                                      pFormatInfo->samples,
+                                      pFormatInfo->type,
+                                      pFormatInfo->format) != VK_SUCCESS) {
+      return;
+   }
+
+   VkExtent3D ds_granularity = {};
+   VkSparseImageFormatProperties2 *ds_props_ptr = NULL;
+
+   u_foreach_bit(b, aspects) {
+      VkImageAspectFlagBits aspect = 1 << b;
+
+      const uint32_t plane =
+         anv_aspect_to_plane(vk_format_aspects(pFormatInfo->format), aspect);
+      struct anv_format_plane anv_format_plane =
+         anv_get_format_plane(devinfo, pFormatInfo->format, plane,
+                              pFormatInfo->tiling);
+      enum isl_format isl_format = anv_format_plane.isl_format;
+      assert(isl_format != ISL_FORMAT_UNSUPPORTED);
+
+      VkImageCreateFlags vk_create_flags =
+         VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+         VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+
+      isl_surf_usage_flags_t isl_usage =
+         anv_image_choose_isl_surf_usage(vk_create_flags, pFormatInfo->usage,
+                                         0, aspect);
+
+      const enum isl_surf_dim isl_surf_dim =
+         pFormatInfo->type == VK_IMAGE_TYPE_1D ? ISL_SURF_DIM_1D :
+         pFormatInfo->type == VK_IMAGE_TYPE_2D ? ISL_SURF_DIM_2D :
+         ISL_SURF_DIM_3D;
+
+      struct isl_surf isl_surf;
+      bool ok = isl_surf_init(&physical_device->isl_dev, &isl_surf,
+                  .dim = isl_surf_dim,
+                  .format = isl_format,
+                  .width = 1,
+                  .height = 1,
+                  .depth = 1,
+                  .levels = 1,
+                  .array_len = 1,
+                  .samples = pFormatInfo->samples,
+                  .min_alignment_B = 0,
+                  .row_pitch_B = 0,
+                  .usage = isl_usage,
+                  .tiling_flags = ISL_TILING_ANY_MASK);
+      if (!ok) {
+         /* There's no way to return an error code! */
+         assert(false);
+         *pPropertyCount = 0;
+         return;
+      }
+
+      VkSparseImageFormatProperties format_props =
+         anv_sparse_calc_image_format_properties(physical_device, aspect,
+                                                 pFormatInfo->type,
+                                                 &isl_surf);
+
+      /* If both depth and stencil are the same, unify them if possible. */
+      if (aspect & (VK_IMAGE_ASPECT_DEPTH_BIT |
+                    VK_IMAGE_ASPECT_STENCIL_BIT)) {
+         if (!ds_props_ptr) {
+            ds_granularity = format_props.imageGranularity;
+         } else if (ds_granularity.width ==
+                    format_props.imageGranularity.width &&
+                    ds_granularity.height ==
+                    format_props.imageGranularity.height &&
+                    ds_granularity.depth ==
+                    format_props.imageGranularity.depth) {
+            ds_props_ptr->properties.aspectMask |= aspect;
+            continue;
+         }
+      }
+
+      vk_outarray_append_typed(VkSparseImageFormatProperties2, &props, p) {
+         p->properties = format_props;
+         if (aspect & (VK_IMAGE_ASPECT_DEPTH_BIT |
+                       VK_IMAGE_ASPECT_STENCIL_BIT))
+            ds_props_ptr = p;
+      }
+   }
 }
 
 void anv_GetPhysicalDeviceExternalBufferProperties(

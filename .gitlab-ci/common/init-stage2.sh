@@ -86,7 +86,7 @@ if [ "$HWCI_KVM" = "true" ]; then
     mkdir -p /lava-files
     curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
 	-o "/lava-files/${KERNEL_IMAGE_NAME}" \
-        "${KERNEL_IMAGE_BASE_URL}/${KERNEL_IMAGE_NAME}"
+        "${KERNEL_IMAGE_BASE}/amd64/${KERNEL_IMAGE_NAME}"
 fi
 
 # Fix prefix confusion: the build installs to $CI_PROJECT_DIR, but we expect
@@ -125,6 +125,15 @@ if [ "$HWCI_FREQ_MAX" = "true" ]; then
   # Additionally, set the upper limit for CPU scaling frequency to 65% of the
   # maximum permitted, as an additional measure to mitigate thermal throttling.
   /intel-gpu-freq.sh -s 70% --cpu-set-max 65% -g all -d
+fi
+
+# Start a little daemon to capture sysfs records and produce a JSON file
+if [ -x /kdl.sh ]; then
+  echo "launch kdl.sh!"
+  /kdl.sh &
+  BACKGROUND_PIDS="$! $BACKGROUND_PIDS"
+else
+  echo "kdl.sh not found!"
 fi
 
 # Increase freedreno hangcheck timer because it's right at the edge of the
@@ -207,7 +216,11 @@ fi
 [ ${EXIT_CODE} -eq 0 ] && RESULT=pass || RESULT=fail
 
 set +x
-echo "hwci: mesa: $RESULT"
-# Sleep a bit to avoid kernel dump message interleave from LAVA ENDTC signal
-sleep 1
+
+# Print the final result; both bare-metal and LAVA look for this string to get
+# the result of our run, so try really hard to get it out rather than losing
+# the run. The device gets shut down right at this point, and a630 seems to
+# enjoy corrupting the last line of serial output before shutdown.
+for _ in $(seq 0 3); do echo "hwci: mesa: $RESULT"; sleep 1; echo; done
+
 exit $EXIT_CODE

@@ -131,12 +131,14 @@ modifier_is_supported(const struct intel_device_info *devinfo,
       return false;
    }
 
+   bool no_ccs = INTEL_DEBUG(DEBUG_NO_CCS) || (bind & PIPE_BIND_CONST_BW);
+
    /* Check remaining requirements. */
    switch (modifier) {
    case I915_FORMAT_MOD_4_TILED_MTL_MC_CCS:
    case I915_FORMAT_MOD_4_TILED_DG2_MC_CCS:
    case I915_FORMAT_MOD_Y_TILED_GEN12_MC_CCS:
-      if (INTEL_DEBUG(DEBUG_NO_CCS))
+      if (no_ccs)
          return false;
 
       if (pfmt != PIPE_FORMAT_BGRA8888_UNORM &&
@@ -159,7 +161,7 @@ modifier_is_supported(const struct intel_device_info *devinfo,
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC:
    case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS:
    case I915_FORMAT_MOD_Y_TILED_CCS: {
-      if (INTEL_DEBUG(DEBUG_NO_CCS))
+      if (no_ccs)
          return false;
 
       enum isl_format rt_format =
@@ -734,9 +736,15 @@ iris_resource_configure_main(const struct iris_screen *screen,
       tiling_flags = ISL_TILING_ANY_MASK;
    }
 
+   /* We don't support Yf or Ys tiling yet */
+   tiling_flags &= ~ISL_TILING_STD_Y_MASK;
+   assert(tiling_flags != 0);
+
    isl_surf_usage_flags_t usage = 0;
 
    if (res->mod_info && !isl_drm_modifier_has_aux(modifier))
+      usage |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
+   else if (templ->bind & PIPE_BIND_CONST_BW)
       usage |= ISL_SURF_USAGE_DISABLE_AUX_BIT;
 
    if (templ->usage == PIPE_USAGE_STAGING)
@@ -843,10 +851,10 @@ iris_resource_configure_aux(struct iris_screen *screen,
    const bool has_mcs =
       isl_surf_get_mcs_surf(&screen->isl_dev, &res->surf, &res->aux.surf);
 
-   const bool has_hiz = !INTEL_DEBUG(DEBUG_NO_HIZ) &&
+   const bool has_hiz =
       isl_surf_get_hiz_surf(&screen->isl_dev, &res->surf, &res->aux.surf);
 
-   const bool has_ccs = !INTEL_DEBUG(DEBUG_NO_CCS) &&
+   const bool has_ccs =
       iris_get_ccs_surf_or_support(&screen->isl_dev, &res->surf,
                                    &res->aux.surf, &res->aux.extra_aux.surf);
 
@@ -1429,6 +1437,19 @@ mod_plane_is_clear_color(uint64_t modifier, uint32_t plane)
    }
 }
 
+static struct iris_resource *
+get_resource_for_plane(struct pipe_resource *resource,
+                       unsigned plane)
+{
+   unsigned count = 0;
+   for (struct pipe_resource *cur = resource; cur; cur = cur->next) {
+      if (count++ == plane)
+         return (struct iris_resource *)cur;
+   }
+
+   return NULL;
+}
+
 static unsigned
 get_num_planes(const struct pipe_resource *resource)
 {
@@ -1437,6 +1458,27 @@ get_num_planes(const struct pipe_resource *resource)
       count++;
 
    return count;
+}
+
+static unsigned
+get_main_plane_for_plane(enum pipe_format format,
+                         const struct isl_drm_modifier_info *mod_info,
+                         unsigned plane)
+{
+   unsigned int n_planes = util_format_get_num_planes(format);
+
+   if (n_planes == 1)
+      return 0;
+
+   if (!mod_info)
+      return plane;
+
+   if (mod_info->supports_media_compression) {
+      return plane % n_planes;
+   } else {
+      assert(!mod_info->supports_render_compression);
+      return plane;
+   }
 }
 
 static struct pipe_resource *
@@ -1786,10 +1828,15 @@ iris_resource_get_param(struct pipe_screen *pscreen,
                         uint64_t *value)
 {
    struct iris_screen *screen = (struct iris_screen *)pscreen;
-   struct iris_resource *res = (struct iris_resource *)resource;
+   struct iris_resource *base_res = (struct iris_resource *)resource;
+   unsigned main_plane = get_main_plane_for_plane(base_res->external_format,
+                                                  base_res->mod_info, plane);
+   struct iris_resource *res = get_resource_for_plane(resource, main_plane);
+   assert(res);
+
    bool mod_with_aux =
       res->mod_info && isl_drm_modifier_has_aux(res->mod_info->modifier);
-   bool wants_aux = mod_with_aux && plane > 0;
+   bool wants_aux = mod_with_aux && plane != main_plane;
    bool wants_cc = mod_with_aux &&
       mod_plane_is_clear_color(res->mod_info->modifier, plane);
    bool result;
@@ -1830,7 +1877,7 @@ iris_resource_get_param(struct pipe_screen *pscreen,
       return true;
    case PIPE_RESOURCE_PARAM_OFFSET:
       *value = wants_cc ? res->aux.clear_color_offset :
-               wants_aux ? res->aux.offset : 0;
+               wants_aux ? res->aux.offset : res->offset;
       return true;
    case PIPE_RESOURCE_PARAM_MODIFIER:
       *value = res->mod_info ? res->mod_info->modifier :
@@ -2638,8 +2685,8 @@ iris_transfer_map(struct pipe_context *ctx,
    if (prefer_cpu_access(res, box, usage, level, map_would_stall))
       usage |= PIPE_MAP_DIRECTLY;
 
-   /* TODO: Teach iris_map_tiled_memcpy about Tile4 and Tile64... */
-   if (res->surf.tiling == ISL_TILING_4 || res->surf.tiling == ISL_TILING_64)
+   /* TODO: Teach iris_map_tiled_memcpy about Tile64... */
+   if (res->surf.tiling == ISL_TILING_64)
       usage &= ~PIPE_MAP_DIRECTLY;
 
    if (!(usage & PIPE_MAP_DIRECTLY)) {
@@ -2764,10 +2811,9 @@ iris_texture_subdata(struct pipe_context *ctx,
     * take that path if we need the GPU to perform color compression, or
     * stall-avoidance blits.
     *
-    * TODO: Teach isl_memcpy_linear_to_tiled about Tile4 and Tile64...
+    * TODO: Teach isl_memcpy_linear_to_tiled about Tile64...
     */
    if (surf->tiling == ISL_TILING_LINEAR ||
-       surf->tiling == ISL_TILING_4 ||
        surf->tiling == ISL_TILING_64 ||
        isl_aux_usage_has_compression(res->aux.usage) ||
        resource_is_busy(ice, res) ||

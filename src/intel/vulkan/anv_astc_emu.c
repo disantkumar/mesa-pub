@@ -63,7 +63,6 @@ astc_emu_init_flush_denorm_shader(nir_builder *b)
 {
    b->shader->info.workgroup_size[0] = 8;
    b->shader->info.workgroup_size[1] = 8;
-   b->shader->info.workgroup_size[2] = 1;
 
    const struct glsl_type *src_type =
       glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, true, GLSL_TYPE_UINT);
@@ -79,15 +78,15 @@ astc_emu_init_flush_denorm_shader(nir_builder *b)
    dst_var->data.descriptor_set = 0;
    dst_var->data.binding = 1;
 
-   nir_ssa_def *zero = nir_imm_int(b, 0);
-   nir_ssa_def *consts = nir_load_push_constant(b, 4, 32, zero, .range = 16);
-   nir_ssa_def *offset = nir_channels(b, consts, 0x3);
-   nir_ssa_def *extent = nir_channels(b, consts, 0x3 << 2);
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_def *consts = nir_load_push_constant(b, 4, 32, zero, .range = 16);
+   nir_def *offset = nir_channels(b, consts, 0x3);
+   nir_def *extent = nir_channels(b, consts, 0x3 << 2);
 
-   nir_ssa_def *coord = nir_load_global_invocation_id(b, 32);
+   nir_def *coord = nir_load_global_invocation_id(b, 32);
    coord = nir_iadd(b, nir_channels(b, coord, 0x3), offset);
 
-   nir_ssa_def *cond = nir_ilt(b, coord, extent);
+   nir_def *cond = nir_ilt(b, coord, extent);
    cond = nir_iand(b, nir_channel(b, cond, 0), nir_channel(b, cond, 1));
    nir_push_if(b, cond);
    {
@@ -97,7 +96,7 @@ astc_emu_init_flush_denorm_shader(nir_builder *b)
 
       coord = nir_vec3(b, nir_channel(b, coord, 0), nir_channel(b, coord, 1),
                        zero);
-      nir_ssa_def *val =
+      nir_def *val =
          nir_txf_deref(b, nir_build_deref_var(b, src_var), coord, zero);
       nir_store_var(b, val_var, val, 0xf);
 
@@ -116,11 +115,11 @@ astc_emu_init_flush_denorm_shader(nir_builder *b)
        *
        * where the lower 12 bits are 0xdfc for 2D LDR.
        */
-      nir_ssa_def *block_mode = nir_iand_imm(b, nir_channel(b, val, 0), 0xfff);
+      nir_def *block_mode = nir_iand_imm(b, nir_channel(b, val, 0), 0xfff);
       nir_push_if(b, nir_ieq_imm(b, block_mode, 0xdfc));
       {
-         nir_ssa_def *color = nir_channels(b, val, 0x3 << 2);
-         nir_ssa_def *comps = nir_unpack_64_4x16(b, nir_pack_64_2x32(b, color));
+         nir_def *color = nir_channels(b, val, 0x3 << 2);
+         nir_def *comps = nir_unpack_64_4x16(b, nir_pack_64_2x32(b, color));
 
          /* flush denorms */
          comps = nir_bcsel(b, nir_ult_imm(b, comps, 4),
@@ -133,10 +132,10 @@ astc_emu_init_flush_denorm_shader(nir_builder *b)
       }
       nir_pop_if(b, NULL);
 
-      nir_ssa_def *dst = &nir_build_deref_var(b, dst_var)->dest.ssa;
+      nir_def *dst = &nir_build_deref_var(b, dst_var)->def;
       coord = nir_pad_vector(b, coord, 4);
       val = nir_load_var(b, val_var);
-      nir_image_deref_store(b, dst, coord, nir_ssa_undef(b, 1, 32), val, zero,
+      nir_image_deref_store(b, dst, coord, nir_undef(b, 1, 32), val, zero,
                             .image_dim = GLSL_SAMPLER_DIM_2D,
                             .image_array = true);
    }

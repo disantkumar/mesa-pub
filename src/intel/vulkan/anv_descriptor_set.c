@@ -78,10 +78,6 @@ anv_indirect_descriptor_data_for_type(VkDescriptorType type)
 
    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-      data = ANV_DESCRIPTOR_BTI_SURFACE_STATE |
-             ANV_DESCRIPTOR_INDIRECT_SAMPLED_IMAGE;
-      break;
-
    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
       data = ANV_DESCRIPTOR_BTI_SURFACE_STATE |
              ANV_DESCRIPTOR_INDIRECT_SAMPLED_IMAGE;
@@ -148,22 +144,10 @@ anv_direct_descriptor_data_for_type(VkDescriptorType type)
    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
    case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-      data = ANV_DESCRIPTOR_BTI_SURFACE_STATE |
-             ANV_DESCRIPTOR_SURFACE;
-      break;
-
    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-      data = ANV_DESCRIPTOR_BTI_SURFACE_STATE |
-             ANV_DESCRIPTOR_SURFACE;
-      break;
-
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-      data = ANV_DESCRIPTOR_BTI_SURFACE_STATE |
-             ANV_DESCRIPTOR_SURFACE;
-         break;
-
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
    case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
       data = ANV_DESCRIPTOR_BTI_SURFACE_STATE |
@@ -296,7 +280,9 @@ anv_descriptor_size_for_mutable_type(const struct anv_physical_device *device,
 {
    unsigned size = 0;
 
-   if (!mutable_info || mutable_info->mutableDescriptorTypeListCount == 0) {
+   if (!mutable_info ||
+       mutable_info->mutableDescriptorTypeListCount == 0 ||
+       binding >= mutable_info->mutableDescriptorTypeListCount) {
       for(VkDescriptorType i = 0; i <= VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT; i++) {
 
          if (i == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC ||
@@ -806,11 +792,11 @@ static void
 sha1_update_immutable_sampler(struct mesa_sha1 *ctx,
                               const struct anv_sampler *sampler)
 {
-   if (!sampler->conversion)
+   if (!sampler->vk.ycbcr_conversion)
       return;
 
    /* The only thing that affects the shader is ycbcr conversion */
-   SHA1_UPDATE_VALUE(ctx, sampler->conversion->state);
+   SHA1_UPDATE_VALUE(ctx, sampler->vk.ycbcr_conversion->state);
 }
 
 static void
@@ -1914,7 +1900,7 @@ anv_descriptor_write_surface_state(struct anv_device *device,
       anv_isl_format_for_descriptor_type(device, desc->type);
    anv_fill_buffer_surface_state(device, bview->general.state.map,
                                  format, ISL_SWIZZLE_IDENTITY,
-                                 usage, bview->address, bview->range, 1);
+                                 usage, bview->address, bview->vk.range, 1);
 }
 
 void
@@ -2005,7 +1991,7 @@ anv_descriptor_set_write_buffer(struct anv_device *device,
 
       desc->set_buffer_view = bview;
 
-      bview->range = desc->bind_range;
+      bview->vk.range = desc->bind_range;
       bview->address = bind_addr;
 
       if (set->is_push)
@@ -2232,7 +2218,7 @@ void anv_UpdateDescriptorSets(
 
             dst_desc->set_buffer_view = dst_bview;
 
-            dst_bview->range = src_bview->range;
+            dst_bview->vk.range = src_bview->vk.range;
             dst_bview->address = src_bview->address;
 
             memcpy(dst_bview->general.state.map,

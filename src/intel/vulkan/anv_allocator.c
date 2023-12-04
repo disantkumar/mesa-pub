@@ -1083,14 +1083,11 @@ anv_state_reserved_pool_free(struct anv_state_reserved_pool *pool,
 
 void
 anv_bo_pool_init(struct anv_bo_pool *pool, struct anv_device *device,
-                 const char *name)
+                 const char *name, enum anv_bo_alloc_flags alloc_flags)
 {
    pool->name = name;
    pool->device = device;
-   pool->bo_alloc_flags =
-      ANV_BO_ALLOC_MAPPED |
-      ANV_BO_ALLOC_SNOOPED |
-      ANV_BO_ALLOC_CAPTURE;
+   pool->bo_alloc_flags = alloc_flags;
 
    for (unsigned i = 0; i < ARRAY_SIZE(pool->free_list); i++) {
       util_sparse_array_free_list_init(&pool->free_list[i],
@@ -1330,40 +1327,6 @@ anv_bo_cache_finish(struct anv_bo_cache *cache)
    pthread_mutex_destroy(&cache->mutex);
 }
 
-#define ANV_BO_CACHE_SUPPORTED_FLAGS \
-   (EXEC_OBJECT_WRITE | \
-    EXEC_OBJECT_ASYNC | \
-    EXEC_OBJECT_SUPPORTS_48B_ADDRESS | \
-    EXEC_OBJECT_PINNED | \
-    EXEC_OBJECT_CAPTURE)
-
-static uint32_t
-anv_bo_alloc_flags_to_bo_flags(struct anv_device *device,
-                               enum anv_bo_alloc_flags alloc_flags)
-{
-   struct anv_physical_device *pdevice = device->physical;
-
-   uint64_t bo_flags = EXEC_OBJECT_PINNED;
-
-   if (!(alloc_flags & ANV_BO_ALLOC_32BIT_ADDRESS))
-      bo_flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
-
-   if (((alloc_flags & ANV_BO_ALLOC_CAPTURE) ||
-        INTEL_DEBUG(DEBUG_CAPTURE_ALL)) &&
-       pdevice->has_exec_capture)
-      bo_flags |= EXEC_OBJECT_CAPTURE;
-
-   if (alloc_flags & ANV_BO_ALLOC_IMPLICIT_WRITE) {
-      assert(alloc_flags & ANV_BO_ALLOC_IMPLICIT_SYNC);
-      bo_flags |= EXEC_OBJECT_WRITE;
-   }
-
-   if (!(alloc_flags & ANV_BO_ALLOC_IMPLICIT_SYNC) && pdevice->has_exec_async)
-      bo_flags |= EXEC_OBJECT_ASYNC;
-
-   return bo_flags;
-}
-
 static void
 anv_bo_unmap_close(struct anv_device *device, struct anv_bo *bo)
 {
@@ -1371,7 +1334,7 @@ anv_bo_unmap_close(struct anv_device *device, struct anv_bo *bo)
       anv_device_unmap_bo(device, bo, bo->map, bo->size);
 
    assert(bo->gem_handle != 0);
-   device->kmd_backend->gem_close(device, bo->gem_handle);
+   device->kmd_backend->gem_close(device, bo);
 }
 
 static void
@@ -1388,7 +1351,7 @@ static void
 anv_bo_finish(struct anv_device *device, struct anv_bo *bo)
 {
    /* Not releasing vma in case unbind fails */
-   if (device->kmd_backend->gem_vm_unbind(device, bo) == 0)
+   if (device->kmd_backend->vm_unbind_bo(device, bo) == 0)
       anv_bo_vma_free(device, bo);
 
    anv_bo_unmap_close(device, bo);
@@ -1404,6 +1367,10 @@ anv_bo_vma_alloc_or_close(struct anv_device *device,
    assert(explicit_address == intel_48b_address(explicit_address));
 
    uint32_t align = device->physical->info.mem_alignment;
+
+   /* If it's big enough to store a tiled resource, we need 64K alignment */
+   if (bo->size >= 64 * 1024)
+      align = MAX2(64 * 1024, align);
 
    /* If we're using the AUX map, make sure we follow the required
     * alignment.
@@ -1445,8 +1412,7 @@ anv_device_alloc_bo(struct anv_device *device,
                     struct anv_bo **bo_out)
 {
    const uint32_t bo_flags =
-      anv_bo_alloc_flags_to_bo_flags(device, alloc_flags);
-   assert(bo_flags == (bo_flags & ANV_BO_CACHE_SUPPORTED_FLAGS));
+         device->kmd_backend->bo_alloc_flags_to_bo_flags(device, alloc_flags);
 
    /* The kernel is going to give us whole pages anyway. */
    size = align64(size, 4096);
@@ -1505,28 +1471,8 @@ anv_device_alloc_bo(struct anv_device *device,
       VkResult result = anv_device_map_bo(device, &new_bo, 0, size,
                                           0 /* propertyFlags */, &new_bo.map);
       if (unlikely(result != VK_SUCCESS)) {
-         device->kmd_backend->gem_close(device, new_bo.gem_handle);
+         device->kmd_backend->gem_close(device, &new_bo);
          return result;
-      }
-   }
-
-   if (alloc_flags & ANV_BO_ALLOC_SNOOPED) {
-      assert(alloc_flags & ANV_BO_ALLOC_MAPPED);
-      /* We don't want to change these defaults if it's going to be shared
-       * with another process.
-       */
-      assert(!(alloc_flags & ANV_BO_ALLOC_EXTERNAL));
-
-      /* Regular objects are created I915_CACHING_CACHED on LLC platforms and
-       * I915_CACHING_NONE on non-LLC platforms.  For many internal state
-       * objects, we'd rather take the snooping overhead than risk forgetting
-       * a CLFLUSH somewhere.  Userptr objects are always created as
-       * I915_CACHING_CACHED, which on non-LLC means snooped so there's no
-       * need to do this there.
-       */
-      if (device->info->has_caching_uapi && !device->info->has_llc) {
-         anv_gem_set_caching(device, new_bo.gem_handle,
-                             I915_CACHING_CACHED);
       }
    }
 
@@ -1536,7 +1482,7 @@ anv_device_alloc_bo(struct anv_device *device,
    if (result != VK_SUCCESS)
       return result;
 
-   if (device->kmd_backend->gem_vm_bind(device, &new_bo)) {
+   if (device->kmd_backend->vm_bind_bo(device, &new_bo)) {
       anv_bo_vma_free(device, &new_bo);
       anv_bo_unmap_close(device, &new_bo);
       return vk_errorf(device, VK_ERROR_UNKNOWN, "vm bind failed");
@@ -1602,16 +1548,26 @@ anv_device_import_bo_from_host_ptr(struct anv_device *device,
 
    struct anv_bo_cache *cache = &device->bo_cache;
    const uint32_t bo_flags =
-      anv_bo_alloc_flags_to_bo_flags(device, alloc_flags);
-   assert(bo_flags == (bo_flags & ANV_BO_CACHE_SUPPORTED_FLAGS));
+         device->kmd_backend->bo_alloc_flags_to_bo_flags(device, alloc_flags);
 
-   uint32_t gem_handle = anv_gem_userptr(device, host_ptr, size);
+   uint32_t gem_handle = device->kmd_backend->gem_create_userptr(device, host_ptr, size);
    if (!gem_handle)
       return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
 
    pthread_mutex_lock(&cache->mutex);
 
-   struct anv_bo *bo = anv_device_lookup_bo(device, gem_handle);
+   struct anv_bo *bo = NULL;
+   if (device->info->kmd_type == INTEL_KMD_TYPE_XE) {
+      bo = vk_zalloc(&device->vk.alloc, sizeof(*bo), 8,
+                     VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+      if (!bo) {
+         pthread_mutex_unlock(&cache->mutex);
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      }
+   } else {
+      bo = anv_device_lookup_bo(device, gem_handle);
+   }
+
    if (bo->refcount > 0) {
       /* VK_EXT_external_memory_host doesn't require handling importing the
        * same pointer twice at the same time, but we don't get in the way.  If
@@ -1664,6 +1620,13 @@ anv_device_import_bo_from_host_ptr(struct anv_device *device,
          return result;
       }
 
+      if (device->kmd_backend->vm_bind_bo(device, &new_bo)) {
+         VkResult res = vk_errorf(device, VK_ERROR_UNKNOWN, "vm bind failed: %m");
+         anv_bo_vma_free(device, &new_bo);
+         pthread_mutex_unlock(&cache->mutex);
+         return res;
+      }
+
       *bo = new_bo;
    }
 
@@ -1683,11 +1646,9 @@ anv_device_import_bo(struct anv_device *device,
    assert(!(alloc_flags & (ANV_BO_ALLOC_MAPPED |
                            ANV_BO_ALLOC_SNOOPED |
                            ANV_BO_ALLOC_FIXED_ADDRESS)));
+   assert(alloc_flags & ANV_BO_ALLOC_EXTERNAL);
 
    struct anv_bo_cache *cache = &device->bo_cache;
-   const uint32_t bo_flags =
-      anv_bo_alloc_flags_to_bo_flags(device, alloc_flags);
-   assert(bo_flags == (bo_flags & ANV_BO_CACHE_SUPPORTED_FLAGS));
 
    pthread_mutex_lock(&cache->mutex);
 
@@ -1698,46 +1659,17 @@ anv_device_import_bo(struct anv_device *device,
    }
 
    struct anv_bo *bo = anv_device_lookup_bo(device, gem_handle);
+
+   uint32_t bo_flags;
+   VkResult result = anv_gem_import_bo_alloc_flags_to_bo_flags(device, bo,
+                                                               alloc_flags,
+                                                               &bo_flags);
+   if (result != VK_SUCCESS) {
+      pthread_mutex_unlock(&cache->mutex);
+      return result;
+   }
+
    if (bo->refcount > 0) {
-      /* We have to be careful how we combine flags so that it makes sense.
-       * Really, though, if we get to this case and it actually matters, the
-       * client has imported a BO twice in different ways and they get what
-       * they have coming.
-       */
-      uint64_t new_flags = 0;
-      new_flags |= (bo->flags | bo_flags) & EXEC_OBJECT_WRITE;
-      new_flags |= (bo->flags & bo_flags) & EXEC_OBJECT_ASYNC;
-      new_flags |= (bo->flags & bo_flags) & EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
-      new_flags |= (bo->flags | bo_flags) & EXEC_OBJECT_PINNED;
-      new_flags |= (bo->flags | bo_flags) & EXEC_OBJECT_CAPTURE;
-
-      /* It's theoretically possible for a BO to get imported such that it's
-       * both pinned and not pinned.  The only way this can happen is if it
-       * gets imported as both a semaphore and a memory object and that would
-       * be an application error.  Just fail out in that case.
-       */
-      if ((bo->flags & EXEC_OBJECT_PINNED) !=
-          (bo_flags & EXEC_OBJECT_PINNED)) {
-         pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
-                          "The same BO was imported two different ways");
-      }
-
-      /* It's also theoretically possible that someone could export a BO from
-       * one heap and import it into another or to import the same BO into two
-       * different heaps.  If this happens, we could potentially end up both
-       * allowing and disallowing 48-bit addresses.  There's not much we can
-       * do about it if we're pinning so we just throw an error and hope no
-       * app is actually that stupid.
-       */
-      if ((new_flags & EXEC_OBJECT_PINNED) &&
-          (bo->flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS) !=
-          (bo_flags & EXEC_OBJECT_SUPPORTS_48B_ADDRESS)) {
-         pthread_mutex_unlock(&cache->mutex);
-         return vk_errorf(device, VK_ERROR_INVALID_EXTERNAL_HANDLE,
-                          "The same BO was imported on two different heaps");
-      }
-
       if (bo->has_client_visible_address !=
           ((alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0)) {
          pthread_mutex_unlock(&cache->mutex);
@@ -1753,29 +1685,26 @@ anv_device_import_bo(struct anv_device *device,
                           "addresses");
       }
 
-      bo->flags = new_flags;
-
       __sync_fetch_and_add(&bo->refcount, 1);
    } else {
-      off_t size = lseek(fd, 0, SEEK_END);
-      if (size == (off_t)-1) {
-         device->kmd_backend->gem_close(device, gem_handle);
-         pthread_mutex_unlock(&cache->mutex);
-         return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
-      }
-
       struct anv_bo new_bo = {
          .name = "imported",
          .gem_handle = gem_handle,
          .refcount = 1,
          .offset = -1,
-         .size = size,
-         .actual_size = size,
-         .flags = bo_flags,
          .is_external = true,
          .has_client_visible_address =
             (alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0,
       };
+
+      off_t size = lseek(fd, 0, SEEK_END);
+      if (size == (off_t)-1) {
+         device->kmd_backend->gem_close(device, &new_bo);
+         pthread_mutex_unlock(&cache->mutex);
+         return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+      }
+      new_bo.size = size;
+      new_bo.actual_size = size;
 
       VkResult result = anv_bo_vma_alloc_or_close(device, &new_bo,
                                                   alloc_flags,
@@ -1785,7 +1714,7 @@ anv_device_import_bo(struct anv_device *device,
          return result;
       }
 
-      if (device->kmd_backend->gem_vm_bind(device, &new_bo)) {
+      if (device->kmd_backend->vm_bind_bo(device, &new_bo)) {
          anv_bo_vma_free(device, &new_bo);
          pthread_mutex_unlock(&cache->mutex);
          return vk_errorf(device, VK_ERROR_UNKNOWN, "vm bind failed");
@@ -1793,6 +1722,8 @@ anv_device_import_bo(struct anv_device *device,
 
       *bo = new_bo;
    }
+
+   bo->flags = bo_flags;
 
    pthread_mutex_unlock(&cache->mutex);
    *bo_out = bo;
@@ -1876,7 +1807,10 @@ anv_device_release_bo(struct anv_device *device,
                       struct anv_bo *bo)
 {
    struct anv_bo_cache *cache = &device->bo_cache;
-   assert(anv_device_lookup_bo(device, bo->gem_handle) == bo);
+   const bool bo_is_xe_userptr = device->info->kmd_type == INTEL_KMD_TYPE_XE &&
+                                 bo->from_host_ptr;
+   assert(bo_is_xe_userptr ||
+          anv_device_lookup_bo(device, bo->gem_handle) == bo);
 
    /* Try to decrement the counter but don't go below one.  If this succeeds
     * then the refcount has been decremented and we are not the last
@@ -1914,7 +1848,10 @@ anv_device_release_bo(struct anv_device *device,
     */
    struct anv_bo old_bo = *bo;
 
-   memset(bo, 0, sizeof(*bo));
+   if (bo_is_xe_userptr)
+      vk_free(&device->vk.alloc, bo);
+   else
+      memset(bo, 0, sizeof(*bo));
 
    anv_bo_finish(device, &old_bo);
 
