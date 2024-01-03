@@ -1178,7 +1178,7 @@ vn_QueueSubmit(VkQueue queue,
       .submit_batches = pSubmits,
       .fence_handle = fence,
    };
-
+	vn_log(NULL,"vn_QueueSubmit");
    return vn_queue_submit(&submit);
 }
 
@@ -1198,6 +1198,7 @@ vn_QueueSubmit2(VkQueue queue,
       .fence_handle = fence,
    };
 
+	vn_log(NULL,"vn_QueueSubmit2");
    return vn_queue_submit(&submit);
 }
 
@@ -1442,7 +1443,7 @@ vn_QueueWaitIdle(VkQueue _queue)
    result = vn_QueueSubmit(_queue, 0, NULL, queue->wait_fence);
    if (result != VK_SUCCESS)
       return result;
-
+	vn_log(NULL,"vn_QueueWaitIdle::vn_WaitForFences");
    result =
       vn_WaitForFences(dev_handle, 1, &queue->wait_fence, true, UINT64_MAX);
    vn_ResetFences(dev_handle, 1, &queue->wait_fence);
@@ -1789,6 +1790,7 @@ vn_WaitForFences(VkDevice device,
 
       struct vn_relax_state relax_state =
          vn_relax_init(dev->instance, "client");
+	  vn_log(NULL,"vn_WaitForFences::vn_remove_signaled_fences");
       while (result == VK_NOT_READY) {
          result = vn_remove_signaled_fences(device, fences, &fenceCount);
          result =
@@ -1801,6 +1803,7 @@ vn_WaitForFences(VkDevice device,
    } else {
       struct vn_relax_state relax_state =
          vn_relax_init(dev->instance, "client");
+	  vn_log(NULL,"vn_WaitForFences::vn_find_first_signaled_fence");
       while (result == VK_NOT_READY) {
          result = vn_find_first_signaled_fence(device, pFences, fenceCount);
          result =
@@ -2305,6 +2308,7 @@ vn_WaitSemaphores(VkDevice device,
 
       struct vn_relax_state relax_state =
          vn_relax_init(dev->instance, "client");
+	  vn_log(NULL,"vn_WaitSemaphores::vn_remove_signaled_semaphores");
       while (result == VK_NOT_READY) {
          result = vn_remove_signaled_semaphores(device, semaphores, values,
                                                 &semaphore_count);
@@ -2318,6 +2322,7 @@ vn_WaitSemaphores(VkDevice device,
    } else {
       struct vn_relax_state relax_state =
          vn_relax_init(dev->instance, "client");
+	  vn_log(NULL,"vn_WaitSemaphores::vn_find_first_signaled_semaphore");
       while (result == VK_NOT_READY) {
          result = vn_find_first_signaled_semaphore(
             device, pWaitInfo->pSemaphores, pWaitInfo->pValues,
