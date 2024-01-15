@@ -868,35 +868,13 @@ get_features(const struct anv_physical_device *pdevice,
       features->depthBounds = true;
 }
 
-static uint64_t
-anv_compute_sys_heap_size(struct anv_physical_device *device,
-                          uint64_t total_ram)
-{
-   /* We don't want to burn too much ram with the GPU.  If the user has 4GiB
-    * or less, we use at most half.  If they have more than 4GiB, we use 3/4.
-    */
-   uint64_t available_ram;
-   if (total_ram <= 4ull * 1024ull * 1024ull * 1024ull)
-      available_ram = total_ram / 2;
-   else
-      available_ram = total_ram * 3 / 4;
-
-   /* We also want to leave some padding for things we allocate in the driver,
-    * so don't go over 3/4 of the GTT either.
-    */
-   available_ram = MIN2(available_ram, device->gtt_size * 3 / 4);
-
-   return available_ram;
-}
-
 static VkResult MUST_CHECK
 anv_init_meminfo(struct anv_physical_device *device, int fd)
 {
    const struct intel_device_info *devinfo = &device->info;
 
    device->sys.region = &devinfo->mem.sram.mem;
-   device->sys.size =
-      anv_compute_sys_heap_size(device, devinfo->mem.sram.mappable.size);
+   device->sys.size = devinfo->mem.sram.mappable.size;
    device->sys.available = devinfo->mem.sram.mappable.free;
 
    device->vram_mappable.region = &devinfo->mem.vram.mem;
