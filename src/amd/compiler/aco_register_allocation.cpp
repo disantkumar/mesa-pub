@@ -24,6 +24,7 @@
 
 #include "aco_ir.h"
 
+#include "util/bitset.h"
 #include "util/enum_operators.h"
 
 #include <algorithm>
@@ -61,7 +62,7 @@ struct assignment {
    };
    uint32_t affinity = 0;
    assignment() = default;
-   assignment(PhysReg reg_, RegClass rc_) : reg(reg_), rc(rc_), assigned(-1) {}
+   assignment(PhysReg reg_, RegClass rc_) : reg(reg_), rc(rc_) { assigned = true; }
    void set(const Definition& def)
    {
       assigned = true;
@@ -1935,19 +1936,6 @@ bool
 operand_can_use_reg(amd_gfx_level gfx_level, aco_ptr<Instruction>& instr, unsigned idx, PhysReg reg,
                     RegClass rc)
 {
-   bool is_writelane = instr->opcode == aco_opcode::v_writelane_b32 ||
-                       instr->opcode == aco_opcode::v_writelane_b32_e64;
-   if (gfx_level <= GFX9 && is_writelane && idx <= 1) {
-      /* v_writelane_b32 can take two sgprs but only if one is m0. */
-      bool is_other_sgpr =
-         instr->operands[!idx].isTemp() &&
-         (!instr->operands[!idx].isFixed() || instr->operands[!idx].physReg() != m0);
-      if (is_other_sgpr && instr->operands[!idx].tempId() != instr->operands[idx].tempId()) {
-         instr->operands[idx].setFixed(m0);
-         return reg == m0;
-      }
-   }
-
    if (reg.byte()) {
       unsigned stride = get_subdword_operand_stride(gfx_level, instr, idx, rc);
       if (reg.byte() % stride)
@@ -1971,11 +1959,12 @@ handle_fixed_operands(ra_ctx& ctx, RegisterFile& register_file,
                       std::vector<std::pair<Operand, Definition>>& parallelcopy,
                       aco_ptr<Instruction>& instr)
 {
-   assert(instr->operands.size() <= 64);
+   assert(instr->operands.size() <= 128);
 
    RegisterFile tmp_file(register_file);
 
-   uint64_t mask = 0;
+   BITSET_DECLARE(mask, 128) = {0};
+
    for (unsigned i = 0; i < instr->operands.size(); i++) {
       Operand& op = instr->operands[i];
 
@@ -1990,8 +1979,9 @@ handle_fixed_operands(ra_ctx& ctx, RegisterFile& register_file,
          continue;
       }
 
+      unsigned j;
       bool found = false;
-      u_foreach_bit64 (j, mask) {
+      BITSET_FOREACH_SET (j, mask, i) {
          if (instr->operands[j].tempId() == op.tempId() &&
              instr->operands[j].physReg() == op.physReg()) {
             found = true;
@@ -2004,18 +1994,19 @@ handle_fixed_operands(ra_ctx& ctx, RegisterFile& register_file,
       /* clear from register_file so fixed operands are not collected be collect_vars() */
       tmp_file.clear(src, op.regClass()); // TODO: try to avoid moving block vars to src
 
-      mask |= (uint64_t)1 << i;
+      BITSET_SET(mask, i);
 
       Operand pc_op(instr->operands[i].getTemp(), src);
       Definition pc_def = Definition(op.physReg(), pc_op.regClass());
       parallelcopy.emplace_back(pc_op, pc_def);
    }
 
-   if (!mask)
+   if (BITSET_IS_EMPTY(mask))
       return;
 
+   unsigned i;
    std::vector<unsigned> blocking_vars;
-   u_foreach_bit64 (i, mask) {
+   BITSET_FOREACH_SET (i, mask, instr->operands.size()) {
       Operand& op = instr->operands[i];
       PhysRegInterval target{op.physReg(), op.size()};
       std::vector<unsigned> blocking_vars2 = collect_vars(ctx, tmp_file, target);
@@ -2838,6 +2829,18 @@ register_allocation(Program* program, std::vector<IDSet>& live_out_per_block, ra
 
             fixed |=
                operand.isFixed() && ctx.assignments[operand.tempId()].reg != operand.physReg();
+         }
+
+         bool is_writelane = instr->opcode == aco_opcode::v_writelane_b32 ||
+                             instr->opcode == aco_opcode::v_writelane_b32_e64;
+         if (program->gfx_level <= GFX9 && is_writelane && instr->operands[0].isTemp() &&
+             instr->operands[1].isTemp()) {
+            /* v_writelane_b32 can take two sgprs but only if one is m0. */
+            if (ctx.assignments[instr->operands[0].tempId()].reg != m0 &&
+                ctx.assignments[instr->operands[1].tempId()].reg != m0) {
+               instr->operands[0].setFixed(m0);
+               fixed = true;
+            }
          }
 
          if (fixed)

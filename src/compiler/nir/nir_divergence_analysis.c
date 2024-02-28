@@ -189,7 +189,6 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_resume_shader_address_amd:
    case nir_intrinsic_load_global_const_block_intel:
    case nir_intrinsic_load_reloc_const_intel:
-   case nir_intrinsic_load_global_block_intel:
    case nir_intrinsic_load_btd_global_arg_addr_intel:
    case nir_intrinsic_load_btd_local_arg_addr_intel:
    case nir_intrinsic_load_mesh_inline_data_intel:
@@ -219,14 +218,16 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
       is_divergent = false;
       break;
 
-   case nir_intrinsic_load_reg:
-   case nir_intrinsic_load_reg_indirect: {
-      nir_intrinsic_instr *decl = nir_reg_get_decl(instr->src[0].ssa);
-      is_divergent = nir_intrinsic_divergent(decl);
-      if (instr->intrinsic == nir_intrinsic_load_reg_indirect)
-         is_divergent |= instr->src[1].ssa->divergent;
+   /* This is divergent because it specifically loads sequential values into
+    * successive SIMD lanes.
+    */
+   case nir_intrinsic_load_global_block_intel:
+      is_divergent = true;
       break;
-   }
+
+   case nir_intrinsic_decl_reg:
+      is_divergent = nir_intrinsic_divergent(instr);
+      break;
 
    /* Intrinsics with divergence depending on shader stage and hardware */
    case nir_intrinsic_load_shader_record_ptr:
@@ -420,6 +421,8 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_quad_swap_horizontal:
    case nir_intrinsic_quad_swap_vertical:
    case nir_intrinsic_quad_swap_diagonal:
+   case nir_intrinsic_quad_vote_any:
+   case nir_intrinsic_quad_vote_all:
    case nir_intrinsic_load_deref:
    case nir_intrinsic_load_shared:
    case nir_intrinsic_load_shared2_amd:
@@ -463,7 +466,9 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_desc_set_dynamic_index_intel:
    case nir_intrinsic_load_global_constant_bounded:
    case nir_intrinsic_load_global_constant_offset:
-   case nir_intrinsic_resource_intel: {
+   case nir_intrinsic_resource_intel:
+   case nir_intrinsic_load_reg:
+   case nir_intrinsic_load_reg_indirect: {
       unsigned num_srcs = nir_intrinsic_infos[instr->intrinsic].num_srcs;
       for (unsigned i = 0; i < num_srcs; i++) {
          if (instr->src[i].ssa->divergent) {
@@ -616,9 +621,13 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_ray_triangle_vertex_positions:
    case nir_intrinsic_cmat_extract:
    case nir_intrinsic_cmat_muladd_amd:
+   case nir_intrinsic_dpas_intel:
    case nir_intrinsic_isberd_nv:
    case nir_intrinsic_al2p_nv:
    case nir_intrinsic_ald_nv:
+   case nir_intrinsic_ipa_nv:
+   case nir_intrinsic_ldtram_nv:
+   case nir_intrinsic_printf:
       is_divergent = true;
       break;
 

@@ -597,6 +597,10 @@
    DRI_CONF_OPT_B(venus_implicit_fencing, def, \
                   "Assume the virtio-gpu kernel driver supports implicit fencing")
 
+#define DRI_CONF_VENUS_WSI_MULTI_PLANE_MODIFIERS(def) \
+   DRI_CONF_OPT_B(venus_wsi_multi_plane_modifiers, def, \
+                  "Enable support of multi-plane format modifiers for wsi images")
+
 /**
  * \brief RADV specific configuration options
  */
@@ -674,6 +678,10 @@
    DRI_CONF_OPT_B(radv_tex_non_uniform, def, \
                   "Always mark texture sample operations as non-uniform.")
 
+#define DRI_CONF_RADV_SSBO_NON_UNIFORM(def) \
+   DRI_CONF_OPT_B(radv_ssbo_non_uniform, def, \
+                  "Always mark SSBO operations as non-uniform.")
+
 #define DRI_CONF_RADV_FLUSH_BEFORE_TIMESTAMP_WRITE(def) \
    DRI_CONF_OPT_B(radv_flush_before_timestamp_write, def, \
                   "Wait for previous commands to finish before writing timestamps")
@@ -682,19 +690,51 @@
    DRI_CONF_OPT_B(radv_rt_wave64, def, \
                   "Force wave64 in RT shaders")
 
+#define DRI_CONF_RADV_LEGACY_SPARSE_BINDING(def) \
+   DRI_CONF_OPT_B(radv_legacy_sparse_binding, def, \
+                  "Enable legacy sparse binding (with implicit synchronization) on the graphics and compute queue")
+
+/**
+ * Overrides for forcing re-compilation of pipelines when RADV_BUILD_ID_OVERRIDE is enabled.
+ * These need to be bumped every time a compiler bugfix is backported (up to 8 shader
+ * versions are supported).
+ */
+#define DRI_CONF_RADV_OVERRIDE_GRAPHICS_SHADER_VERSION(def) \
+   DRI_CONF_OPT_I(radv_override_graphics_shader_version, def, 0, 7, \
+                  "Override the shader version of graphics pipelines to force re-compilation. (0 = default)")
+
+#define DRI_CONF_RADV_OVERRIDE_COMPUTE_SHADER_VERSION(def) \
+   DRI_CONF_OPT_I(radv_override_compute_shader_version, def, 0, 7, \
+                  "Override the shader version of compute pipelines to force re-compilation. (0 = default)")
+
+#define DRI_CONF_RADV_OVERRIDE_RAY_TRACING_SHADER_VERSION(def) \
+   DRI_CONF_OPT_I(radv_override_ray_tracing_shader_version, def, 0, 7, \
+                  "Override the shader version of ray tracing pipelines to force re-compilation. (0 = default)")
+
 #define DRI_CONF_RADV_APP_LAYER() DRI_CONF_OPT_S_NODEF(radv_app_layer, "Select an application layer.")
+
+#define DRI_CONF_RADV_CLEAR_LDS(def) \
+   DRI_CONF_OPT_B(radv_clear_lds, def, "Clear LDS at the end of shaders. Might decrease performance.")
+
+#define DRI_CONF_RADV_FORCE_ACTIVE_ACCEL_STRUCT_LEAVES(def) \
+   DRI_CONF_OPT_B(radv_force_active_accel_struct_leaves, def, \
+                  "Force leaf nodes of acceleration structures to be marked active.")
 
 /**
  * \brief ANV specific configuration options
  */
 
 #define DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(def) \
-   DRI_CONF_OPT_B(anv_assume_full_subgroups, def, \
-                  "Allow assuming full subgroups requirement even when it's not specified explicitly")
+   DRI_CONF_OPT_I(anv_assume_full_subgroups, def, 0, 32, \
+                  "Allow assuming full subgroups requirement even when it's not specified explicitly and set the given size")
 
 #define DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(def) \
    DRI_CONF_OPT_B(anv_sample_mask_out_opengl_behaviour, def, \
                   "Ignore sample mask out when having single sampled target")
+
+#define DRI_CONF_ANV_FORCE_FILTER_ADDR_ROUNDING(def) \
+   DRI_CONF_OPT_B(anv_force_filter_addr_rounding, def, \
+                  "Force min/mag filter address rounding to be enabled even for NEAREST sampling")
 
 #define DRI_CONF_ANV_MESH_CONV_PRIM_ATTRS_TO_VERT_ATTRS(def) \
    DRI_CONF_OPT_E(anv_mesh_conv_prim_attrs_to_vert_attrs, def, -2, 2, \
@@ -732,6 +772,10 @@
 #define DRI_CONF_ANV_DISABLE_FCV(def) \
    DRI_CONF_OPT_B(anv_disable_fcv, def, \
                   "Disable FCV optimization")
+
+#define DRI_CONF_ANV_HASVK_OVERRIDE_API_VERSION(def) \
+   DRI_CONF_OPT_B(hasvk_report_vk_1_3_version, def, \
+                  "Override intel_hasvk API version")
 
 /**
  * \brief DZN specific configuration options

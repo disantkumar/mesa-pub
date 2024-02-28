@@ -484,21 +484,6 @@ lower_pv_mode_gs_instr(nir_builder *b, nir_instr *instr, void *data)
    }
 }
 
-static unsigned int
-lower_pv_mode_vertices_for_prim(enum mesa_prim prim)
-{
-   switch (prim) {
-   case MESA_PRIM_POINTS:
-      return 1;
-   case MESA_PRIM_LINE_STRIP:
-      return 2;
-   case MESA_PRIM_TRIANGLE_STRIP:
-      return 3;
-   default:
-      unreachable("unsupported primitive for gs output");
-   }
-}
-
 static bool
 lower_pv_mode_gs(nir_shader *shader, unsigned prim)
 {
@@ -510,7 +495,7 @@ lower_pv_mode_gs(nir_shader *shader, unsigned prim)
    b = nir_builder_at(nir_before_impl(entry));
 
    state.primitive_vert_count =
-      lower_pv_mode_vertices_for_prim(shader->info.gs.output_primitive);
+      mesa_vertices_per_prim(shader->info.gs.output_primitive);
    state.ring_size = shader->info.gs.vertices_out;
 
    nir_foreach_variable_with_modes(var, shader, nir_var_shader_out) {
@@ -1180,10 +1165,22 @@ lower_system_values_to_inlined_uniforms_instr(nir_builder *b,
    }
 
    b->cursor = nir_before_instr(&intrin->instr);
-   nir_def *new_dest_def = nir_load_ubo(b, 1, 32, nir_imm_int(b, 0),
-                                            nir_imm_int(b, inlined_uniform_offset),
-                                            .align_mul = 4, .align_offset = 0,
-                                            .range_base = 0, .range = ~0);
+   assert(intrin->def.bit_size == 32 || intrin->def.bit_size == 64);
+   /* nir_inline_uniforms can't handle bit_size != 32 (it will silently ignore
+    * anything with a different bit_size) so we need to split the load. */
+   int num_dwords = intrin->def.bit_size / 32;
+   nir_def *dwords[2] = {NULL};
+   for (unsigned i = 0; i < num_dwords; i++)
+      dwords[i] = nir_load_ubo(b, 1, 32, nir_imm_int(b, 0),
+                                   nir_imm_int(b, inlined_uniform_offset + i),
+                                   .align_mul = intrin->def.bit_size / 8,
+                                   .align_offset = 0,
+                                   .range_base = 0, .range = ~0);
+   nir_def *new_dest_def;
+   if (intrin->def.bit_size == 32)
+      new_dest_def = dwords[0];
+   else
+      new_dest_def = nir_pack_64_2x32_split(b, dwords[0], dwords[1]);
    nir_def_rewrite_uses(&intrin->def, new_dest_def);
    nir_instr_remove(&intrin->instr);
    return true;
@@ -1227,7 +1224,6 @@ zink_screen_init_compiler(struct zink_screen *screen)
       .lower_ldexp = true,
 
       .lower_mul_high = true,
-      .lower_rotate = true,
       .lower_uadd_carry = true,
       .lower_usub_borrow = true,
       .lower_uadd_sat = true,
@@ -3320,7 +3316,7 @@ zink_shader_spirv_compile(struct zink_screen *screen, struct zink_shader *zs, st
       ret = VKSCR(CreateShaderModule)(screen->dev, &smci, NULL, &obj.mod);
    else
       ret = VKSCR(CreateShadersEXT)(screen->dev, 1, &sci, NULL, &obj.obj);
-   bool success = zink_screen_handle_vkresult(screen, ret);
+   ASSERTED bool success = zink_screen_handle_vkresult(screen, ret);
    assert(success);
    return obj;
 }
@@ -3548,6 +3544,88 @@ invert_point_coord(nir_shader *nir)
 }
 
 static bool
+is_residency_code(nir_def *src)
+{
+   nir_instr *parent = src->parent_instr;
+   while (1) {
+      if (parent->type == nir_instr_type_intrinsic) {
+         ASSERTED nir_intrinsic_instr *intr = nir_instr_as_intrinsic(parent);
+         assert(intr->intrinsic == nir_intrinsic_is_sparse_texels_resident);
+         return false;
+      }
+      if (parent->type == nir_instr_type_tex)
+         return true;
+      assert(parent->type == nir_instr_type_alu);
+      nir_alu_instr *alu = nir_instr_as_alu(parent);
+      parent = alu->src[0].src.ssa->parent_instr;
+   }
+}
+
+static bool
+lower_sparse_instr(nir_builder *b, nir_intrinsic_instr *instr, void *data)
+{
+   if (instr->intrinsic == nir_intrinsic_sparse_residency_code_and) {
+      b->cursor = nir_before_instr(&instr->instr);
+      nir_def *src0;
+      if (is_residency_code(instr->src[0].ssa))
+         src0 = nir_is_sparse_texels_resident(b, 1, instr->src[0].ssa);
+      else
+         src0 = instr->src[0].ssa;
+      nir_def *src1;
+      if (is_residency_code(instr->src[1].ssa))
+         src1 = nir_is_sparse_texels_resident(b, 1, instr->src[1].ssa);
+      else
+         src1 = instr->src[1].ssa;
+      nir_def *def = nir_iand(b, src0, src1);
+      nir_def_rewrite_uses_after(&instr->def, def, &instr->instr);
+      nir_instr_remove(&instr->instr);
+      return true;
+   }
+   if (instr->intrinsic != nir_intrinsic_is_sparse_texels_resident)
+      return false;
+
+   /* vulkan vec can only be a vec4, but this is (maybe) vec5,
+    * so just rewrite as the first component since ntv is going to use a different
+    * method for storing the residency value anyway
+    */
+   b->cursor = nir_before_instr(&instr->instr);
+   nir_instr *parent = instr->src[0].ssa->parent_instr;
+   if (is_residency_code(instr->src[0].ssa)) {
+      assert(parent->type == nir_instr_type_alu);
+      nir_alu_instr *alu = nir_instr_as_alu(parent);
+      nir_def_rewrite_uses_after(instr->src[0].ssa, nir_channel(b, alu->src[0].src.ssa, 0), parent);
+      nir_instr_remove(parent);
+   } else {
+      nir_def *src;
+      if (parent->type == nir_instr_type_intrinsic) {
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(parent);
+         assert(intr->intrinsic == nir_intrinsic_is_sparse_texels_resident);
+         src = intr->src[0].ssa;
+      } else {
+         assert(parent->type == nir_instr_type_alu);
+         nir_alu_instr *alu = nir_instr_as_alu(parent);
+         src = alu->src[0].src.ssa;
+      }
+      if (instr->def.bit_size != 32) {
+         if (instr->def.bit_size == 1)
+            src = nir_ieq_imm(b, src, 1);
+         else
+            src = nir_u2uN(b, src, instr->def.bit_size);
+      }
+      nir_def_rewrite_uses(&instr->def, src);
+      nir_instr_remove(&instr->instr);
+   }
+   return true;
+}
+
+static bool
+lower_sparse(nir_shader *shader)
+{
+   return nir_shader_intrinsics_pass(shader, lower_sparse_instr,
+                                     nir_metadata_dominance, NULL);
+}
+
+static bool
 add_derefs_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
    bool is_load = false;
@@ -3683,7 +3761,7 @@ add_derefs_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
          }
          /* filter needed components */
          if (intr->num_components < load->num_components)
-            load = nir_channels(b, load, BITFIELD_MASK(intr->num_components) << c);
+            load = nir_channels(b, load, BITFIELD_MASK(intr->num_components) << (c - var->data.location_frac));
          nir_def_rewrite_uses(&intr->def, load);
       } else {
          nir_def *store = intr->src[0].ssa;
@@ -3940,6 +4018,7 @@ zink_shader_compile(struct zink_screen *screen, bool can_shobj, struct zink_shad
          zs->can_inline = false;
    } else if (need_optimize)
       optimize_nir(nir, zs, true);
+   NIR_PASS_V(nir, lower_sparse);
    
    struct zink_shader_object obj = compile_module(screen, zs, nir, can_shobj, pg);
    ralloc_free(nir);
@@ -4575,88 +4654,6 @@ scan_nir(struct zink_screen *screen, nir_shader *shader, struct zink_shader *zs)
 }
 
 static bool
-is_residency_code(nir_def *src)
-{
-   nir_instr *parent = src->parent_instr;
-   while (1) {
-      if (parent->type == nir_instr_type_intrinsic) {
-         ASSERTED nir_intrinsic_instr *intr = nir_instr_as_intrinsic(parent);
-         assert(intr->intrinsic == nir_intrinsic_is_sparse_texels_resident);
-         return false;
-      }
-      if (parent->type == nir_instr_type_tex)
-         return true;
-      assert(parent->type == nir_instr_type_alu);
-      nir_alu_instr *alu = nir_instr_as_alu(parent);
-      parent = alu->src[0].src.ssa->parent_instr;
-   }
-}
-
-static bool
-lower_sparse_instr(nir_builder *b, nir_intrinsic_instr *instr, void *data)
-{
-   if (instr->intrinsic == nir_intrinsic_sparse_residency_code_and) {
-      b->cursor = nir_before_instr(&instr->instr);
-      nir_def *src0;
-      if (is_residency_code(instr->src[0].ssa))
-         src0 = nir_is_sparse_texels_resident(b, 1, instr->src[0].ssa);
-      else
-         src0 = instr->src[0].ssa;
-      nir_def *src1;
-      if (is_residency_code(instr->src[1].ssa))
-         src1 = nir_is_sparse_texels_resident(b, 1, instr->src[1].ssa);
-      else
-         src1 = instr->src[1].ssa;
-      nir_def *def = nir_iand(b, src0, src1);
-      nir_def_rewrite_uses_after(&instr->def, def, &instr->instr);
-      nir_instr_remove(&instr->instr);
-      return true;
-   }
-   if (instr->intrinsic != nir_intrinsic_is_sparse_texels_resident)
-      return false;
-
-   /* vulkan vec can only be a vec4, but this is (maybe) vec5,
-    * so just rewrite as the first component since ntv is going to use a different
-    * method for storing the residency value anyway
-    */
-   b->cursor = nir_before_instr(&instr->instr);
-   nir_instr *parent = instr->src[0].ssa->parent_instr;
-   if (is_residency_code(instr->src[0].ssa)) {
-      assert(parent->type == nir_instr_type_alu);
-      nir_alu_instr *alu = nir_instr_as_alu(parent);
-      nir_def_rewrite_uses_after(instr->src[0].ssa, nir_channel(b, alu->src[0].src.ssa, 0), parent);
-      nir_instr_remove(parent);
-   } else {
-      nir_def *src;
-      if (parent->type == nir_instr_type_intrinsic) {
-         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(parent);
-         assert(intr->intrinsic == nir_intrinsic_is_sparse_texels_resident);
-         src = intr->src[0].ssa;
-      } else {
-         assert(parent->type == nir_instr_type_alu);
-         nir_alu_instr *alu = nir_instr_as_alu(parent);
-         src = alu->src[0].src.ssa;
-      }
-      if (instr->def.bit_size != 32) {
-         if (instr->def.bit_size == 1)
-            src = nir_ieq_imm(b, src, 1);
-         else
-            src = nir_u2uN(b, src, instr->def.bit_size);
-      }
-      nir_def_rewrite_uses(&instr->def, src);
-      nir_instr_remove(&instr->instr);
-   }
-   return true;
-}
-
-static bool
-lower_sparse(nir_shader *shader)
-{
-   return nir_shader_intrinsics_pass(shader, lower_sparse_instr,
-                                     nir_metadata_dominance, NULL);
-}
-
-static bool
 match_tex_dests_instr(nir_builder *b, nir_instr *in, void *data)
 {
    if (in->type != nir_instr_type_tex)
@@ -4912,7 +4909,7 @@ fixup_io_locations(nir_shader *nir)
             if (var->data.location == VARYING_SLOT_VAR0)
                var->data.driver_location = 0;
             else if (var->data.patch)
-               var->data.driver_location = var->data.location - VARYING_SLOT_VAR0;
+               var->data.driver_location = var->data.location - VARYING_SLOT_PATCH0;
             else
                var->data.driver_location = var->data.location;
          }
@@ -4939,7 +4936,7 @@ fixup_io_locations(nir_shader *nir)
                   size += glsl_count_vec4_slots(var->type, false, false);
             }
             if (var->data.patch)
-               var->data.driver_location = var->data.location - VARYING_SLOT_VAR0;
+               var->data.driver_location = var->data.location - VARYING_SLOT_PATCH0;
             else
                var->data.driver_location = slot;
             found = true;
@@ -4958,13 +4955,13 @@ fixup_io_locations(nir_shader *nir)
    return true;
 }
 
-static uint32_t
+static uint64_t
 zink_flat_flags(struct nir_shader *shader)
 {
-   uint32_t flat_flags = 0, c = 0;
+   uint64_t flat_flags = 0;
    nir_foreach_shader_in_variable(var, shader) {
       if (var->data.interpolation == INTERP_MODE_FLAT)
-         flat_flags |= 1u << (c++);
+         flat_flags |= BITFIELD64_BIT(var->data.location);
    }
 
    return flat_flags;
@@ -5305,11 +5302,69 @@ mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
 
    assert(util_is_power_of_two_nonzero(align));
 
+   /* simply drop the bit_size for unaligned load/stores */
+   if (align < (bit_size / 8)) {
+      return (nir_mem_access_size_align){
+         .num_components = MIN2(bytes / align, 4),
+         .bit_size = align * 8,
+         .align = align,
+      };
+   } else {
+      return (nir_mem_access_size_align){
+         .num_components = MIN2(bytes / (bit_size / 8), 4),
+         .bit_size = bit_size,
+         .align = bit_size / 8,
+      };
+   }
+}
+
+static nir_mem_access_size_align
+mem_access_scratch_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
+                                 uint8_t bit_size, uint32_t align,
+                                 uint32_t align_offset, bool offset_is_const,
+                                 const void *cb_data)
+{
+   bit_size = *(const uint8_t *)cb_data;
+   align = nir_combined_align(align, align_offset);
+
+   assert(util_is_power_of_two_nonzero(align));
+
    return (nir_mem_access_size_align){
       .num_components = MIN2(bytes / (bit_size / 8), 4),
       .bit_size = bit_size,
       .align = bit_size / 8,
    };
+}
+
+static bool
+alias_scratch_memory_scan_bit_size(struct nir_builder *b, nir_intrinsic_instr *instr, void *data)
+{
+   uint8_t *bit_size = data;
+   switch (instr->intrinsic) {
+   case nir_intrinsic_load_scratch:
+      *bit_size = MIN2(*bit_size, instr->def.bit_size);
+      return false;
+   case nir_intrinsic_store_scratch:
+      *bit_size = MIN2(*bit_size, instr->src[0].ssa->bit_size);
+      return false;
+   default:
+      return false;
+   }
+}
+
+static bool
+alias_scratch_memory(nir_shader *nir)
+{
+   uint8_t bit_size = 64;
+
+   nir_shader_intrinsics_pass(nir, alias_scratch_memory_scan_bit_size, nir_metadata_all, &bit_size);
+   nir_lower_mem_access_bit_sizes_options lower_scratch_mem_access_options = {
+      .modes = nir_var_function_temp,
+      .may_lower_unaligned_stores_to_atomics = true,
+      .callback = mem_access_scratch_size_align_cb,
+      .cb_data = &bit_size,
+   };
+   return nir_lower_mem_access_bit_sizes(nir, &lower_scratch_mem_access_options);
 }
 
 static uint8_t
@@ -5329,6 +5384,28 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir)
 
    ret->sinfo.have_vulkan_memory_model = screen->info.have_KHR_vulkan_memory_model;
    ret->sinfo.have_workgroup_memory_explicit_layout = screen->info.have_KHR_workgroup_memory_explicit_layout;
+   if (screen->info.have_KHR_shader_float_controls) {
+      if (screen->info.props12.shaderDenormFlushToZeroFloat16)
+         ret->sinfo.float_controls.flush_denorms |= 0x1;
+      if (screen->info.props12.shaderDenormFlushToZeroFloat32)
+         ret->sinfo.float_controls.flush_denorms |= 0x2;
+      if (screen->info.props12.shaderDenormFlushToZeroFloat64)
+         ret->sinfo.float_controls.flush_denorms |= 0x4;
+
+      if (screen->info.props12.shaderDenormPreserveFloat16)
+         ret->sinfo.float_controls.preserve_denorms |= 0x1;
+      if (screen->info.props12.shaderDenormPreserveFloat32)
+         ret->sinfo.float_controls.preserve_denorms |= 0x2;
+      if (screen->info.props12.shaderDenormPreserveFloat64)
+         ret->sinfo.float_controls.preserve_denorms |= 0x4;
+
+      ret->sinfo.float_controls.denorms_all_independence =
+         screen->info.props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+
+      ret->sinfo.float_controls.denorms_32_bit_independence =
+         ret->sinfo.float_controls.denorms_all_independence ||
+         screen->info.props12.denormBehaviorIndependence == VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+   }
    ret->sinfo.bindless_set_idx = screen->desc_set_id[ZINK_DESCRIPTOR_BINDLESS];
 
    util_queue_fence_init(&ret->precompile.fence);
@@ -5359,12 +5436,13 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir)
 
    if (nir->info.stage == MESA_SHADER_KERNEL) {
       nir_lower_mem_access_bit_sizes_options lower_mem_access_options = {
-         .modes = nir_var_all,
+         .modes = nir_var_all ^ nir_var_function_temp,
          .may_lower_unaligned_stores_to_atomics = true,
          .callback = mem_access_size_align_cb,
          .cb_data = screen,
       };
       NIR_PASS_V(nir, nir_lower_mem_access_bit_sizes, &lower_mem_access_options);
+      NIR_PASS_V(nir, alias_scratch_memory);
       NIR_PASS_V(nir, nir_lower_alu_width, lower_vec816_alu, NULL);
       NIR_PASS_V(nir, nir_lower_alu_vec8_16_srcs);
    }
@@ -5400,7 +5478,6 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir)
 
    NIR_PASS_V(nir, lower_basevertex);
    NIR_PASS_V(nir, lower_baseinstance);
-   NIR_PASS_V(nir, lower_sparse);
    NIR_PASS_V(nir, split_bitfields);
    NIR_PASS_V(nir, nir_lower_frexp); /* TODO: Use the spirv instructions for this. */
 
@@ -5676,20 +5753,6 @@ zink_gfx_shader_free(struct zink_screen *screen, struct zink_shader *shader)
          }
 
       }
-      while (util_dynarray_contains(&shader->pipeline_libs, struct zink_gfx_lib_cache*)) {
-         struct zink_gfx_lib_cache *libs = util_dynarray_pop(&shader->pipeline_libs, struct zink_gfx_lib_cache*);
-         //this condition is equivalent to verifying that, for each bit stages_present_i in stages_present,
-         //stages_present_i implies libs->stages_present_i
-         if ((stages_present & ~(libs->stages_present & stages_present)) != 0)
-            continue;
-         if (!libs->removed) {
-            libs->removed = true;
-            simple_mtx_lock(&screen->pipeline_libs_lock[idx]);
-            _mesa_set_remove_key(&screen->pipeline_libs[idx], libs);
-            simple_mtx_unlock(&screen->pipeline_libs_lock[idx]);
-         }
-         zink_gfx_lib_cache_unref(screen, libs);
-      }
       if (stage == MESA_SHADER_FRAGMENT || !shader->non_fs.is_generated) {
          prog->shaders[stage] = NULL;
          prog->stages_remaining &= ~BITFIELD_BIT(stage);
@@ -5704,6 +5767,17 @@ zink_gfx_shader_free(struct zink_screen *screen, struct zink_shader *shader)
          prog->shaders[MESA_SHADER_GEOMETRY] = NULL;
       }
       zink_gfx_program_reference(screen, &prog, NULL);
+   }
+   while (util_dynarray_contains(&shader->pipeline_libs, struct zink_gfx_lib_cache*)) {
+      struct zink_gfx_lib_cache *libs = util_dynarray_pop(&shader->pipeline_libs, struct zink_gfx_lib_cache*);
+      if (!libs->removed) {
+         libs->removed = true;
+         unsigned idx = zink_program_cache_stages(libs->stages_present);
+         simple_mtx_lock(&screen->pipeline_libs_lock[idx]);
+         _mesa_set_remove_key(&screen->pipeline_libs[idx], libs);
+         simple_mtx_unlock(&screen->pipeline_libs_lock[idx]);
+      }
+      zink_gfx_lib_cache_unref(screen, libs);
    }
    if (shader->info.stage == MESA_SHADER_TESS_EVAL &&
        shader->non_fs.generated_tcs) {

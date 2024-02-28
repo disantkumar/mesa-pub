@@ -893,6 +893,11 @@ dri2_setup_screen(_EGLDisplay *disp)
    disp->Extensions.EXT_create_context_robustness =
       get_screen_param(disp, PIPE_CAP_DEVICE_RESET_STATUS_QUERY);
 
+   /* EXT_query_reset_notification_strategy complements and requires
+    * EXT_create_context_robustness. */
+   disp->Extensions.EXT_query_reset_notification_strategy =
+      disp->Extensions.EXT_create_context_robustness;
+
    if (dri2_dpy->fence) {
       disp->Extensions.KHR_fence_sync = EGL_TRUE;
       disp->Extensions.KHR_wait_sync = EGL_TRUE;
@@ -1067,6 +1072,8 @@ dri2_setup_extensions(_EGLDisplay *disp)
        dri2_dpy->dri3_major_version != -1 &&
        !dri2_dpy->multibuffers_available &&
 #endif
+       (disp->Platform == EGL_PLATFORM_X11_KHR ||
+        disp->Platform == EGL_PLATFORM_XCB_EXT) &&
        !debug_get_bool_option("LIBGL_KOPPER_DRI2", false))
       return EGL_FALSE;
 
@@ -1234,6 +1241,10 @@ dri2_display_destroy(_EGLDisplay *disp)
 
 #ifdef HAVE_WAYLAND_PLATFORM
    free(dri2_dpy->device_name);
+#endif
+
+#ifdef HAVE_ANDROID_PLATFORM
+   u_gralloc_destroy(&dri2_dpy->gralloc);
 #endif
 
    switch (disp->Platform) {
@@ -3701,7 +3712,7 @@ dri2_interop_export_object(_EGLDisplay *disp, _EGLContext *ctx,
 static int
 dri2_interop_flush_objects(_EGLDisplay *disp, _EGLContext *ctx, unsigned count,
                            struct mesa_glinterop_export_in *objects,
-                           GLsync *sync)
+                           struct mesa_glinterop_flush_out *out)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_context *dri2_ctx = dri2_egl_context(ctx);
@@ -3710,7 +3721,7 @@ dri2_interop_flush_objects(_EGLDisplay *disp, _EGLContext *ctx, unsigned count,
       return MESA_GLINTEROP_UNSUPPORTED;
 
    return dri2_dpy->interop->flush_objects(dri2_ctx->dri_context, count,
-                                           objects, sync);
+                                           objects, out);
 }
 
 const _EGLDriver _eglDriver = {

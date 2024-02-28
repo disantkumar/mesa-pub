@@ -1274,6 +1274,15 @@ tu6_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
                       A6XX_TPL1_BICUBIC_WEIGHTS_TABLE_4(0x3f0243f0), );
    }
 
+   if (phys_dev->info->a7xx.cmdbuf_start_a725_quirk) {
+      tu_cs_reserve(cs, 3 + 4);
+      tu_cs_emit_pkt7(cs, CP_COND_REG_EXEC, 2);
+      tu_cs_emit(cs, CP_COND_REG_EXEC_0_MODE(THREAD_MODE) |
+                     CP_COND_REG_EXEC_0_BR | CP_COND_REG_EXEC_0_LPAC);
+      tu_cs_emit(cs, RENDER_MODE_CP_COND_REG_EXEC_1_DWORDS(4));
+      tu_cs_emit_ib(cs, dev->cmdbuf_start_a725_quirk_entry);
+   }
+
    tu_cs_sanity_check(cs);
 }
 
@@ -2084,7 +2093,7 @@ tu_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer,
       memset(&cmd_buffer->descriptors[i].push_set, 0, sizeof(cmd_buffer->descriptors[i].push_set));
       cmd_buffer->descriptors[i].push_set.base.type = VK_OBJECT_TYPE_DESCRIPTOR_SET;
       cmd_buffer->descriptors[i].max_sets_bound = 0;
-      cmd_buffer->descriptors[i].dynamic_bound = 0;
+      cmd_buffer->descriptors[i].max_dynamic_offset_size = 0;
    }
 
    u_trace_fini(&cmd_buffer->trace);
@@ -2272,13 +2281,13 @@ tu_cmd_end_dynamic_state(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-tu_CmdBindVertexBuffers2EXT(VkCommandBuffer commandBuffer,
-                            uint32_t firstBinding,
-                            uint32_t bindingCount,
-                            const VkBuffer* pBuffers,
-                            const VkDeviceSize* pOffsets,
-                            const VkDeviceSize* pSizes,
-                            const VkDeviceSize* pStrides)
+tu_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer,
+                         uint32_t firstBinding,
+                         uint32_t bindingCount,
+                         const VkBuffer *pBuffers,
+                         const VkDeviceSize *pOffsets,
+                         const VkDeviceSize *pSizes,
+                         const VkDeviceSize *pStrides)
 {
    TU_FROM_HANDLE(tu_cmd_buffer, cmd, commandBuffer);
    struct tu_cs cs;
@@ -2376,12 +2385,12 @@ tu6_emit_descriptor_sets(struct tu_cmd_buffer *cmd,
          cmd->state.desc_sets =
             tu_cs_draw_state(&cmd->sub_cs, &state_cs,
                              4 + 4 * descriptors_state->max_sets_bound +
-                             (descriptors_state->dynamic_bound ? 6 : 0));
+                             (descriptors_state->max_dynamic_offset_size ? 6 : 0));
       } else {
          cmd->state.desc_sets =
             tu_cs_draw_state(&cmd->sub_cs, &state_cs,
                              3 + 2 * descriptors_state->max_sets_bound +
-                             (descriptors_state->dynamic_bound ? 3 : 0));
+                             (descriptors_state->max_dynamic_offset_size ? 3 : 0));
       }
       cs = &state_cs;
    } else {
@@ -2401,7 +2410,7 @@ tu6_emit_descriptor_sets(struct tu_cmd_buffer *cmd,
    }
 
    /* Dynamic descriptors get the reserved descriptor set. */
-   if (descriptors_state->dynamic_bound) {
+   if (descriptors_state->max_dynamic_offset_size) {
       int reserved_set_idx = cmd->device->physical_device->reserved_set_idx;
       assert(reserved_set_idx >= 0); /* reserved set must be bound */
 
@@ -2466,6 +2475,11 @@ tu_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
    descriptors_state->max_sets_bound =
       MAX2(descriptors_state->max_sets_bound, firstSet + descriptorSetCount);
 
+   unsigned dynamic_offset_offset = 0;
+   for (unsigned i = 0; i < firstSet; i++) {
+      dynamic_offset_offset += layout->set[i].layout->dynamic_offset_size;
+   }
+
    for (unsigned i = 0; i < descriptorSetCount; ++i) {
       unsigned idx = i + firstSet;
       TU_FROM_HANDLE(tu_descriptor_set, set, pDescriptorSets[i]);
@@ -2485,7 +2499,7 @@ tu_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
 
       uint32_t *src = set->dynamic_descriptors;
       uint32_t *dst = descriptors_state->dynamic_descriptors +
-         layout->set[idx].dynamic_offset_start / 4;
+         dynamic_offset_offset / 4;
       for (unsigned j = 0; j < set->layout->binding_count; j++) {
          struct tu_descriptor_set_binding_layout *binding =
             &set->layout->binding[j];
@@ -2541,26 +2555,32 @@ tu_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
             }
          }
       }
+
+      dynamic_offset_offset += layout->set[idx].layout->dynamic_offset_size;
    }
    assert(dyn_idx == dynamicOffsetCount);
 
-   if (layout->dynamic_offset_size) {
+   if (dynamic_offset_offset) {
+      descriptors_state->max_dynamic_offset_size =
+         MAX2(descriptors_state->max_dynamic_offset_size, dynamic_offset_offset);
+
       /* allocate and fill out dynamic descriptor set */
       struct tu_cs_memory dynamic_desc_set;
       int reserved_set_idx = cmd->device->physical_device->reserved_set_idx;
-      VkResult result = tu_cs_alloc(&cmd->sub_cs,
-                                    layout->dynamic_offset_size / (4 * A6XX_TEX_CONST_DWORDS),
-                                    A6XX_TEX_CONST_DWORDS, &dynamic_desc_set);
+      VkResult result =
+         tu_cs_alloc(&cmd->sub_cs,
+                     descriptors_state->max_dynamic_offset_size /
+                     (4 * A6XX_TEX_CONST_DWORDS),
+                     A6XX_TEX_CONST_DWORDS, &dynamic_desc_set);
       if (result != VK_SUCCESS) {
          vk_command_buffer_set_error(&cmd->vk, result);
          return;
       }
 
       memcpy(dynamic_desc_set.map, descriptors_state->dynamic_descriptors,
-             layout->dynamic_offset_size);
+             descriptors_state->max_dynamic_offset_size);
       assert(reserved_set_idx >= 0); /* reserved set must be bound */
       descriptors_state->set_iova[reserved_set_idx] = dynamic_desc_set.iova | BINDLESS_DESCRIPTOR_64B;
-      descriptors_state->dynamic_bound = true;
    }
 
    tu_dirty_desc_sets(cmd, pipelineBindPoint);

@@ -122,8 +122,7 @@ brw_nir_ubo_surface_index_is_pushable(nir_src src)
 
    if (intrin && intrin->intrinsic == nir_intrinsic_resource_intel) {
       return (nir_intrinsic_resource_access_intel(intrin) &
-              nir_resource_intel_pushable) &&
-             nir_src_is_const(intrin->src[1]);
+              nir_resource_intel_pushable);
    }
 
    return nir_src_is_const(src);
@@ -146,6 +145,14 @@ brw_nir_ubo_surface_index_get_push_block(nir_src src)
    return nir_intrinsic_resource_block_intel(intrin);
 }
 
+/* This helper return the binding table index of a surface access (any
+ * buffer/image/etc...). It works off the source of one of the intrinsics
+ * (load_ubo, load_ssbo, store_ssbo, load_image, store_image, etc...).
+ *
+ * If the source is constant, then this is the binding table index. If we're
+ * going through a resource_intel intel intrinsic, then we need to check
+ * src[1] of that intrinsic.
+ */
 static inline unsigned
 brw_nir_ubo_surface_index_get_bti(nir_src src)
 {
@@ -155,8 +162,19 @@ brw_nir_ubo_surface_index_get_bti(nir_src src)
    assert(src.ssa->parent_instr->type == nir_instr_type_intrinsic);
 
    nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(src.ssa->parent_instr);
-   assert(intrin->intrinsic == nir_intrinsic_resource_intel);
-   assert(nir_src_is_const(intrin->src[1]));
+   if (!intrin || intrin->intrinsic != nir_intrinsic_resource_intel)
+      return UINT32_MAX;
+
+   /* In practice we could even drop this intrinsic because the bindless
+    * access always operate from a base offset coming from a push constant, so
+    * they can never be constant.
+    */
+   if (nir_intrinsic_resource_access_intel(intrin) &
+       nir_resource_intel_bindless)
+      return UINT32_MAX;
+
+   if (!nir_src_is_const(intrin->src[1]))
+      return UINT32_MAX;
 
    return nir_src_as_uint(intrin->src[1]);
 }
@@ -188,6 +206,8 @@ void brw_nir_lower_tcs_outputs(nir_shader *nir, const struct brw_vue_map *vue,
 void brw_nir_lower_fs_outputs(nir_shader *nir);
 
 bool brw_nir_lower_conversions(nir_shader *nir);
+
+bool brw_nir_lower_cmat(nir_shader *nir, unsigned subgroup_size);
 
 bool brw_nir_lower_shading_rate_output(nir_shader *nir);
 
@@ -253,7 +273,6 @@ bool brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
 
 void brw_nir_analyze_ubo_ranges(const struct brw_compiler *compiler,
                                 nir_shader *nir,
-                                const struct brw_vs_prog_key *vs_key,
                                 struct brw_ubo_range out_ranges[4]);
 
 bool brw_nir_opt_peephole_ffma(nir_shader *shader);
@@ -267,8 +286,8 @@ bool brw_nir_lower_patch_vertices_in(nir_shader *shader, unsigned input_vertices
 bool brw_nir_blockify_uniform_loads(nir_shader *shader,
                                     const struct intel_device_info *devinfo);
 
-void brw_nir_optimize(nir_shader *nir,
-                      const struct brw_compiler *compiler);
+void brw_nir_optimize(nir_shader *nir, bool is_scalar,
+                      const struct intel_device_info *devinfo);
 
 nir_shader *brw_nir_create_passthrough_tcs(void *mem_ctx,
                                            const struct brw_compiler *compiler,
@@ -290,7 +309,7 @@ nir_def *brw_nir_load_global_const(nir_builder *b,
 const struct glsl_type *brw_nir_get_var_type(const struct nir_shader *nir,
                                              nir_variable *var);
 
-void brw_nir_adjust_payload(nir_shader *shader, const struct brw_compiler *compiler);
+void brw_nir_adjust_payload(nir_shader *shader);
 
 #ifdef __cplusplus
 }

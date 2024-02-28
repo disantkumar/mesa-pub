@@ -27,6 +27,7 @@
 
 #include "brw_eu.h"
 #include "brw_fs.h"
+#include "brw_fs_builder.h"
 
 using namespace brw;
 
@@ -995,7 +996,7 @@ lower_sampler_logical_send_gfx7(const fs_builder &bld, fs_inst *inst, opcode op,
        * and we have an explicit header, we need to set up the sampler
        * writemask.  It's reversed from normal: 1 means "don't write".
        */
-      unsigned reg_count = regs_written(inst) - residency;
+      unsigned reg_count = regs_written(inst) - reg_unit(devinfo) * residency;
       if (!inst->eot && reg_count < 4 * reg_width) {
          assert(reg_count % reg_width == 0);
          unsigned mask = ~((1 << (reg_count / reg_width)) - 1) & 0xf;
@@ -1501,11 +1502,11 @@ emit_predicate_on_vector_mask(const fs_builder &bld, fs_inst *inst)
 
    const fs_builder ubld = bld.exec_all().group(1, 0);
 
-   const fs_visitor *v = static_cast<const fs_visitor *>(bld.shader);
+   const fs_visitor &s = *bld.shader;
    const fs_reg vector_mask = ubld.vgrf(BRW_REGISTER_TYPE_UW);
    ubld.UNDEF(vector_mask);
    ubld.emit(SHADER_OPCODE_READ_SR_REG, vector_mask, brw_imm_ud(3));
-   const unsigned subreg = sample_mask_flag_subreg(v);
+   const unsigned subreg = sample_mask_flag_subreg(s);
 
    ubld.MOV(brw_flag_subreg(subreg + inst->group / 16), vector_mask);
 
@@ -2727,17 +2728,17 @@ lower_interpolator_logical_send(const fs_builder &bld, fs_inst *inst,
    unsigned mode;
    switch (inst->opcode) {
    case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
-      assert(inst->src[0].file == BAD_FILE);
+      assert(inst->src[INTERP_SRC_OFFSET].file == BAD_FILE);
       mode = GFX7_PIXEL_INTERPOLATOR_LOC_SAMPLE;
       break;
 
    case FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET:
-      assert(inst->src[0].file == BAD_FILE);
+      assert(inst->src[INTERP_SRC_OFFSET].file == BAD_FILE);
       mode = GFX7_PIXEL_INTERPOLATOR_LOC_SHARED_OFFSET;
       break;
 
    case FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET:
-      payload = inst->src[0];
+      payload = inst->src[INTERP_SRC_OFFSET];
       mlen = 2 * inst->exec_size / 8;
       mode = GFX7_PIXEL_INTERPOLATOR_LOC_PER_SLOT_OFFSET;
       break;
@@ -2747,10 +2748,9 @@ lower_interpolator_logical_send(const fs_builder &bld, fs_inst *inst,
    }
 
    const bool dynamic_mode =
-      inst->opcode == FS_OPCODE_INTERPOLATE_AT_SAMPLE &&
-      wm_prog_key->multisample_fbo == BRW_SOMETIMES;
+      inst->src[INTERP_SRC_DYNAMIC_MODE].file != BAD_FILE;
 
-   fs_reg desc = inst->src[1];
+   fs_reg desc = inst->src[INTERP_SRC_MSG_DESC];
    uint32_t desc_imm =
       brw_pixel_interp_desc(devinfo,
                             /* Leave the mode at 0 if persample_dispatch is
@@ -2799,8 +2799,10 @@ lower_interpolator_logical_send(const fs_builder &bld, fs_inst *inst,
       const fs_builder &ubld = bld.exec_all().group(8, 0);
       desc = ubld.vgrf(BRW_REGISTER_TYPE_UD);
 
-      check_dynamic_msaa_flag(ubld, wm_prog_data,
-                              BRW_WM_MSAA_FLAG_MULTISAMPLE_FBO);
+      /* The predicate should have been built in brw_fs_nir.cpp when emitting
+       * NIR code. This guarantees that we do not have incorrect interactions
+       * with the flag register holding the predication result.
+       */
       if (orig_desc.file == IMM) {
          /* Not using SEL here because we would generate an instruction with 2
           * immediate sources which is not supported by HW.
@@ -2994,7 +2996,7 @@ lower_get_buffer_size(const fs_builder &bld, fs_inst *inst)
    /* Since we can only execute this instruction on uniform bti/surface
     * handles, brw_fs_nir.cpp should already have limited this to SIMD8.
     */
-   assert(inst->exec_size == 8);
+   assert(inst->exec_size == (devinfo->ver < 20 ? 8 : 16));
 
    fs_reg surface = inst->src[GET_BUFFER_SIZE_SRC_SURFACE];
    fs_reg surface_handle = inst->src[GET_BUFFER_SIZE_SRC_SURFACE_HANDLE];
@@ -3303,7 +3305,7 @@ fs_visitor::lower_uniform_pull_constant_loads()
          invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
       } else if (devinfo->ver >= 7) {
          const fs_builder ubld = fs_builder(this, block, inst).exec_all();
-         fs_reg header = bld.exec_all().group(8, 0).vgrf(BRW_REGISTER_TYPE_UD);
+         fs_reg header = fs_builder(this, 8).exec_all().vgrf(BRW_REGISTER_TYPE_UD);
 
          ubld.group(8, 0).MOV(header,
                               retype(brw_vec8_grf(0, 0), BRW_REGISTER_TYPE_UD));

@@ -68,7 +68,7 @@ static const uint32_t genX(vk_to_intel_blend_op)[] = {
 static void
 genX(streamout_prologue)(struct anv_cmd_buffer *cmd_buffer)
 {
-#if GFX_VERx10 >= 120
+#if INTEL_WA_16013994831_GFX_VER
    /* Wa_16013994831 - Disable preemption during streamout, enable back
     * again if XFB not used by the current pipeline.
     *
@@ -79,7 +79,9 @@ genX(streamout_prologue)(struct anv_cmd_buffer *cmd_buffer)
    if (!intel_needs_workaround(cmd_buffer->device->info, 16013994831))
       return;
 
-   if (cmd_buffer->state.gfx.pipeline->uses_xfb) {
+   struct anv_graphics_pipeline *pipeline =
+      anv_pipeline_to_graphics(cmd_buffer->state.gfx.base.pipeline);
+   if (pipeline->uses_xfb) {
       genX(cmd_buffer_set_preemption)(cmd_buffer, false);
       return;
    }
@@ -194,7 +196,8 @@ want_stencil_pma_fix(struct anv_cmd_buffer *cmd_buffer,
    assert(d_iview && d_iview->image->planes[0].aux_usage == ISL_AUX_USAGE_HIZ);
 
    /* 3DSTATE_PS_EXTRA::PixelShaderValid */
-   struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
+   struct anv_graphics_pipeline *pipeline =
+      anv_pipeline_to_graphics(cmd_buffer->state.gfx.base.pipeline);
    if (!anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT))
       return false;
 
@@ -438,7 +441,8 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
 {
    UNUSED struct anv_device *device = cmd_buffer->device;
    struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
-   const struct anv_graphics_pipeline *pipeline = gfx->pipeline;
+   const struct anv_graphics_pipeline *pipeline =
+      anv_pipeline_to_graphics(gfx->base.pipeline);
    const struct vk_dynamic_graphics_state *dyn =
       &cmd_buffer->vk.dynamic_graphics_state;
    struct anv_gfx_dynamic_state *hw_state = &gfx->dyn_state;
@@ -492,8 +496,8 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
       SET(STREAMOUT, so.RenderingDisable, dyn->rs.rasterizer_discard_enable);
       SET(STREAMOUT, so.RenderStreamSelect, dyn->rs.rasterization_stream);
 
-#if INTEL_NEEDS_WA_14017076903
-      /* Wa_14017076903 :
+#if INTEL_NEEDS_WA_18022508906
+      /* Wa_18022508906 :
        *
        * SKL PRMs, Volume 7: 3D-Media-GPGPU, Stream Output Logic (SOL) Stage:
        *
@@ -521,8 +525,9 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
        * Here we force rendering to get SOL_INT::Render_Enable when occlusion
        * queries are active.
        */
-      if (!GET(so.RenderingDisable) && gfx->n_occlusion_queries > 0)
-         SET(STREAMOUT, so.ForceRendering, Force_on);
+      SET(STREAMOUT, so.ForceRendering,
+          (!GET(so.RenderingDisable) && gfx->n_occlusion_queries > 0) ?
+          Force_on : 0);
 #endif
 
       switch (dyn->rs.provoking_vertex) {
@@ -664,7 +669,7 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
                                      pipeline->rasterization_samples);
 
       const VkPolygonMode dynamic_raster_mode =
-         genX(raster_polygon_mode)(gfx->pipeline,
+         genX(raster_polygon_mode)(pipeline,
                                    dyn->rs.polygon_mode,
                                    dyn->ia.primitive_topology);
 
@@ -1160,12 +1165,16 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
          SET_VP(VIEWPORT_SF_CLIP, vp_sf_clip.elem[i], YMaxViewPort);
 #undef SET_VP
 
+         const bool depth_range_unrestricted =
+            cmd_buffer->device->vk.enabled_extensions.EXT_depth_range_unrestricted;
+
+         float min_depth_limit = depth_range_unrestricted ? -FLT_MAX : 0.0;
+         float max_depth_limit = depth_range_unrestricted ? FLT_MAX : 1.0;
+
          float min_depth = dyn->rs.depth_clamp_enable ?
-                           MIN2(vp->minDepth, vp->maxDepth) :
-                           0.0f;
+                           MIN2(vp->minDepth, vp->maxDepth) : min_depth_limit;
          float max_depth = dyn->rs.depth_clamp_enable ?
-                           MAX2(vp->minDepth, vp->maxDepth) :
-                           1.0f;
+                           MAX2(vp->minDepth, vp->maxDepth) : max_depth_limit;
 
          SET(VIEWPORT_CC, vp_cc.elem[i].MinimumDepth, min_depth);
          SET(VIEWPORT_CC, vp_cc.elem[i].MaximumDepth, max_depth);
@@ -1295,49 +1304,94 @@ genX(cmd_buffer_flush_gfx_runtime_state)(struct anv_cmd_buffer *cmd_buffer)
    vk_dynamic_graphics_state_clear_dirty(&cmd_buffer->vk.dynamic_graphics_state);
 }
 
+static void
+emit_wa_18020335297_dummy_draw(struct anv_cmd_buffer *cmd_buffer)
+{
+#if GFX_VERx10 >= 125
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VFG), vfg) {
+      vfg.DistributionMode = RR_STRICT;
+   }
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF), vf) {
+      vf.GeometryDistributionEnable = true;
+   }
+#endif
+
+#if GFX_VER >= 12
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr) {
+      pr.ReplicaMask = 1;
+   }
+#endif
+
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_RASTER), rr) {
+      rr.CullMode = CULLMODE_NONE;
+      rr.FrontFaceFillMode = FILL_MODE_SOLID;
+      rr.BackFaceFillMode = FILL_MODE_SOLID;
+   }
+
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_STATISTICS), zero);
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_SGVS), zero);
+
+#if GFX_VER >= 11
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_SGVS_2), zero);
+#endif
+
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CLIP), clip) {
+      clip.ClipEnable = true;
+      clip.ClipMode = CLIPMODE_REJECT_ALL;
+   }
+
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VS), zero);
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_GS), zero);
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_HS), zero);
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_TE), zero);
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_DS), zero);
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_STREAMOUT), zero);
+
+   uint32_t *vertex_elements = anv_batch_emitn(&cmd_buffer->batch, 1 + 2 * 2,
+                                               GENX(3DSTATE_VERTEX_ELEMENTS));
+   uint32_t *ve_pack_dest = &vertex_elements[1];
+
+   for (int i = 0; i < 2; i++) {
+      struct GENX(VERTEX_ELEMENT_STATE) element = {
+         .Valid = true,
+         .SourceElementFormat = ISL_FORMAT_R32G32B32A32_FLOAT,
+         .Component0Control = VFCOMP_STORE_0,
+         .Component1Control = VFCOMP_STORE_0,
+         .Component2Control = i == 0 ? VFCOMP_STORE_0 : VFCOMP_STORE_1_FP,
+         .Component3Control = i == 0 ? VFCOMP_STORE_0 : VFCOMP_STORE_1_FP,
+      };
+      GENX(VERTEX_ELEMENT_STATE_pack)(NULL, ve_pack_dest, &element);
+      ve_pack_dest += GENX(VERTEX_ELEMENT_STATE_length);
+   }
+
+   anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_TOPOLOGY), topo) {
+      topo.PrimitiveTopologyType = _3DPRIM_TRILIST;
+   }
+
+   /* Emit dummy draw per slice. */
+   for (unsigned i = 0; i < cmd_buffer->device->info->num_slices; i++) {
+      anv_batch_emit(&cmd_buffer->batch, GENX(3DPRIMITIVE), prim) {
+         prim.VertexCountPerInstance = 3;
+         prim.PrimitiveTopologyType = _3DPRIM_TRILIST;
+         prim.InstanceCount = 1;
+         prim.VertexAccessType = SEQUENTIAL;
+      }
+   }
+}
 /**
- * This function emits the dirty instructions in the batch buffer.
+ * This function handles dirty state emission to the batch buffer.
  */
-void
-genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
+static void
+cmd_buffer_gfx_state_emission(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_device *device = cmd_buffer->device;
    struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
-   struct anv_graphics_pipeline *pipeline = gfx->pipeline;
+   struct anv_graphics_pipeline *pipeline =
+      anv_pipeline_to_graphics(gfx->base.pipeline);
    const struct vk_dynamic_graphics_state *dyn =
       &cmd_buffer->vk.dynamic_graphics_state;
    struct anv_gfx_dynamic_state *hw_state = &gfx->dyn_state;
 
-   if (INTEL_DEBUG(DEBUG_REEMIT)) {
-      BITSET_OR(gfx->dyn_state.dirty, gfx->dyn_state.dirty,
-                device->gfx_dirty_state);
-   }
-
-   /**
-    * Put potential workarounds here if you need to reemit an instruction
-    * because of another one is changing.
-    */
-
-   /* Since Wa_16011773973 will disable 3DSTATE_STREAMOUT, we need to reemit
-    * it after.
-    */
-   if (intel_needs_workaround(device->info, 16011773973) &&
-       pipeline->uses_xfb &&
-       BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_SO_DECL_LIST)) {
-      BITSET_SET(hw_state->dirty, ANV_GFX_STATE_STREAMOUT);
-   }
-
-   /* Gfx11 undocumented issue :
-    * https://gitlab.freedesktop.org/mesa/mesa/-/issues/9781
-    */
-#if GFX_VER == 11
-   if (BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_WM))
-      BITSET_SET(hw_state->dirty, ANV_GFX_STATE_MULTISAMPLE);
-#endif
-
-   /**
-    * State emission
-    */
    if (BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_URB))
       anv_batch_emit_pipeline_state(&cmd_buffer->batch, pipeline, final.urb);
 
@@ -1400,6 +1454,7 @@ genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
        * On DG2+ also known as Wa_1509820217.
        */
       genx_batch_emit_pipe_control(&cmd_buffer->batch, device->info,
+                                   cmd_buffer->state.current_pipeline,
                                    ANV_PIPE_CS_STALL_BIT);
 #endif
    }
@@ -1472,6 +1527,7 @@ genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
          SET(so, so, RenderingDisable);
          SET(so, so, RenderStreamSelect);
          SET(so, so, ReorderMode);
+         SET(so, so, ForceRendering);
       }
    }
 
@@ -1523,6 +1579,7 @@ genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
                      GENX(3DSTATE_VIEWPORT_STATE_POINTERS_CC), cc) {
          cc.CCViewportPointer = cc_state.offset;
       }
+      cmd_buffer->state.gfx.viewport_set = true;
    }
 
    if (BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_SCISSOR)) {
@@ -1745,6 +1802,7 @@ genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
        */
       genx_batch_emit_pipe_control(&cmd_buffer->batch,
                                    cmd_buffer->device->info,
+                                   cmd_buffer->state.current_pipeline,
                                    ANV_PIPE_CS_STALL_BIT);
 #endif
    }
@@ -1765,13 +1823,15 @@ genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
       anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_INDEX_BUFFER), ib) {
          ib.IndexFormat           = gfx->index_type;
          ib.MOCS                  = anv_mocs(cmd_buffer->device,
-                                             buffer->address.bo,
+                                             buffer ? buffer->address.bo : NULL,
                                              ISL_SURF_USAGE_INDEX_BUFFER_BIT);
 #if GFX_VER >= 12
          ib.L3BypassDisable       = true;
 #endif
-         ib.BufferStartingAddress = anv_address_add(buffer->address, offset);
-         ib.BufferSize            = gfx->index_size;
+         if (buffer) {
+            ib.BufferStartingAddress = anv_address_add(buffer->address, offset);
+            ib.BufferSize            = gfx->index_size;
+         }
       }
    }
 
@@ -1870,6 +1930,7 @@ genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
 #if GFX_VERx10 >= 125
    if (BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_WA_18019816803)) {
       genx_batch_emit_pipe_control(&cmd_buffer->batch, cmd_buffer->device->info,
+                                   cmd_buffer->state.current_pipeline,
                                    ANV_PIPE_PSS_STALL_SYNC_BIT);
    }
 #endif
@@ -1900,9 +1961,112 @@ genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
    BITSET_ZERO(hw_state->dirty);
 }
 
+/**
+ * This function handles possible state workarounds and emits the dirty
+ * instructions to the batch buffer.
+ */
+void
+genX(cmd_buffer_flush_gfx_hw_state)(struct anv_cmd_buffer *cmd_buffer)
+{
+   struct anv_device *device = cmd_buffer->device;
+   struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
+   struct anv_graphics_pipeline *pipeline =
+      anv_pipeline_to_graphics(cmd_buffer->state.gfx.base.pipeline);
+   struct anv_gfx_dynamic_state *hw_state = &gfx->dyn_state;
+
+   if (INTEL_DEBUG(DEBUG_REEMIT)) {
+      BITSET_OR(gfx->dyn_state.dirty, gfx->dyn_state.dirty,
+                device->gfx_dirty_state);
+   }
+
+   /**
+    * Put potential workarounds here if you need to reemit an instruction
+    * because of another one is changing.
+    */
+
+   /* Since Wa_16011773973 will disable 3DSTATE_STREAMOUT, we need to reemit
+    * it after.
+    */
+   if (intel_needs_workaround(device->info, 16011773973) &&
+       pipeline->uses_xfb &&
+       BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_SO_DECL_LIST)) {
+      BITSET_SET(hw_state->dirty, ANV_GFX_STATE_STREAMOUT);
+   }
+
+   /* Gfx11 undocumented issue :
+    * https://gitlab.freedesktop.org/mesa/mesa/-/issues/9781
+    */
+#if GFX_VER == 11
+   if (BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_WM))
+      BITSET_SET(hw_state->dirty, ANV_GFX_STATE_MULTISAMPLE);
+#endif
+
+   /* Wa_18020335297 - Apply the WA when viewport ptr is reprogrammed. */
+   if (intel_needs_workaround(device->info, 18020335297) &&
+       BITSET_TEST(hw_state->dirty, ANV_GFX_STATE_VIEWPORT_CC) &&
+       cmd_buffer->state.gfx.viewport_set) {
+      /* For mesh, we implement the WA using CS stall. This is for
+       * simplicity and takes care of possible interaction with Wa_16014390852.
+       */
+      if (anv_pipeline_is_mesh(pipeline)) {
+         genx_batch_emit_pipe_control(&cmd_buffer->batch, device->info,
+                                      _3D, ANV_PIPE_CS_STALL_BIT);
+      } else {
+         /* Mask off all instructions that we program. */
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VFG);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VF);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_PRIMITIVE_REPLICATION);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_RASTER);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VF_STATISTICS);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VF_SGVS);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VF_SGVS_2);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_CLIP);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_STREAMOUT);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VERTEX_INPUT);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VF_TOPOLOGY);
+
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_VS);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_GS);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_HS);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_TE);
+         BITSET_CLEAR(hw_state->dirty, ANV_GFX_STATE_DS);
+
+         cmd_buffer_gfx_state_emission(cmd_buffer);
+
+         emit_wa_18020335297_dummy_draw(cmd_buffer);
+
+         /* Dirty all emitted WA state to make sure that current real
+          * state is restored.
+          */
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VFG);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VF);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_PRIMITIVE_REPLICATION);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_RASTER);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VF_STATISTICS);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VF_SGVS);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VF_SGVS_2);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_CLIP);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_STREAMOUT);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VERTEX_INPUT);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VF_TOPOLOGY);
+
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VS);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_GS);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_HS);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_TE);
+         BITSET_SET(hw_state->dirty, ANV_GFX_STATE_DS);
+      }
+   }
+
+   cmd_buffer_gfx_state_emission(cmd_buffer);
+}
+
 void
 genX(cmd_buffer_enable_pma_fix)(struct anv_cmd_buffer *cmd_buffer, bool enable)
 {
+   if (!anv_cmd_buffer_is_render_queue(cmd_buffer))
+      return;
+
    if (cmd_buffer->state.pma_fix_enabled == enable)
       return;
 
@@ -1919,6 +2083,7 @@ genX(cmd_buffer_enable_pma_fix)(struct anv_cmd_buffer *cmd_buffer, bool enable)
     */
    genx_batch_emit_pipe_control
       (&cmd_buffer->batch, cmd_buffer->device->info,
+       cmd_buffer->state.current_pipeline,
        ANV_PIPE_DEPTH_CACHE_FLUSH_BIT |
        ANV_PIPE_CS_STALL_BIT |
 #if GFX_VER >= 12
@@ -1947,6 +2112,7 @@ genX(cmd_buffer_enable_pma_fix)(struct anv_cmd_buffer *cmd_buffer, bool enable)
     */
    genx_batch_emit_pipe_control
       (&cmd_buffer->batch, cmd_buffer->device->info,
+       cmd_buffer->state.current_pipeline,
        ANV_PIPE_DEPTH_STALL_BIT |
        ANV_PIPE_DEPTH_CACHE_FLUSH_BIT |
 #if GFX_VER >= 12

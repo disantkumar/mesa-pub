@@ -55,7 +55,12 @@
 #include <xf86drm.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#ifdef MAJOR_IN_MKDEV
+#include <sys/mkdev.h>
+#endif
+#ifdef MAJOR_IN_SYSMACROS
 #include <sys/sysmacros.h>
+#endif
 #endif
 
 static int num_screens = 0;
@@ -381,7 +386,7 @@ cache_get_job(void *data, void *gdata, int thread_index)
    VkPipelineCacheCreateInfo pcci;
    pcci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
    pcci.pNext = NULL;
-   pcci.flags = screen->info.have_EXT_pipeline_creation_cache_control ? VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT_EXT : 0;
+   pcci.flags = screen->info.have_EXT_pipeline_creation_cache_control ? VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT : 0;
    pcci.initialDataSize = 0;
    pcci.pInitialData = NULL;
 
@@ -832,6 +837,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
 
    case PIPE_CAP_BINDLESS_TEXTURE:
+      if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB &&
+          (screen->info.db_props.maxDescriptorBufferBindings < 2 || screen->info.db_props.maxSamplerDescriptorBufferBindings < 2))
+         return 0;
       return screen->info.have_EXT_descriptor_indexing;
 
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
@@ -935,7 +943,7 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return screen->info.feats.features.shaderCullDistance;
 
    case PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE:
-      return screen->info.feats.features.sparseBinding ? ZINK_SPARSE_BUFFER_PAGE_SIZE : 0;
+      return screen->info.feats.features.sparseResidencyBuffer ? ZINK_SPARSE_BUFFER_PAGE_SIZE : 0;
 
    /* Sparse texture */
    case PIPE_CAP_MAX_SPARSE_TEXTURE_SIZE:
@@ -1146,7 +1154,9 @@ zink_get_shader_param(struct pipe_screen *pscreen,
           * with what we need for GL, so we can still force a conformant value here
           */
          if (screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA ||
-             screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS)
+             screen->info.driver_props.driverID == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS ||
+             (screen->info.driver_props.driverID == VK_DRIVER_ID_MESA_VENUS
+              && screen->info.props.vendorID == 0x8086))
             return 32;
          max = screen->info.props.limits.maxFragmentInputComponents / 4;
          break;
@@ -1456,6 +1466,12 @@ static void
 zink_destroy_screen(struct pipe_screen *pscreen)
 {
    struct zink_screen *screen = zink_screen(pscreen);
+   struct zink_batch_state *bs = screen->free_batch_states;
+   while (bs) {
+      struct zink_batch_state *bs_next = bs->next;
+      zink_batch_state_destroy(screen, bs);
+      bs = bs_next;
+   }
 
 #ifdef HAVE_RENDERDOC_APP_H
    if (screen->renderdoc_capture_all && p_atomic_dec_zero(&num_screens))
@@ -2444,8 +2460,12 @@ zink_query_dmabuf_modifiers(struct pipe_screen *pscreen, enum pipe_format format
 {
    struct zink_screen *screen = zink_screen(pscreen);
    *count = screen->modifier_props[format].drmFormatModifierCount;
-   for (int i = 0; i < MIN2(max, *count); i++)
+   for (int i = 0; i < MIN2(max, *count); i++) {
+      if (external_only)
+         external_only[i] = 0;
+
       modifiers[i] = screen->modifier_props[format].pDrmFormatModifierProperties[i].drmFormatModifier;
+   }
 }
 
 static bool
@@ -3126,6 +3146,8 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
       return NULL;
    }
 
+   screen->drm_fd = -1;
+
    glsl_type_singleton_init_or_ref();
    zink_debug = debug_get_option_zink_debug();
    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_AUTO)
@@ -3239,10 +3261,10 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
    {
       uint64_t biggest_vis_vram = 0;
       for (unsigned i = 0; i < screen->heap_count[ZINK_HEAP_DEVICE_LOCAL_VISIBLE]; i++)
-         biggest_vis_vram = MAX2(biggest_vis_vram, screen->info.mem_props.memoryHeaps[screen->info.mem_props.memoryTypes[i].heapIndex].size);
+         biggest_vis_vram = MAX2(biggest_vis_vram, screen->info.mem_props.memoryHeaps[screen->info.mem_props.memoryTypes[screen->heap_map[ZINK_HEAP_DEVICE_LOCAL_VISIBLE][i]].heapIndex].size);
       uint64_t biggest_vram = 0;
       for (unsigned i = 0; i < screen->heap_count[ZINK_HEAP_DEVICE_LOCAL]; i++)
-         biggest_vram = MAX2(biggest_vis_vram, screen->info.mem_props.memoryHeaps[screen->info.mem_props.memoryTypes[i].heapIndex].size);
+         biggest_vram = MAX2(biggest_vram, screen->info.mem_props.memoryHeaps[screen->info.mem_props.memoryTypes[screen->heap_map[ZINK_HEAP_DEVICE_LOCAL][i]].heapIndex].size);
       /* determine if vis vram is roughly equal to total vram */
       if (biggest_vis_vram > biggest_vram * 0.9)
          screen->resizable_bar = true;
@@ -3446,20 +3468,11 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
          mesa_logw("zink: bug detected: inputAttachmentDescriptorSize(%u) > %u", (unsigned)screen->info.db_props.inputAttachmentDescriptorSize, ZINK_FBFETCH_DESCRIPTOR_SIZE);
          can_db = false;
       }
-      if (screen->compact_descriptors) {
-         if (screen->info.db_props.maxDescriptorBufferBindings < 3) {
-            if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB) {
-               mesa_loge("Cannot use db descriptor mode with compact descriptors with maxDescriptorBufferBindings < 3");
-               goto fail;
-            }
-            can_db = false;
-         }
-      } else {
-         if (screen->info.db_props.maxDescriptorBufferBindings < 5) {
-            if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB) {
-               mesa_loge("Cannot use db descriptor mode with maxDescriptorBufferBindings < 5");
-               goto fail;
-            }
+      if (screen->info.db_props.maxDescriptorBufferBindings < 2 || screen->info.db_props.maxSamplerDescriptorBufferBindings < 2) {
+         if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB) {
+            /* allow for testing, but disable bindless */
+            mesa_logw("Cannot use bindless and db descriptor mode with (maxDescriptorBufferBindings||maxSamplerDescriptorBufferBindings) < 2");
+         } else {
             can_db = false;
          }
       }
@@ -3489,6 +3502,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config, int64_t dev
       screen->base_descriptor_size = MAX4(screen->db_size[0], screen->db_size[1], screen->db_size[2], screen->db_size[3]);
    }
 
+   simple_mtx_init(&screen->free_batch_states_lock, mtx_plain);
    simple_mtx_init(&screen->dt_lock, mtx_plain);
 
    util_idalloc_mt_init_tc(&screen->buffer_ids);

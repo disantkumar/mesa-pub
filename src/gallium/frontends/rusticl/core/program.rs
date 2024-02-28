@@ -12,6 +12,7 @@ use mesa_rust::pipe::resource::*;
 use mesa_rust::pipe::screen::ResourceType;
 use mesa_rust::util::disk_cache::*;
 use mesa_rust_gen::*;
+use rusticl_llvm_gen::*;
 use rusticl_opencl_gen::*;
 
 use std::collections::HashMap;
@@ -43,6 +44,12 @@ fn get_disk_cache() -> &'static Option<DiskCache> {
     let func_ptrs = [
         // ourselves
         get_disk_cache as _,
+        // LLVM
+        llvm_LLVMContext_LLVMContext as _,
+        // clang
+        clang_getClangFullVersion as _,
+        // SPIRV-LLVM-Translator
+        llvm_writeSpirv1 as _,
     ];
     unsafe {
         DISK_CACHE_ONCE.call_once(|| {
@@ -112,9 +119,10 @@ impl NirKernelBuild {
         let len = buf.len() as u32;
 
         if len > 0 {
+            // TODO bind as constant buffer
             let res = dev
                 .screen()
-                .resource_create_buffer(len, ResourceType::Normal)
+                .resource_create_buffer(len, ResourceType::Normal, PIPE_BIND_GLOBAL)
                 .unwrap();
 
             dev.helper_ctx()
@@ -275,9 +283,6 @@ fn prepare_options(options: &str, dev: &Device) -> Vec<CString> {
     if !options.contains("-cl-std=CL") {
         options.push_str(" -cl-std=CL");
         options.push_str(dev.clc_version.api_str());
-    }
-    if !dev.image_supported() {
-        options.push_str(" -U__IMAGE_SUPPORT__");
     }
     options.push_str(" -D__OPENCL_VERSION__=");
     options.push_str(dev.cl_version.clc_str());
@@ -500,7 +505,12 @@ impl Program {
         for (i, d) in self.devs.iter().enumerate() {
             let mut ptr = ptrs[i];
             let info = lock.dev_build(d);
-            let spirv = info.spirv.as_ref().unwrap().to_bin();
+
+            // no spirv means nothing to write
+            let Some(spirv) = info.spirv.as_ref() else {
+                continue;
+            };
+            let spirv = spirv.to_bin();
 
             unsafe {
                 // 1. binary format version

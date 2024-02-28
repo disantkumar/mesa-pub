@@ -572,6 +572,9 @@ wsi_GetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice physicalDevice,
 {
    VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
    struct wsi_device *wsi_device = pdevice->wsi_device;
+   if (!(wsi_device->queue_supports_blit & BITFIELD64_BIT(queueFamilyIndex)))
+      return false;
+
    struct wsi_x11_connection *wsi_conn =
       wsi_x11_get_connection(wsi_device, connection);
 
@@ -733,13 +736,7 @@ x11_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
    caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->maxImageArrayLayers = 1;
-   caps->supportedUsageFlags =
-      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-      VK_IMAGE_USAGE_SAMPLED_BIT |
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-      VK_IMAGE_USAGE_STORAGE_BIT |
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+   caps->supportedUsageFlags = wsi_caps_get_image_usage();
 
    VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
    if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
@@ -1669,7 +1666,7 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index,
                              chain->gc,
                              image->base.row_pitches[0] / 4,
                              chain->extent.height,
-                             0,0,0,24,
+                             0,0,0,chain->depth,
                              image->base.row_pitches[0] * chain->extent.height,
                              image->base.cpu_map);
       xcb_discard_reply(chain->conn, cookie.sequence);
@@ -1684,7 +1681,7 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index,
                                 chain->gc,
                                 image->base.row_pitches[0] / 4,
                                 this_lines,
-                                0,y_start,0,24,
+                                0,y_start,0,chain->depth,
                                 this_lines * stride_b,
                                 (const uint8_t *)myptr + (y_start * stride_b));
          xcb_discard_reply(chain->conn, cookie.sequence);

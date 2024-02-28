@@ -109,7 +109,20 @@ isl_device_setup_mocs(struct isl_device *dev)
 {
    dev->mocs.protected_mask = 0;
 
-   if (dev->info->ver >= 12) {
+   if (dev->info->ver >= 20) {
+      /* L3+L4=WB; BSpec: 71582 */
+      dev->mocs.internal = 1 << 1;
+      dev->mocs.external = 1 << 1;
+      dev->mocs.protected_mask = 3 << 0;
+      /* TODO: Setting to uncached
+       * WA 14018443005:
+       *  Ensure that any compression-enabled resource from gfx memory subject
+       *  to app recycling (e.g. OGL sparse resource backing memory or
+       *  Vulkan heaps) is never PAT/MOCS'ed as L3:UC.
+       */
+      dev->mocs.blitter_dst = 1 << 1;
+      dev->mocs.blitter_src = 1 << 1;
+   } else if (dev->info->ver >= 12) {
       if (intel_device_info_is_mtl(dev->info)) {
          /* Cached L3+L4; BSpec: 45101 */
          dev->mocs.internal = 1 << 1;
@@ -117,6 +130,12 @@ isl_device_setup_mocs(struct isl_device *dev)
          dev->mocs.external = 14 << 1;
          /* Uncached - GO:Mem */
          dev->mocs.uncached = 5 << 1;
+         /* TODO: XY_BLOCK_COPY_BLT don't mention what should be the L4 cache
+          * mode so for now it is setting L4 as uncached following what is
+          * asked for L3
+          */
+         dev->mocs.blitter_dst = 9 << 1;
+         dev->mocs.blitter_src = 9 << 1;
       } else if (intel_device_info_is_dg2(dev->info)) {
          /* L3CC=WB; BSpec: 45101 */
          dev->mocs.internal = 3 << 1;
@@ -401,7 +420,7 @@ isl_device_init(struct isl_device *dev,
  * supported.
  */
 isl_sample_count_mask_t ATTRIBUTE_CONST
-isl_device_get_sample_counts(struct isl_device *dev)
+isl_device_get_sample_counts(const struct isl_device *dev)
 {
    if (ISL_GFX_VER(dev) >= 9) {
       return ISL_SAMPLE_COUNT_1_BIT |
@@ -617,13 +636,13 @@ tiling_max_mip_tail(enum isl_tiling tiling,
  * Returns an isl_tile_info representation of the given isl_tiling when
  * combined when used in the given configuration.
  *
- * @param[in]  tiling      The tiling format to introspect
- * @param[in]  dim         The dimensionality of the surface being tiled
- * @param[in]  msaa_layout The layout of samples in the surface being tiled
- * @param[in]  format_bpb  The number of bits per surface element (block) for
- *                         the surface being tiled
- * @param[in]  samples     The samples in the surface being tiled
- * @param[out] tile_info   Return parameter for the tiling information
+ * :param tiling:       |in|  The tiling format to introspect
+ * :param dim:          |in|  The dimensionality of the surface being tiled
+ * :param msaa_layout:  |in|  The layout of samples in the surface being tiled
+ * :param format_bpb:   |in|  The number of bits per surface element (block) for
+ *                            the surface being tiled
+ * :param samples:      |in|  The samples in the surface being tiled
+ * :param tile_info:    |out| Return parameter for the tiling information
  */
 void
 isl_tiling_get_info(enum isl_tiling tiling,
@@ -2548,19 +2567,45 @@ isl_calc_base_alignment(const struct isl_device *dev,
       if (tile_info->tiling == ISL_TILING_GFX12_CCS)
          base_alignment_B = MAX(base_alignment_B, 4096);
 
-      /* Platforms using an aux map require that images be granularity-aligned
-       * if they're going to used with CCS. This is because the Aux
-       * translation table maps main surface addresses to aux addresses at a
-       * granularity in the main surface. Because we don't know for sure in
-       * ISL if a surface will use CCS, we have to guess based on the
-       * DISABLE_AUX usage bit. The one thing we do know is that we haven't
-       * enable CCS on linear images yet so we can avoid the extra alignment
-       * there.
-       */
       if (dev->info->has_aux_map &&
+          (isl_format_supports_ccs_d(dev->info, info->format) ||
+           isl_format_supports_ccs_e(dev->info, info->format)) &&
+          !INTEL_DEBUG(DEBUG_NO_CCS) &&
           !(info->usage & ISL_SURF_USAGE_DISABLE_AUX_BIT)) {
+         /* Wa_22015614752:
+          *
+          * Due to L3 cache being tagged with (engineID, vaID) and the CCS
+          * block/cacheline being 256 bytes, 2 engines accessing a 64Kb range
+          * with compression will generate 2 different CCS cacheline entries
+          * in L3, this will lead to corruptions. To avoid this, we need to
+          * ensure 2 images do not share a 256 bytes CCS cacheline. With a
+          * ratio of compression of 1/256, this is 64Kb alignment (even for
+          * Tile4...)
+          *
+          * ATS-M PRMS, Vol 2a: Command Reference: Instructions,
+          * XY_CTRL_SURF_COPY_BLT, "Size of Control Surface Copy" field, the
+          * CCS blocks are 256 bytes :
+          *
+          *    "This field indicates size of the Control Surface or CCS copy.
+          *     It is expressed in terms of number of 256B block of CCS, where
+          *     each 256B block of CCS corresponds to 64KB of main surface."
+          */
+         if (intel_needs_workaround(dev->info, 22015614752)) {
+            base_alignment_B = MAX(base_alignment_B,
+                                   256 /* cacheline */ * 256 /* AUX ratio */);
+         }
+
+         /* Platforms using an aux map require that images be
+          * granularity-aligned if they're going to used with CCS. This is
+          * because the Aux translation table maps main surface addresses to
+          * aux addresses at a granularity in the main surface. Because we
+          * don't know for sure in ISL if a surface will use CCS, we have to
+          * guess based on the DISABLE_AUX usage bit. The one thing we do know
+          * is that we haven't enable CCS on linear images yet so we can avoid
+          * the extra alignment there.
+          */
          base_alignment_B = MAX(base_alignment_B, dev->info->verx10 >= 125 ?
-               1024 * 1024 : 64 * 1024);
+                                1024 * 1024 : 64 * 1024);
       }
    }
 
@@ -2768,10 +2813,6 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
 {
    /* It must be multisampled with an array layout */
    if (surf->msaa_layout != ISL_MSAA_LAYOUT_ARRAY)
-      return false;
-
-   /* We are seeing failures with mcs on dg2, so disable it for now. */
-   if (intel_device_info_is_dg2(dev->info))
       return false;
 
    /* On Gfx12+ this format is not listed in TGL PRMs, Volume 2b: Command

@@ -116,6 +116,8 @@ struct spirv_to_nir_options {
 
    /* Force texture sampling to be non-uniform. */
    bool force_tex_non_uniform;
+   /* Force SSBO accesses to be non-uniform. */
+   bool force_ssbo_non_uniform;
 
    /* In Debug Builds, instead of emitting an OS break on failure, just return NULL from
     * spirv_to_nir().  This is useful for the unit tests that want to report a test failed
@@ -145,6 +147,10 @@ nir_shader *spirv_to_nir(const uint32_t *words, size_t word_count,
                          gl_shader_stage stage, const char *entry_point_name,
                          const struct spirv_to_nir_options *options,
                          const nir_shader_compiler_options *nir_options);
+
+bool
+spirv_library_to_nir_builder(FILE *fp, const uint32_t *words, size_t word_count,
+                             const struct spirv_to_nir_options *options);
 
 #ifdef __cplusplus
 }
