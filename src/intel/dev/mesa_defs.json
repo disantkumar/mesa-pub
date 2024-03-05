@@ -3862,5 +3862,39 @@
         "steppings": "all"
       }
     }
+  },
+  "14017240301": {
+    "mesa_platforms": {
+      "INTEL_PLATFORM_MTL_U": {
+        "ids": [
+          14017240301,
+          14017330959
+        ],
+        "steppings": "a0..b0"
+     },
+     "INTEL_PLATFORM_MTL_H": {
+        "ids": [
+          14017353530
+        ],
+        "steppings": "a0..b0"
+      }
+    }
+  },
+  "14017245111": {
+    "mesa_platforms": {
+      "INTEL_PLATFORM_MTL_U": {
+        "ids": [
+          14017348303
+        ],
+        "steppings": "a0..b0"
+      },
+      "INTEL_PLATFORM_MTL_H": {
+        "ids": [
+          14017245111,
+          14017341140
+        ],
+        "steppings": "a0..b0"
+      }
+    }
   }
 }
