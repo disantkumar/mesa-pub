@@ -6871,6 +6871,10 @@ iris_upload_dirty_render_state(struct iris_context *ice,
       // XXX: we may want to flag IRIS_DIRTY_MULTISAMPLE (or SAMPLE_MASK?)
       // XXX: see commit 979fc1bc9bcc64027ff2cfafd285676f31b930a6
 
+      /* XXX - This fixes artifacts seen on chrome. */
+      uint32_t workaround_bits = intel_device_info_is_mtl(screen->devinfo) ?
+      PIPE_CONTROL_STATE_CACHE_INVALIDATE : 0;
+
       /* The PIPE_CONTROL command description says:
        *
        *   "Whenever a Binding Table Index (BTI) used by a Render Target
@@ -6882,6 +6886,7 @@ iris_upload_dirty_render_state(struct iris_context *ice,
       // XXX: does this need to happen at 3DSTATE_BTP_PS time?
       iris_emit_pipe_control_flush(batch, "workaround: RT BTI change [draw]",
                                    PIPE_CONTROL_RENDER_TARGET_FLUSH |
+                                   workaround_bits |
                                    PIPE_CONTROL_STALL_AT_SCOREBOARD);
    }
 
