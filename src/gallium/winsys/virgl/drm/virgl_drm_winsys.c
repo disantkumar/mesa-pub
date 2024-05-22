@@ -520,6 +520,7 @@ virgl_drm_winsys_resource_cache_create(struct virgl_winsys *qws,
                                        uint32_t size)
 {
    bool need_sync = false;
+   printf(">>>> MESA::virgl_drm_winsys_resource_cache_create\n");
    struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
    struct virgl_hw_res *res;
    struct virgl_resource_cache_entry *entry;
@@ -559,21 +560,28 @@ alloc:
        need_sync = true;
 
    if ((bind & (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED)) == (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED))
+   {
+	   printf(">>>> MESA::virgl_drm_winsys_resource_cache_create::create_shared_scanout\n");
          res = virgl_drm_winsys_resource_create_shared_scanout(qws, target, format, bind,
                                                   width, height, depth,
                                                   array_size, last_level,
                                                   nr_samples, flags, size);
+   }
    else if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
                 VIRGL_RESOURCE_FLAG_MAP_COHERENT))
+   {	   printf(">>>> MESA::virgl_drm_winsys_resource_cache_create::create_shared_scanout\n");
       res = virgl_drm_winsys_resource_create_blob(qws, target, format, bind,
                                                   width, height, depth,
                                                   array_size, last_level,
                                                   nr_samples, flags, size);
+   }
    else
+   {	   printf(">>>> MESA::virgl_drm_winsys_resource_cache_create::else\n");
       res = virgl_drm_winsys_resource_create(qws, target, format, bind, width,
                                              height, depth, array_size,
                                              last_level, nr_samples, size,
                                              need_sync);
+   }
    return res;
 }
 
@@ -1337,7 +1345,7 @@ virgl_drm_winsys_create(int drmFD)
    struct virgl_drm_winsys *qdws;
    int drm_version;
    int ret;
-
+   printf(">>>> MESA::virgl_drm_winsys_create\n");
    for (uint32_t i = 0; i < ARRAY_SIZE(params); i++) {
       struct drm_virtgpu_getparam getparam = { 0 };
       uint64_t value = 0;
@@ -1406,6 +1414,7 @@ virgl_drm_winsys_create(int drmFD)
 
    qdws->base.supports_coherent = params[param_resource_blob].value &&
                                   params[param_host_visible].value;
+   printf(">>>> MESA::virgl_drm_winsys_create::return\n");
    return &qdws->base;
 
 }
@@ -1476,6 +1485,7 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
 {
    struct pipe_screen *pscreen = NULL;
 
+   printf(">>>> MESA::virgl_drm_screen_create\n");
    simple_mtx_lock(&virgl_screen_mutex);
    if (!fd_tab) {
       fd_tab = _mesa_hash_table_create(NULL, hash_fd, equal_fd);
@@ -1490,6 +1500,7 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
       struct virgl_winsys *vws;
       int dup_fd = os_dupfd_cloexec(fd);
 
+      printf(">>>> MESA::virgl_drm_screen_create::virgl_drm_winsys_create\n");
       vws = virgl_drm_winsys_create(dup_fd);
       if (!vws) {
          close(dup_fd);
@@ -1511,5 +1522,6 @@ virgl_drm_screen_create(int fd, const struct pipe_screen_config *config)
 
 unlock:
    simple_mtx_unlock(&virgl_screen_mutex);
+   printf(">>>> MESA::virgl_drm_screen_create::return\n");
    return pscreen;
 }

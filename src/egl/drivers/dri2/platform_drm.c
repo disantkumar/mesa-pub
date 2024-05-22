@@ -246,6 +246,7 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
          unsigned flags = surf->base.v0.flags;
          if (dri2_surf->base.ProtectedContent)
             flags |= GBM_BO_USE_PROTECTED;
+		 printf(">>>>> mesa::get_back_bo\n");
          dri2_surf->back->bo =
             gbm_bo_create(&dri2_dpy->gbm_dri->base, surf->base.v0.width,
                           surf->base.v0.height, surf->base.v0.format, flags);
