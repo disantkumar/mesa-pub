@@ -1520,6 +1520,7 @@ dri3_alloc_render_buffer(struct loader_dri3_drawable *draw, unsigned int format,
          free(mod_reply);
       }
 #endif
+	printf(">>>> MESA::dri3_alloc_render_buffer::loader_dri_create_image\n");
       buffer->image = loader_dri_create_image(draw->dri_screen_render_gpu, draw->ext->image,
                                               width, height, format,
                                               __DRI_IMAGE_USE_SHARE |
@@ -1535,6 +1536,7 @@ dri3_alloc_render_buffer(struct loader_dri3_drawable *draw, unsigned int format,
       if (!buffer->image)
          goto no_image;
    } else {
+	printf(">>>> MESA::dri3_alloc_render_buffer::else::draw->ext->image->createImage\n");
       buffer->image = draw->ext->image->createImage(draw->dri_screen_render_gpu,
                                                     width, height,
                                                     format,
@@ -1549,6 +1551,7 @@ dri3_alloc_render_buffer(struct loader_dri3_drawable *draw, unsigned int format,
        * is also used for display gpu.
        */
       if (draw->dri_screen_display_gpu) {
+		printf(">>>> MESA::dri3_alloc_render_buffer::else::dri_screen_display_gpu::draw->ext->image->createImage\n");
          linear_buffer_display_gpu =
            draw->ext->display_image->createImage(draw->dri_screen_display_gpu,
                                          width, height,
@@ -1565,6 +1568,7 @@ dri3_alloc_render_buffer(struct loader_dri3_drawable *draw, unsigned int format,
       }
 
       if (!pixmap_buffer) {
+		printf(">>>> MESA::dri3_alloc_render_buffer::else::!pixmap_buffer::draw->ext->image->createImage\n");
          image_ext = draw->ext->image;
          buffer->linear_buffer =
            draw->ext->image->createImage(draw->dri_screen_render_gpu,
@@ -2080,6 +2084,7 @@ dri3_get_buffer(__DRIdrawable *driDrawable,
 
       /* Allocate the new buffers
        */
+	  printf(">>>> MESA::dri3_get_buffer::dri3_alloc_render_buffer\n");
       new_buffer = dri3_alloc_render_buffer(draw,
                                                    format,
                                                    draw->width,
@@ -2394,9 +2399,11 @@ dri3_find_back_alloc(struct loader_dri3_drawable *draw)
    /* Allocate a new back if we haven't got one */
    if (!back && draw->back_format != __DRI_IMAGE_FORMAT_NONE &&
        dri3_update_drawable(draw))
+   {
+	   printf(">>>> MESA::dri3_find_back_alloc::dri3_alloc_render_buffer\n");
       back = dri3_alloc_render_buffer(draw, draw->back_format,
                                       draw->width, draw->height, draw->depth);
-
+   }
    if (!back)
       return NULL;
 

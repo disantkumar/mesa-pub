@@ -461,6 +461,7 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       .same_gpu = true,
    };
 
+   printf(">>>> MESA::wsi_headless_surface_create_swapchain::wsi_swapchain_init\n");
    result = wsi_swapchain_init(wsi_device, &chain->base, device,
                                pCreateInfo, &drm_params.base, pAllocator);
    if (result != VK_SUCCESS) {

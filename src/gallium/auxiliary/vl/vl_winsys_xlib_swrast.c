@@ -174,6 +174,7 @@ vl_swrast_texture_from_drawable(struct vl_screen *vscreen, void *drawable)
       templat.last_level = 0;
       templat.bind = (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET);
 
+	  printf(">>>> MESA::vl_swrast_texture_from_drawable::vscreen->pscreen->resource_create\n");
       scrn->drawable_texture = vscreen->pscreen->resource_create(vscreen->pscreen, &templat);
    } else {
       struct pipe_resource *drawable_texture = NULL;

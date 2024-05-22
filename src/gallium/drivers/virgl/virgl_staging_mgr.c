@@ -45,6 +45,7 @@ virgl_staging_alloc_buffer(struct virgl_staging_mgr *staging, unsigned min_size)
     */
    size = align(MAX2(staging->default_size, min_size), 4096);
 
+   printf(">>>> MESA::virgl_staging_alloc_buffer::vws->resource_create\n");
    staging->hw_res = vws->resource_create(vws,
                                           PIPE_BUFFER,
                                           NULL,

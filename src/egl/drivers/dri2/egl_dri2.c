@@ -2900,6 +2900,7 @@ dri2_create_drm_image_mesa(_EGLDisplay *disp, const EGLint *attr_list)
 
    _eglInitImage(&dri2_img->base, disp);
 
+   printf(">>>> MESA::dri2_create_drm_image_mesa::dri2_dpy->image->createImage\n");
    dri2_img->dri_image =
       dri2_dpy->image->createImage(dri2_dpy->dri_screen_render_gpu, attrs.Width,
                                    attrs.Height, format, dri_use, dri2_img);

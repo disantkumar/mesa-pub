@@ -2500,6 +2500,7 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       image_params = &drm_image_params.base;
    }
 
+   printf(">>>> MESA::x11_surface_create_swapchain::wsi_swapchain_init\n");
    result = wsi_swapchain_init(wsi_device, &chain->base, device, pCreateInfo,
                                image_params, pAllocator);
 

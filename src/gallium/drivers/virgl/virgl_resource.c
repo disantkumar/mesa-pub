@@ -449,6 +449,7 @@ virgl_resource_realloc(struct virgl_context *vctx, struct virgl_resource *res)
 
    int alloc_size = res->use_staging ? 1 : res->metadata.total_size;
 
+   printf(">>>> MESA::virgl_resource_realloc::resource_create\n");
    hw_res = vs->vws->resource_create(vs->vws,
                                      templ->target,
                                      NULL,
@@ -618,10 +619,12 @@ static void virgl_resource_layout(struct pipe_resource *pt,
       nblocksy = util_format_get_nblocksy(pt->format, height);
       if ((pt->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) == (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) {
          /* Shared scanout buffers need to be aligned to 256 bytes */
-         metadata->stride[level] = ALIGN(util_format_get_stride(pt->format, width), 256);
+         metadata->stride[level] = ALIGN( (winsys_stride ? winsys_stride : util_format_get_stride(pt->format, width)), 256);
+		 printf(">>>> MESA::virgl_resource_layout::SCANOUT/SHARED::metadata->stride[level]::%d\n",metadata->stride[level]);
       } else {
          metadata->stride[level] = winsys_stride ? winsys_stride :
                                  util_format_get_stride(pt->format, width);
+		 printf(">>>> MESA::virgl_resource_layout::metadata->stride[level]::%d\n",metadata->stride[level]);
       }
       metadata->layer_stride[level] = nblocksy * metadata->stride[level];
       metadata->level_offset[level] = buffer_size;
@@ -677,6 +680,7 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
    else
       alloc_size = res->metadata.total_size;
    
+   printf(">>>> MESA::virgl_resource_create_front::vs->vws->resource_create\n");
    res->hw_res = vs->vws->resource_create(vs->vws, templ->target,
                                           map_front_private,
                                           templ->format, vbind,
@@ -732,6 +736,7 @@ static struct pipe_resource *virgl_resource_from_handle(struct pipe_screen *scre
    pipe_reference_init(&res->b.reference, 1);
 
    plane = winsys_stride = plane_offset = modifier = 0;
+   printf(">>>> MESA::virgl_resource_from_handle::resource_create_from_handle\n");
    res->hw_res = vs->vws->resource_create_from_handle(vs->vws, whandle,
                                                       &res->b,
                                                       &plane,
@@ -752,6 +757,7 @@ static struct pipe_resource *virgl_resource_from_handle(struct pipe_screen *scre
       modifier = 0;
    }
 
+   printf(">>>> MESA::virgl_resource_from_handle::virgl_resource_layout\n");
    virgl_resource_layout(&res->b, &res->metadata, plane, winsys_stride,
                          plane_offset, modifier);
 

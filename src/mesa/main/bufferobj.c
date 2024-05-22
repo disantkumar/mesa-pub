@@ -327,6 +327,7 @@ bufferobj_data(struct gl_context *ctx,
    if (size != 0) {
       struct pipe_resource buffer;
 
+	  printf(">>>> MESA::bufferobj_data::size != 0 \n");
       memset(&buffer, 0, sizeof buffer);
       buffer.target = PIPE_BUFFER;
       buffer.format = PIPE_FORMAT_R8_UNORM; /* want TYPELESS or similar */
@@ -349,6 +350,7 @@ bufferobj_data(struct gl_context *ctx,
             screen->resource_from_user_memory(screen, &buffer, (void*)data);
       }
       else {
+		  printf(">>>> MESA::bufferobj_data::resource_create\n");
          obj->buffer = screen->resource_create(screen, &buffer);
 
          if (obj->buffer && data)
@@ -397,6 +399,7 @@ _mesa_bufferobj_data(struct gl_context *ctx,
                   GLbitfield storageFlags,
                   struct gl_buffer_object *obj)
 {
+	printf(">>>> MESA::_mesa_bufferobj_data::bufferobj_data\n");
    return bufferobj_data(ctx, target, size, data, NULL, 0, usage, storageFlags, obj);
 }
 
@@ -409,6 +412,7 @@ bufferobj_data_mem(struct gl_context *ctx,
                    GLenum usage,
                    struct gl_buffer_object *bufObj)
 {
+	printf(">>>> MESA::bufferobj_data_mem::bufferobj_data\n");
    return bufferobj_data(ctx, target, size, NULL, memObj, offset, usage, GL_DYNAMIC_STORAGE_BIT, bufObj);
 }
 

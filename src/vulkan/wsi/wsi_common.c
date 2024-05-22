@@ -361,12 +361,14 @@ configure_image(const struct wsi_swapchain *chain,
 {
    switch (params->image_type) {
    case WSI_IMAGE_TYPE_CPU: {
+		printf(">>>> MESA::configure_image::WSI_IMAGE_TYPE_CPU\n");
       const struct wsi_cpu_image_params *cpu_params =
          container_of(params, const struct wsi_cpu_image_params, base);
       return wsi_configure_cpu_image(chain, pCreateInfo, cpu_params, info);
    }
 #ifdef HAVE_LIBDRM
    case WSI_IMAGE_TYPE_DRM: {
+		printf(">>>> MESA::configure_image::WSI_IMAGE_TYPE_DRM\n");
       const struct wsi_drm_image_params *drm_params =
          container_of(params, const struct wsi_drm_image_params, base);
       return wsi_drm_configure_image(chain, pCreateInfo, drm_params, info);
@@ -374,6 +376,7 @@ configure_image(const struct wsi_swapchain *chain,
 #endif
 #ifdef _WIN32
    case WSI_IMAGE_TYPE_DXGI: {
+		printf(">>>> MESA::configure_image::WSI_IMAGE_TYPE_DXGI\n");
       const struct wsi_dxgi_image_params *dxgi_params =
          container_of(params, const struct wsi_dxgi_image_params, base);
       return wsi_dxgi_configure_image(chain, pCreateInfo, dxgi_params, info);
@@ -1764,6 +1767,7 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
       };
       __vk_append_struct(&buf_mem_info, &memory_export_info);
    }
+   printf(">>>> MESA::wsi_create_buffer_blit_context\n");
 #ifndef _WIN32
    VkImportMemoryFdInfoKHR memory_fd_info;
 
@@ -1771,6 +1775,7 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
    {
       int fd = 0;
 
+	  printf(">>>> MESA::wsi_create_buffer_blit_context::virtgpu_alloc_and_export\n");
       fd = virtgpu_alloc_and_export(info->display_device_fd, info->linear_stride, info->linear_size);
       memory_fd_info = (VkImportMemoryFdInfoKHR){
          .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
@@ -2090,6 +2095,7 @@ wsi_create_cpu_buffer_image_mem(const struct wsi_swapchain *chain,
 {
    VkResult result;
 
+   printf(">>>> MESA::wsi_create_cpu_buffer_image_mem::wsi_create_buffer_blit_context\n");
    result = wsi_create_buffer_blit_context(chain, info, image, 0,
                                            false /* implicit_sync */);
    if (result != VK_SUCCESS)
@@ -2136,6 +2142,7 @@ wsi_configure_cpu_image(const struct wsi_swapchain *chain,
       return result;
 
    if (chain->blit.type != WSI_SWAPCHAIN_NO_BLIT) {
+	   printf(">>>> MESA::wsi_configure_cpu_image::wsi_create_cpu_buffer_image_mem\n");
       wsi_configure_buffer_image(chain, pCreateInfo,
                                  1 /* stride_align */,
                                  1 /* size_align */,
@@ -2145,6 +2152,7 @@ wsi_configure_cpu_image(const struct wsi_swapchain *chain,
       info->select_image_memory_type = wsi_select_device_memory_type;
       info->create_mem = wsi_create_cpu_buffer_image_mem;
    } else {
+	   printf(">>>> MESA::wsi_configure_cpu_image::wsi_create_cpu_linear_image_mem\n");
       /* Force the image to be linear */
       info->create.tiling = VK_IMAGE_TILING_LINEAR;
 

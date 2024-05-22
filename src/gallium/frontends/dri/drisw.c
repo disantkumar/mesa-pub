@@ -426,6 +426,7 @@ drisw_allocate_textures(struct dri_context *stctx,
       if (statts[i] == ST_ATTACHMENT_FRONT_LEFT &&
                  screen->base.screen->resource_create_front &&
                  loader->base.version >= 3) {
+		  printf(">>>> MESA::drisw_allocate_textures::screen->base.screen->resource_create_front\n");
          drawable->textures[statts[i]] =
             screen->base.screen->resource_create_front(screen->base.screen, &templ, (const void *)drawable);
       } else

@@ -1634,6 +1634,7 @@ virtgpu_open(struct virtgpu *gpu)
 static VkResult
 virtgpu_init(struct virtgpu *gpu)
 {
+	printf(">>>> MESA::virtgpu_init\n");
    util_sparse_array_init(&gpu->shmem_array, sizeof(struct virtgpu_shmem),
                           1024);
    util_sparse_array_init(&gpu->bo_array, sizeof(struct virtgpu_bo), 1024);
@@ -1681,6 +1682,7 @@ virtgpu_init(struct virtgpu *gpu)
    gpu->base.sync_ops.read = virtgpu_sync_read;
    gpu->base.sync_ops.write = virtgpu_sync_write;
 
+   printf(">>>> MESA::virtgpu_init::end\n");
    return VK_SUCCESS;
 }
 
@@ -1697,6 +1699,7 @@ vn_renderer_create_virtgpu(struct vn_instance *instance,
    gpu->instance = instance;
    gpu->fd = -1;
 
+   printf(">>>> MESA::vn_renderer_create_virtgpu::virtgpu_init\n");
    VkResult result = virtgpu_init(gpu);
    if (result != VK_SUCCESS) {
       virtgpu_destroy(&gpu->base, alloc);

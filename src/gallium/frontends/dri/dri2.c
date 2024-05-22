@@ -354,6 +354,7 @@ dri2_allocate_buffer(struct dri_screen *screen,
    templ.depth0 = 1;
    templ.array_size = 1;
 
+   printf(">>>> MESA::dri2_allocate_buffer::screen->base.screen->resource_create\n");
    buffer->resource =
       screen->base.screen->resource_create(screen->base.screen, &templ);
    if (!buffer->resource) {
@@ -639,6 +640,7 @@ dri2_allocate_textures(struct dri_context *ctx,
                /* Allocate a new one. */
                pipe_resource_reference(&drawable->msaa_textures[statt], NULL);
 
+			   printf(">>>> MESA::dri2_allocate_textures::screen->base.screen->resource_create\n");
                drawable->msaa_textures[statt] =
                   screen->base.screen->resource_create(screen->base.screen,
                                                        &templ);
@@ -697,6 +699,7 @@ dri2_allocate_textures(struct dri_context *ctx,
              (*zsbuf)->height0 != templ.height0) {
             /* Allocate a new one. */
             pipe_resource_reference(zsbuf, NULL);
+			 printf(">>>> MESA::dri2_allocate_textures::screen->base.screen->resource_create2\n");
             *zsbuf = screen->base.screen->resource_create(screen->base.screen,
                                                           &templ);
             assert(*zsbuf);
@@ -1251,15 +1254,20 @@ dri2_create_image_common(__DRIscreen *_screen,
    templ.array_size = 1;
 
    if (modifiers)
+   {
+   		printf(">>>> MESA::dri2_create_image_common::screen->base.screen->resource_create_with_modifiers\n");
       img->texture =
          screen->base.screen
             ->resource_create_with_modifiers(screen->base.screen,
                                              &templ,
                                              modifiers,
                                              count);
-   else
+   }else
+   {
+   		printf(">>>> MESA::dri2_create_image_common::screen->base.screen->resource_create\n");
       img->texture =
          screen->base.screen->resource_create(screen->base.screen, &templ);
+   }
    if (!img->texture) {
       FREE(img);
       return NULL;
@@ -1283,6 +1291,7 @@ dri2_create_image(__DRIscreen *_screen,
                    int width, int height, int format,
                    unsigned int use, void *loaderPrivate)
 {
+	printf(">>>> MESA::dri2_create_image::dri2_create_image_common\n");
    return dri2_create_image_common(_screen, width, height, format, use,
                                    NULL /* modifiers */, 0 /* count */,
                                    loaderPrivate);
@@ -1295,6 +1304,7 @@ dri2_create_image_with_modifiers(__DRIscreen *dri_screen,
                                  const unsigned count,
                                  void *loaderPrivate)
 {
+	printf(">>>> MESA::dri2_create_image_with_modifiers::dri2_create_image_common\n");
    return dri2_create_image_common(dri_screen, width, height, format,
                                    __DRI_IMAGE_USE_SHARE, modifiers, count,
                                    loaderPrivate);
@@ -1307,6 +1317,7 @@ dri2_create_image_with_modifiers2(__DRIscreen *dri_screen,
                                  const unsigned count, unsigned int use,
                                  void *loaderPrivate)
 {
+	printf(">>>> MESA::dri2_create_image_with_modifiers2::dri2_create_image_common\n");
    return dri2_create_image_common(dri_screen, width, height, format, use,
                                    modifiers, count, loaderPrivate);
 }

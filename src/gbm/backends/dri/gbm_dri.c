@@ -981,6 +981,7 @@ gbm_dri_bo_create(struct gbm_device *gbm,
       goto failed;
    }
 
+   printf(">>>> MESA::gbm_dri_bo_create::loader_dri_create_image\n");
    bo->image = loader_dri_create_image(dri->screen, dri->image, width, height,
                                        dri_format, dri_use, modifiers, count,
                                        bo);

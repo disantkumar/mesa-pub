@@ -169,6 +169,7 @@ wsw_dt_create(struct sw_winsys *ws,
 
    /* XXX alignment: we can't do anything about this */
 
+   printf(">>>> MESA::wsw_dt_create::wsw->screen->resource_create\n");
    tex = wsw->screen->resource_create(wsw->screen, &templ);
    if (!tex)
       return NULL;

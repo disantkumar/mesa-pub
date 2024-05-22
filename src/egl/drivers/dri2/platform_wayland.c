@@ -933,6 +933,7 @@ create_dri_image_from_dmabuf_feedback(struct dri2_egl_surface *dri2_surf,
       if (tranche->flags & ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT)
          flags |= __DRI_IMAGE_USE_SCANOUT;
 
+      printf(">>>> MESA::create_dri_image_from_dmabuf_feedback::loader_dri_create_image\n");
       dri2_surf->back->dri_image = loader_dri_create_image(
          dri2_dpy->dri_screen_render_gpu, dri2_dpy->image,
          dri2_surf->base.Width, dri2_surf->base.Height, pipe_format,
@@ -969,6 +970,7 @@ create_dri_image(struct dri2_egl_surface *dri2_surf,
    /* If our DRIImage implementation does not support createImageWithModifiers,
     * then fall back to the old createImage, and hope it allocates an image
     * which is acceptable to the winsys. */
+    printf(">>>> MESA::create_dri_image::loader_dri_create_image\n");
    dri2_surf->back->dri_image = loader_dri_create_image(
       dri2_dpy->dri_screen_render_gpu, dri2_dpy->image, dri2_surf->base.Width,
       dri2_surf->base.Height, pipe_format,
@@ -1052,6 +1054,7 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
       __DRIimage *linear_copy_display_gpu_image = NULL;
 
       if (dri2_dpy->dri_screen_display_gpu) {
+    	printf(">>>> MESA::get_back_bo::dri_screen_display_gpu::loader_dri_create_image\n");
          linear_copy_display_gpu_image = loader_dri_create_image(
             dri2_dpy->dri_screen_display_gpu, dri2_dpy->image,
             dri2_surf->base.Width, dri2_surf->base.Height,
@@ -1137,6 +1140,7 @@ get_back_bo(struct dri2_egl_surface *dri2_surf)
       }
 
       if (!dri2_surf->back->linear_copy) {
+		  printf(">>>> MESA::get_back_bo::!dri2_surf->back->linear_copy::loader_dri_create_image\n");
          dri2_surf->back->linear_copy = loader_dri_create_image(
             dri2_dpy->dri_screen_render_gpu, dri2_dpy->image,
             dri2_surf->base.Width, dri2_surf->base.Height,

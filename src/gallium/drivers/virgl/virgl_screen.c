@@ -1027,6 +1027,7 @@ static void virgl_query_memory_info(struct pipe_screen *screen, struct pipe_memo
       .flags = 0
    };
 
+   printf(">>>> MESA::virgl_query_memory_info::screen->resource_create\n");
    res = (struct virgl_resource*) screen->resource_create(screen, &templ);
 
    virgl_encode_get_memory_info(vctx, res);

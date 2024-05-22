@@ -158,6 +158,7 @@ static void *texture_transfer_map_resolve(struct pipe_context *ctx,
 
    virgl_init_temp_resource_from_box(&templ, resource, &dst_box, level, 0, fmt);
 
+   printf(">>>> MESA::texture_transfer_map_resolve::ctx->screen->resource_create\n");
    resolve_tmp = ctx->screen->resource_create(ctx->screen, &templ);
    if (!resolve_tmp)
       return NULL;

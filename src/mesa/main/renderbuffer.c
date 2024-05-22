@@ -284,6 +284,7 @@ renderbuffer_alloc_storage(struct gl_context * ctx,
                     PIPE_BIND_RENDER_TARGET);
    }
 
+   printf(">>>> MESA::renderbuffer_alloc_storage::resource_create\n");
    rb->texture = screen->resource_create(screen, &templ);
 
    if (!rb->texture)

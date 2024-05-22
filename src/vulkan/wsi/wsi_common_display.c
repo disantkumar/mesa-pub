@@ -2113,6 +2113,7 @@ wsi_display_surface_create_swapchain(
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
 
+   printf(">>>> MESA::wsi_display_surface_create_swapchain::wsi_swapchain_init\n");
    VkResult result = wsi_swapchain_init(wsi_device, &chain->base, device,
                                         create_info, &image_params.base,
                                         allocator);

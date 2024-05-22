@@ -43,6 +43,7 @@ static __DRIimage *
 surfaceless_alloc_image(struct dri2_egl_display *dri2_dpy,
                         struct dri2_egl_surface *dri2_surf)
 {
+	printf(">>>> MESA::surfaceless_alloc_image::dri2_dpy->image->createImage\n");
    return dri2_dpy->image->createImage(
       dri2_dpy->dri_screen_render_gpu, dri2_surf->base.Width,
       dri2_surf->base.Height, dri2_surf->visual, 0, NULL);

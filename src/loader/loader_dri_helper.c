@@ -69,6 +69,7 @@ __DRIimage *loader_dri_create_image(__DRIscreen *screen,
                                                 modifiers_count, loaderPrivate);
    }
 
+   printf("loader_dri_create_image::image->createImage\n");
    /* No modifier given or fallback to the legacy createImage allowed */
    return image->createImage(screen, width, height, dri_format, dri_usage,
                              loaderPrivate);

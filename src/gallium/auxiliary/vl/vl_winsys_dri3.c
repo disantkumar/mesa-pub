@@ -237,6 +237,7 @@ dri3_alloc_back_buffer(struct vl_dri3_screen *scrn)
    struct pipe_resource templ, *pixmap_buffer_texture;
    struct winsys_handle whandle;
 
+   printf(">>>> MESA::dri3_alloc_back_buffer\n");
    buffer = CALLOC_STRUCT(vl_dri3_buffer);
    if (!buffer)
       return NULL;
@@ -262,6 +263,7 @@ dri3_alloc_back_buffer(struct vl_dri3_screen *scrn)
    templ.array_size = 1;
 
    if (scrn->is_different_gpu) {
+   		printf(">>>> MESA::dri3_alloc_back_buffer::resource_create::is_different_gpu\n");
       buffer->texture = (scrn->output_texture) ? scrn->output_texture :
                         scrn->base.pscreen->resource_create(scrn->base.pscreen, &templ);
       if (!buffer->texture)
@@ -269,6 +271,7 @@ dri3_alloc_back_buffer(struct vl_dri3_screen *scrn)
 
       templ.bind |= PIPE_BIND_SCANOUT | PIPE_BIND_SHARED |
                     PIPE_BIND_LINEAR;
+   	  printf(">>>> MESA::dri3_alloc_back_buffer::resource_create::is_different_gpu::PIPE_BIND_SCANOUT/SHARED/LINEAR\n");
       buffer->linear_texture =
           scrn->base.pscreen->resource_create(scrn->base.pscreen, &templ);
       pixmap_buffer_texture = buffer->linear_texture;
@@ -276,6 +279,7 @@ dri3_alloc_back_buffer(struct vl_dri3_screen *scrn)
       if (!buffer->linear_texture)
          goto no_linear_texture;
    } else {
+   		printf(">>>> MESA::dri3_alloc_back_buffer::resource_create::else\n");
       templ.bind |= PIPE_BIND_SCANOUT | PIPE_BIND_SHARED;
       buffer->texture = (scrn->output_texture) ? scrn->output_texture :
                         scrn->base.pscreen->resource_create(scrn->base.pscreen, &templ);
@@ -311,6 +315,7 @@ dri3_alloc_back_buffer(struct vl_dri3_screen *scrn)
 
    xshmfence_trigger(buffer->shm_fence);
 
+   printf(">>>> MESA::dri3_alloc_back_buffer::returned\n");
    return buffer;
 
 no_linear_texture:
