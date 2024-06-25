@@ -802,7 +802,6 @@ dri3_create_screen(int screen, struct glx_display * priv, bool driver_name_is_in
 {
    xcb_connection_t *c = XGetXCBConnection(priv->dpy);
    const __DRIconfig **driver_configs;
-   const __DRIconfig **disp_driver_configs;
    const __DRIextension **extensions;
    struct dri3_screen *psc;
    __GLXDRIscreen *psp;
