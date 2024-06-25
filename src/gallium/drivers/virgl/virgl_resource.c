@@ -617,8 +617,9 @@ static void virgl_resource_layout(struct pipe_resource *pt,
 
       nblocksy = util_format_get_nblocksy(pt->format, height);
       if ((pt->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) == (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED)) {
-         /* Shared scanout buffers need to be aligned to 256 bytes */
-         metadata->stride[level] = ALIGN(util_format_get_stride(pt->format, width), 256);
+         /* Shared LINEAR scanout buffers on Intel need to be aligned to 64 bytes to match the
+          * size calculation of minigbm's i915 backend allocation. */
+         metadata->stride[level] = ALIGN(util_format_get_stride(pt->format, width), 64);
       } else {
          metadata->stride[level] = winsys_stride ? winsys_stride :
                                  util_format_get_stride(pt->format, width);

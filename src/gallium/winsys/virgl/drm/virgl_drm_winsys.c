@@ -260,6 +260,27 @@ virgl_drm_winsys_resource_create_shared_scanout(struct virgl_winsys *qws,
                                       uint32_t flags,
                                       uint32_t size)
 {
+   /* Ensure the scanout buffer is LINEAR so we can predict the stride/size determined by
+    * host minigbm's i915 backend */
+   bind = VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_RENDER_TARGET |
+      VIRGL_BIND_SCANOUT | VIRGL_BIND_LINEAR | VIRGL_BIND_SHARED;
+
+   /* Shared LINEAR scanout buffers on Intel need to be aligned to 64 bytes to match the
+    * size calculation of minigbm's i915 backend allocation. */
+   uint32_t orig_size = size;
+   uint32_t stride = ALIGN(util_format_get_stride(format, width), 64);
+   size = ALIGN(stride * height * depth, getpagesize());
+
+#if 0
+   mesa_logi("VIRGL :: create shared scanout\n"
+         "width=%u height=%u depth=%u\n"
+         "size=%u\n"
+         "aligned size=%u\n"
+         "flags=0x%x\n"
+         "bind=0x%x",
+         width, height, depth, orig_size, size, flags, bind);
+#endif
+
    int ret;
    int32_t blob_id;
    uint32_t cmd[VIRGL_PIPE_RES_CREATE_SIZE + 1] = { 0 };
@@ -283,10 +304,6 @@ virgl_drm_winsys_resource_create_shared_scanout(struct virgl_winsys *qws,
    res = CALLOC_STRUCT(virgl_hw_res);
    if (!res)
       return NULL;
- 
-   /* We assume here the allocator on the host is going to align linear shared scanout buffers allocations to 256 bytes. */
-
-   size = ALIGN(size, getpagesize());
 
    blob_id = p_atomic_inc_return(&qdws->blob_id);
    cmd[0] = VIRGL_CMD0(VIRGL_CCMD_PIPE_RESOURCE_CREATE, 0, VIRGL_PIPE_RES_CREATE_SIZE);
@@ -306,7 +323,7 @@ virgl_drm_winsys_resource_create_shared_scanout(struct virgl_winsys *qws,
    drm_rc_blob.cmd_size = 4 * (VIRGL_PIPE_RES_CREATE_SIZE + 1);
    drm_rc_blob.size = size;
    drm_rc_blob.blob_mem = VIRTGPU_BLOB_MEM_HOST3D;
-   drm_rc_blob.blob_flags = VIRTGPU_BLOB_FLAG_USE_MAPPABLE | VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
+   drm_rc_blob.blob_flags = VIRTGPU_BLOB_FLAG_USE_SHAREABLE | VIRTGPU_BLOB_FLAG_USE_MAPPABLE | VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
    drm_rc_blob.blob_id = (uint64_t) blob_id;
 
    ret = drmIoctl(qdws->fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB, &drm_rc_blob);
@@ -558,22 +575,24 @@ alloc:
    if (target == PIPE_BUFFER && (bind & VIRGL_BIND_CUSTOM))
        need_sync = true;
 
-   if ((bind & (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED)) == (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED))
-         res = virgl_drm_winsys_resource_create_shared_scanout(qws, target, format, bind,
-                                                  width, height, depth,
-                                                  array_size, last_level,
-                                                  nr_samples, flags, size);
-   else if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
-                VIRGL_RESOURCE_FLAG_MAP_COHERENT))
+   if ((bind & (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED)) ==
+         (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED)) {
+      res = virgl_drm_winsys_resource_create_shared_scanout(qws, target, format, bind,
+            width, height, depth,
+            array_size, last_level,
+            nr_samples, flags, size);
+   } else if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
+                VIRGL_RESOURCE_FLAG_MAP_COHERENT)) {
       res = virgl_drm_winsys_resource_create_blob(qws, target, format, bind,
-                                                  width, height, depth,
-                                                  array_size, last_level,
-                                                  nr_samples, flags, size);
-   else
+            width, height, depth,
+            array_size, last_level,
+            nr_samples, flags, size);
+   } else {
       res = virgl_drm_winsys_resource_create(qws, target, format, bind, width,
-                                             height, depth, array_size,
-                                             last_level, nr_samples, size,
-                                             need_sync);
+            height, depth, array_size,
+            last_level, nr_samples, size,
+            need_sync);
+   }
    return res;
 }
 
