@@ -522,6 +522,7 @@ virtgpu_alloc_and_export(int fd, uint32_t linear_stride, uint32_t linear_size)
    struct drm_gem_close gem_close;
    uint32_t cmd[VIRGL_PIPE_RES_CREATE_SIZE + 1];
 
+   mesa_logi("MESA::virtgpu_alloc_and_export::entered\n");
    cmd[0] = VIRGL_CMD0(VIRGL_CCMD_PIPE_RESOURCE_CREATE, 0, VIRGL_PIPE_RES_CREATE_SIZE);
    cmd[VIRGL_PIPE_RES_CREATE_FORMAT] = VIRGL_FORMAT_B8G8R8X8_UNORM; //   pipe_to_virgl_format(format);
    // 0x54000a

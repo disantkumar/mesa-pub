@@ -38,6 +38,7 @@
 #include "util/u_atomic.h"
 #include "util/u_math.h"
 #include "util/xmlconfig.h"
+#include "util/log.h"
 #include "vk_alloc.h"
 #include "vk_debug_report.h"
 #include "vk_device.h"

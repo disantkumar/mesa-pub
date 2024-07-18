@@ -271,7 +271,7 @@ virgl_drm_winsys_resource_create_shared_scanout(struct virgl_winsys *qws,
    uint32_t stride = ALIGN(util_format_get_stride(format, width), 64);
    size = ALIGN(stride * height * depth, getpagesize());
 
-#if 0
+#if 1
    mesa_logi("VIRGL :: create shared scanout\n"
          "width=%u height=%u depth=%u\n"
          "size=%u\n"
@@ -536,6 +536,7 @@ virgl_drm_winsys_resource_cache_create(struct virgl_winsys *qws,
                                        uint32_t flags,
                                        uint32_t size)
 {
+   mesa_logi("MESA::virgl_drm_winsys_resource_cache_create::entered\n");
    bool need_sync = false;
    struct virgl_drm_winsys *qdws = virgl_drm_winsys(qws);
    struct virgl_hw_res *res;
@@ -577,17 +578,20 @@ alloc:
 
    if ((bind & (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED)) ==
          (VIRGL_BIND_SCANOUT | VIRGL_BIND_SHARED)) {
+	   mesa_logi("MESA::virgl_drm_winsys_resource_cache_create::virgl_drm_winsys_resource_create_shared_scanout\n");
       res = virgl_drm_winsys_resource_create_shared_scanout(qws, target, format, bind,
             width, height, depth,
             array_size, last_level,
             nr_samples, flags, size);
    } else if (flags & (VIRGL_RESOURCE_FLAG_MAP_PERSISTENT |
                 VIRGL_RESOURCE_FLAG_MAP_COHERENT)) {
+	   mesa_logi("MESA::virgl_drm_winsys_resource_cache_create::virgl_drm_winsys_resource_create_blob\n");
       res = virgl_drm_winsys_resource_create_blob(qws, target, format, bind,
             width, height, depth,
             array_size, last_level,
             nr_samples, flags, size);
    } else {
+	   mesa_logi("MESA::virgl_drm_winsys_resource_cache_create::virgl_drm_winsys_resource_create\n");
       res = virgl_drm_winsys_resource_create(qws, target, format, bind, width,
             height, depth, array_size,
             last_level, nr_samples, size,

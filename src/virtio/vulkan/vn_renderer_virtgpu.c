@@ -631,6 +631,7 @@ virtgpu_ioctl_resource_create_blob(struct virtgpu *gpu,
                                    uint64_t blob_id,
                                    uint32_t *res_id)
 {
+	mesa_logi("MESA::virtgpu_ioctl_resource_create_blob\n");
 #ifdef SIMULATE_BO_SIZE_FIX
    blob_size = align64(blob_size, 4096);
 #endif
@@ -1232,6 +1233,7 @@ virtgpu_bo_create_from_device_memory(
    VkExternalMemoryHandleTypeFlags external_handles,
    struct vn_renderer_bo **out_bo)
 {
+	mesa_logi("virtgpu_bo_create_from_device_memory\n");
    struct virtgpu *gpu = (struct virtgpu *)renderer;
    const uint32_t blob_flags = virtgpu_bo_blob_flags(gpu, flags, external_handles);
 
@@ -1283,6 +1285,7 @@ virtgpu_shmem_destroy(struct vn_renderer *renderer,
 static struct vn_renderer_shmem *
 virtgpu_shmem_create(struct vn_renderer *renderer, size_t size)
 {
+	mesa_logi("virtgpu_shmem_create\n");
    struct virtgpu *gpu = (struct virtgpu *)renderer;
 
    struct vn_renderer_shmem *cached_shmem =

@@ -1823,6 +1823,7 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
    if (info->display_device_is_virtgpu)
    {
       int fd = 0;
+	  mesa_logi("MESA::wsi_create_buffer_blit_context::virtgpu_alloc_and_export\n");
 
       fd = virtgpu_alloc_and_export(info->display_device_fd, info->linear_stride, info->linear_size);
       memory_fd_info = (VkImportMemoryFdInfoKHR){

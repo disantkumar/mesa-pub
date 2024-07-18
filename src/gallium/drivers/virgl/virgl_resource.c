@@ -652,12 +652,16 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
    struct virgl_resource *res = CALLOC_STRUCT(virgl_resource);
    uint32_t alloc_size;
 
+   mesa_logi("MESA::virgl_resource_create_front::width=%u height=%u depth=%u\n",
+		   templ->width0,templ->height0,templ->depth0);
    res->b = *templ;
    res->b.screen = &vs->base;
    pipe_reference_init(&res->b.reference, 1);
    vbind = pipe_to_virgl_bind(vs, templ->bind);
    vflags = pipe_to_virgl_flags(vs, templ->flags);
    virgl_resource_layout(&res->b, &res->metadata, 0, 0, 0, 0);
+   mesa_logi("MESA::virgl_resource_create_front::virgl_resource_layout::width=%u height=%u depth=%u\n",
+		   templ->width0,templ->height0,templ->depth0);
 
    if ((vs->caps.caps.v2.capability_bits & VIRGL_CAP_APP_TWEAK_SUPPORT) &&
        vs->tweak_gles_emulate_bgra &&
@@ -678,6 +682,8 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
    else
       alloc_size = res->metadata.total_size;
    
+   mesa_logi("MESA::virgl_resource_create_front::resource_create::width=%u height=%u depth=%u\n",
+		   templ->width0,templ->height0,templ->depth0);
    res->hw_res = vs->vws->resource_create(vs->vws, templ->target,
                                           map_front_private,
                                           templ->format, vbind,
@@ -710,6 +716,7 @@ static struct pipe_resource *virgl_resource_create_front(struct pipe_screen *scr
 static struct pipe_resource *virgl_resource_create(struct pipe_screen *screen,
                                                    const struct pipe_resource *templ)
 {
+   mesa_logi("MESA::virgl_resource_create::virgl_resource_create_front\n");
    return virgl_resource_create_front(screen, templ, NULL);
 }
 
